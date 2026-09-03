@@ -1217,8 +1217,12 @@ impl Stream {
     }
 
     /// Stores the provided stream metadata in memory mapping
-    pub async fn set_metadata(&self, updated_metadata: LogStreamMetadata) {
-        *self.metadata.write().expect(LOCK_EXPECT) = updated_metadata;
+    pub async fn set_metadata(&self, mut updated_metadata: LogStreamMetadata) {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        // mark_deleting() is documented as monotonic -- a reload racing a
+        // delete must not silently clear it back to false.
+        updated_metadata.deleting |= metadata.deleting;
+        *metadata = updated_metadata;
     }
 
     pub fn get_first_event(&self) -> Option<String> {
@@ -1350,6 +1354,17 @@ impl Stream {
 
     pub fn is_hot_tier_enabled(&self) -> bool {
         self.metadata.read().expect(LOCK_EXPECT).hot_tier_enabled
+    }
+
+    /// Marks this stream as being deleted. Once set, this flag is never
+    /// cleared for this in-memory entry — a deletion in progress runs to
+    /// completion (or is resumed on restart), it is never cancelled.
+    pub fn mark_deleting(&self) {
+        self.metadata.write().expect(LOCK_EXPECT).deleting = true;
+    }
+
+    pub fn is_deleting(&self) -> bool {
+        self.metadata.read().expect(LOCK_EXPECT).deleting
     }
 
     pub fn get_stream_type(&self) -> StreamType {
@@ -1742,6 +1757,22 @@ mod tests {
             staging.data_path,
             options.local_stream_data_path(stream_name, &None)
         );
+    }
+
+    #[test]
+    fn test_mark_deleting_sets_is_deleting() {
+        let options = Arc::new(Options::default());
+        let stream = Stream::new(
+            options,
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+
+        assert!(!stream.is_deleting());
+        stream.mark_deleting();
+        assert!(stream.is_deleting());
     }
 
     #[test]
