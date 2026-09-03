@@ -94,6 +94,72 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 39] = [
 static OTEL_METRICS_KNOWN_FIELDS: Lazy<HashSet<&'static str>> =
     Lazy::new(|| OTEL_METRICS_KNOWN_FIELD_LIST.iter().copied().collect());
 
+const SERVICE_NAME_ATTRIBUTE: &str = "service.name";
+const SERVICE_NAMESPACE_ATTRIBUTE: &str = "service.namespace";
+const SERVICE_INSTANCE_ID_ATTRIBUTE: &str = "service.instance.id";
+
+/// Derive Prometheus target identity from the OTel service resource attributes.
+/// A resource with either identifying attribute gets both labels; the missing
+/// label has an empty value, matching Prometheus' OTLP translation.
+fn prometheus_target_identity(resource_fields: &Map<String, Value>) -> Option<(String, String)> {
+    let label_value = |key: &str| {
+        resource_fields.get(key).and_then(|value| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Bool(value) => Some(value.to_string()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        })
+    };
+
+    let service_name = label_value(SERVICE_NAME_ATTRIBUTE);
+    let service_instance_id = label_value(SERVICE_INSTANCE_ID_ATTRIBUTE);
+    if service_name.is_none() && service_instance_id.is_none() {
+        return None;
+    }
+
+    let mut job = service_name.unwrap_or_default();
+    if let Some(namespace) = label_value(SERVICE_NAMESPACE_ATTRIBUTE)
+        && !namespace.is_empty()
+    {
+        job = format!("{namespace}/{job}");
+    }
+
+    Some((job, service_instance_id.unwrap_or_default()))
+}
+
+fn insert_prometheus_target_identity(fields: &mut Map<String, Value>, identity: &(String, String)) {
+    fields.insert("job".to_string(), Value::String(identity.0.clone()));
+    fields.insert("instance".to_string(), Value::String(identity.1.clone()));
+}
+
+fn target_info_record(
+    resource_fields: &Map<String, Value>,
+    timestamp: String,
+) -> Map<String, Value> {
+    let mut target = resource_fields.clone();
+    target.insert(
+        "metric_name".to_string(),
+        Value::String("target_info".to_string()),
+    );
+    target.insert(
+        "metric_description".to_string(),
+        Value::String("Target metadata".to_string()),
+    );
+    target.insert("metric_unit".to_string(), Value::String(String::default()));
+    target.insert(
+        "metric_type".to_string(),
+        Value::String("gauge".to_string()),
+    );
+    target.insert("time_unix_nano".to_string(), Value::String(timestamp));
+    target.insert("data_point_value".to_string(), Value::Number(1.into()));
+    let series_hash = compute_series_hash(&target);
+    target.insert(
+        SERIES_HASH_COLUMN.to_string(),
+        Value::Number(series_hash.into()),
+    );
+    target
+}
+
 /// Compute a stable u64 identifier for the physical series a sample
 /// belongs to. Hashes `metric_name` plus every attribute key/value pair
 /// that survived OTel flattening — everything in the flattened data
@@ -630,6 +696,14 @@ fn process_resource_metrics<T, S, M>(
             Value::String(get_schema_url(resource_metric).to_string()),
         );
 
+        // Prometheus uses these labels as the foreign key between every
+        // metric from this resource and its generated target_info series.
+        let target_identity = prometheus_target_identity(&resource_fields);
+        if let Some(identity) = &target_identity {
+            insert_prometheus_target_identity(&mut resource_fields, identity);
+        }
+        let mut target_timestamp: Option<String> = None;
+
         for scope_metric in get_scope_metrics(resource_metric) {
             // Build envelope = resource + scope fields (once per scope)
             let mut envelope = resource_fields.clone();
@@ -650,6 +724,11 @@ fn process_resource_metrics<T, S, M>(
                 "scope_schema_url".to_string(),
                 Value::String(get_scope_schema_url(scope_metric).to_string()),
             );
+            // Scope attributes are merged after resource attributes. Reapply
+            // the derived identity so they cannot shadow job or instance.
+            if let Some(identity) = &target_identity {
+                insert_prometheus_target_identity(&mut envelope, identity);
+            }
 
             let metrics = get_metrics(scope_metric);
             vec_otel_json.reserve(
@@ -665,6 +744,13 @@ fn process_resource_metrics<T, S, M>(
             for metric in metrics {
                 let data_points = flatten_metrics_record(get_metric(metric), flatten_exemplars);
                 for mut dp in data_points {
+                    if let Some(Value::String(timestamp)) = dp.get("time_unix_nano")
+                        && target_timestamp
+                            .as_ref()
+                            .is_none_or(|latest| timestamp > latest)
+                    {
+                        target_timestamp = Some(timestamp.clone());
+                    }
                     for (k, v) in &envelope {
                         dp.insert(k.clone(), v.clone());
                     }
@@ -681,6 +767,17 @@ fn process_resource_metrics<T, S, M>(
                     vec_otel_json.push(Value::Object(dp));
                 }
             }
+        }
+
+        // Emit one target_info sample per OTel resource, using its latest data
+        // point timestamp so current metadata joins remain available.
+        if target_identity.is_some()
+            && let Some(timestamp) = target_timestamp
+        {
+            vec_otel_json.push(Value::Object(target_info_record(
+                &resource_fields,
+                timestamp,
+            )));
         }
     }
 
@@ -767,6 +864,236 @@ fn insert_data_point_flags(map: &mut Map<String, Value>, flags: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opentelemetry_proto::tonic::common::v1::{
+        AnyValue, InstrumentationScope, KeyValue, any_value,
+    };
+    use opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, ScopeMetrics};
+    use opentelemetry_proto::tonic::resource::v1::Resource;
+
+    fn string_attribute(key: &str, value: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(any_value::Value::StringValue(value.to_string())),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn gauge_metric(name: &str, timestamp: u64, attributes: Vec<KeyValue>) -> Metric {
+        Metric {
+            name: name.to_string(),
+            data: Some(metric::Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint {
+                    attributes,
+                    time_unix_nano: timestamp,
+                    value: Some(NumberDataPointValue::AsDouble(1.0)),
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn flatten_for_test(message: &MetricsData) -> Vec<Value> {
+        process_resource_metrics(
+            &message.resource_metrics,
+            |record| record.resource.as_ref(),
+            |record| &record.scope_metrics,
+            |record| &record.schema_url,
+            |scope_metric| scope_metric.scope.as_ref(),
+            |scope_metric| &scope_metric.schema_url,
+            |scope_metric| &scope_metric.metrics,
+            |metric| metric,
+            "test-tenant",
+            false,
+        )
+    }
+
+    #[test]
+    fn prometheus_identity_and_target_info_are_added_at_ingest() {
+        let message = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![
+                        string_attribute(SERVICE_NAME_ATTRIBUTE, "kubelet"),
+                        string_attribute(SERVICE_NAMESPACE_ATTRIBUTE, "monitoring"),
+                        string_attribute(SERVICE_INSTANCE_ID_ATTRIBUTE, "node-a:10250"),
+                        string_attribute("k8s.cluster.name", "prod-k8s"),
+                        string_attribute("job", "resource-job-must-not-win"),
+                    ],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![
+                    ScopeMetrics {
+                        scope: Some(InstrumentationScope {
+                            name: "scope-a".to_string(),
+                            attributes: vec![string_attribute("job", "scope-job-must-not-win")],
+                            ..Default::default()
+                        }),
+                        metrics: vec![gauge_metric(
+                            "up",
+                            1_000_000_000,
+                            vec![string_attribute("job", "point-job-must-not-win")],
+                        )],
+                        ..Default::default()
+                    },
+                    ScopeMetrics {
+                        metrics: vec![gauge_metric("requests", 2_000_000_000, vec![])],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        };
+
+        let output = flatten_for_test(&message);
+        assert_eq!(output.len(), 3, "two input points plus one target_info");
+
+        for metric_name in ["up", "requests"] {
+            let metric = output
+                .iter()
+                .filter_map(Value::as_object)
+                .find(|record| {
+                    record.get("metric_name").and_then(Value::as_str) == Some(metric_name)
+                })
+                .expect("input metric present");
+            assert_eq!(
+                metric.get("job").and_then(Value::as_str),
+                Some("monitoring/kubelet")
+            );
+            assert_eq!(
+                metric.get("instance").and_then(Value::as_str),
+                Some("node-a:10250")
+            );
+            assert_eq!(
+                metric.get(SERIES_HASH_COLUMN).and_then(Value::as_u64),
+                Some(compute_series_hash(metric)),
+            );
+        }
+
+        let targets: Vec<_> = output
+            .iter()
+            .filter_map(Value::as_object)
+            .filter(|record| {
+                record.get("metric_name").and_then(Value::as_str) == Some("target_info")
+            })
+            .collect();
+        assert_eq!(targets.len(), 1, "one target_info per OTel resource");
+        let target = targets[0];
+        assert_eq!(
+            target.get("metric_type").and_then(Value::as_str),
+            Some("gauge")
+        );
+        assert_eq!(
+            target.get("data_point_value").and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            target.get("job").and_then(Value::as_str),
+            Some("monitoring/kubelet")
+        );
+        assert_eq!(
+            target.get("instance").and_then(Value::as_str),
+            Some("node-a:10250")
+        );
+        assert_eq!(
+            target.get("k8s.cluster.name").and_then(Value::as_str),
+            Some("prod-k8s")
+        );
+        assert_eq!(
+            target.get(SERVICE_NAME_ATTRIBUTE).and_then(Value::as_str),
+            Some("kubelet")
+        );
+        assert_eq!(
+            target.get("time_unix_nano").and_then(Value::as_str),
+            Some("1970-01-01T00:00:02.000000000Z"),
+        );
+        assert!(target.get("scope_name").is_none());
+        assert_eq!(
+            target.get(SERIES_HASH_COLUMN).and_then(Value::as_u64),
+            Some(compute_series_hash(target)),
+        );
+    }
+
+    #[test]
+    fn resource_without_service_identity_gets_no_prometheus_labels_or_target_info() {
+        let message = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![string_attribute("k8s.cluster.name", "prod-k8s")],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![gauge_metric("up", 1_000_000_000, vec![])],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let output = flatten_for_test(&message);
+        assert_eq!(output.len(), 1);
+        let metric = output[0].as_object().unwrap();
+        assert!(metric.get("job").is_none());
+        assert!(metric.get("instance").is_none());
+        assert_ne!(
+            metric.get("metric_name").and_then(Value::as_str),
+            Some("target_info"),
+        );
+    }
+
+    #[test]
+    fn target_info_is_not_emitted_without_data_points() {
+        let message = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![string_attribute(SERVICE_NAME_ATTRIBUTE, "api")],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![Metric {
+                        name: "empty_gauge".to_string(),
+                        data: Some(metric::Data::Gauge(Gauge::default())),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let output = flatten_for_test(&message);
+        assert!(
+            output.iter().filter_map(Value::as_object).all(|record| {
+                record.get("metric_name").and_then(Value::as_str) != Some("target_info")
+            }),
+            "target_info requires a real data-point timestamp",
+        );
+    }
+
+    #[test]
+    fn partial_service_identity_uses_empty_missing_label() {
+        let mut only_name = Map::new();
+        only_name.insert(
+            SERVICE_NAME_ATTRIBUTE.to_string(),
+            Value::String("api".to_string()),
+        );
+        assert_eq!(
+            prometheus_target_identity(&only_name),
+            Some(("api".to_string(), String::new())),
+        );
+
+        let mut only_instance = Map::new();
+        only_instance.insert(
+            SERVICE_INSTANCE_ID_ATTRIBUTE.to_string(),
+            Value::String("instance-a".to_string()),
+        );
+        assert_eq!(
+            prometheus_target_identity(&only_instance),
+            Some((String::new(), "instance-a".to_string())),
+        );
+    }
 
     fn make_dp() -> Map<String, Value> {
         let mut dp = Map::new();
