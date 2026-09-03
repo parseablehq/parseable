@@ -25,23 +25,20 @@ use actix_web::{
     error::ErrorServiceUnavailable,
     middleware::Next,
 };
+use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use tokio::{
     select,
     time::{Duration, interval},
 };
 use tracing::{info, trace, warn};
 
+use crate::analytics::{SYS_INFO, refresh_sys_info};
 use crate::metrics::record_process_metrics_sample;
 use crate::parseable::PARSEABLE;
-use crate::{
-    analytics::{SYS_INFO, refresh_sys_info},
-    metrics::PROCESS_METRICS_ACCUMULATOR,
-};
 
 const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
-static RESOURCE_CHECK_ENABLED: LazyLock<Arc<AtomicBool>> =
-    LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+static SERVER_OK: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(true)));
 
 /// Spawn a background task to monitor system resources
 pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
@@ -51,7 +48,7 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
         let mut process_metrics_interval = interval(PROCESS_METRICS_SAMPLE_INTERVAL);
         let mut shutdown_rx = shutdown_rx;
 
-        let memory_threshold = PARSEABLE.options.memory_utilization_threshold;
+        let memory_threshold = (PARSEABLE.options.memory_utilization_threshold / 100.0) as f64;
 
         loop {
             select! {
@@ -62,19 +59,22 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                     refresh_sys_info();
 
                     let mut resource_ok = true;
-                    let process_mem = PROCESS_METRICS_ACCUMULATOR.get_mem();
-                    let total_mem = PROCESS_METRICS_ACCUMULATOR.get_total_mem();
-                    let memory_usage = process_mem / total_mem;
 
-                    // Check memory utilization
-                    if memory_usage > memory_threshold as f64 {
-                        warn!("High memory usage detected: {:.1}% (threshold: {:.1}%)",
-                              memory_usage, memory_threshold);
-                        resource_ok = false;
+                    let mut s = System::new_with_specifics(
+                        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+                    );
+                    if let Some(cgroup) = s.cgroup_limits() {
+                        if (cgroup.rss as f64) > memory_threshold * (cgroup.total_memory as f64) {
+                            resource_ok = false;
+                        }
+                    } else {
+                        s.refresh_memory();
+                        if (s.used_memory() as f64) > memory_threshold * (s.total_memory() as f64) {
+                            resource_ok = false;
+                        }
                     }
-
-                    let previous_state = RESOURCE_CHECK_ENABLED.load(std::sync::atomic::Ordering::SeqCst);
-                    RESOURCE_CHECK_ENABLED.store(resource_ok, std::sync::atomic::Ordering::SeqCst);
+                    let previous_state = SERVER_OK.load(std::sync::atomic::Ordering::SeqCst);
+                    SERVER_OK.store(resource_ok, std::sync::atomic::Ordering::SeqCst);
 
                     // Log state changes
                     if previous_state != resource_ok {
@@ -118,7 +118,7 @@ pub async fn check_resource_utilization_middleware(
     req: ServiceRequest,
     next: Next<impl MessageBody>,
 ) -> Result<ServiceResponse<impl MessageBody>, Error> {
-    let resource_ok = RESOURCE_CHECK_ENABLED.load(std::sync::atomic::Ordering::SeqCst);
+    let resource_ok = SERVER_OK.load(std::sync::atomic::Ordering::SeqCst);
 
     if !resource_ok {
         let error_msg = "Server resources over-utilized";

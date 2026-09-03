@@ -237,7 +237,10 @@ impl IngestServer {
                         .route(
                             web::post()
                                 .to(ingest::post_event)
-                                .authorize_for_resource(Action::Ingest),
+                                .authorize_for_resource(Action::Ingest)
+                                .wrap(from_fn(
+                                    resource_check::check_resource_utilization_middleware,
+                                )),
                         ),
                 )
                 .service(

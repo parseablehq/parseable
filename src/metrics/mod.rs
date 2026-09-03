@@ -242,15 +242,15 @@ impl ProcessMetricsAccumulator {
     }
 
     pub fn get_cpu(&self) -> f64 {
-        self.cpu_usage_avg.get() as f64
+        self.cpu_usage_avg.get()
     }
 
     pub fn get_mem(&self) -> f64 {
-        self.memory_bytes_avg.get() as f64
+        self.memory_bytes_avg.get()
     }
 
     pub fn get_total_mem(&self) -> f64 {
-        self.total_memory.get() as f64
+        self.total_memory.get()
     }
 }
 
