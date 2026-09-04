@@ -77,7 +77,8 @@ use crate::{
     static_schema::{StaticSchema, convert_static_schema_to_arrow_schema},
     storage::{
         ObjectStorage, ObjectStorageError, ObjectStorageProvider, ObjectStoreFormat, Owner,
-        Permisssion, StorageMetadata, StreamType, put_remote_metadata,
+        Permisssion, StorageMetadata, StreamType, object_storage::is_tombstoned,
+        put_remote_metadata,
     },
     tenants::{Service, TENANT_METADATA},
     validator,
@@ -472,6 +473,11 @@ impl Parseable {
     ) -> Result<bool, StreamError> {
         // Proceed to create log stream if it doesn't exist
         let storage = self.storage.get_object_store();
+        // A deletion in progress (or left unfinished by a crashed node) must
+        // never be resurrected by a concurrent lazy reload.
+        if is_tombstoned(storage.as_ref(), stream_name, tenant_id).await? {
+            return Ok(false);
+        }
         let streams = PARSEABLE.metastore.list_streams(tenant_id).await?;
         if !streams.contains(stream_name) {
             return Ok(false);
@@ -782,6 +788,21 @@ impl Parseable {
 
         let stream_in_memory_dont_update =
             self.streams.contains(stream_name, tenant_id) && !update_stream_flag;
+
+        // A stream still resident with is_deleting()=true is functionally
+        // gone (reads/writes are already rejected elsewhere), but its entry
+        // isn't removed from memory until the background deletion job
+        // finishes -- surface that distinctly rather than telling the
+        // caller it "already exists", which reads as if nothing were wrong.
+        if stream_in_memory_dont_update
+            && let Ok(stream) = self.get_stream(stream_name, tenant_id)
+            && stream.is_deleting()
+        {
+            return Err(StreamError::Custom {
+                msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
+                status: StatusCode::CONFLICT,
+            });
+        }
 
         // check if stream in storage only if not in memory
         // for Parseable OSS, create_update_stream is called only from query node

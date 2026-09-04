@@ -35,7 +35,10 @@ use crate::{
     metrics::fetch_stats_from_storage,
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE, Parseable},
-    storage::{ObjectStorage, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME, StorageMetadata},
+    storage::{
+        ObjectStorage, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME, StorageMetadata,
+        object_storage::{is_tombstoned, list_tombstoned_streams, spawn_stream_deletion},
+    },
 };
 
 fn get_version(metadata: &serde_json::Value) -> Option<&str> {
@@ -213,8 +216,12 @@ pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
     let mut futures = Vec::new();
 
     for tenant_id in tenants {
-        // Get all stream names
-        let stream_names = PARSEABLE.metastore.list_streams(&tenant_id).await?;
+        // Get all stream names, plus any stream whose `.stream.json` is
+        // already gone because it's mid-deletion -- `list_streams` alone
+        // would miss it, and `migration_stream` needs the chance to resume
+        // that deletion below if the process crashed before finishing it.
+        let mut stream_names = PARSEABLE.metastore.list_streams(&tenant_id).await?;
+        stream_names.extend(list_tombstoned_streams(storage.as_ref(), &tenant_id).await?);
 
         // Create futures for each stream migration
         let f = stream_names.into_iter().map(|stream_name| {
@@ -267,6 +274,23 @@ async fn migration_stream(
     storage: &dyn ObjectStorage,
     tenant_id: &Option<String>,
 ) -> anyhow::Result<Option<LogStreamMetadata>> {
+    if is_tombstoned(storage, stream, tenant_id).await? {
+        // Left mid-deletion by a node that crashed or restarted before the
+        // background job finished. Resume it here rather than treating the
+        // stream as a normal (possibly schema-less) migration candidate --
+        // `create_schema_from_metastore` below can itself error out on a
+        // partially-swept schema file, which would otherwise turn "resume
+        // deletion" into "abort node startup". Only a query/standalone node
+        // ever owns this job (mirrors the same guard in
+        // `object_storage::sync_all_streams`'s self-heal check) -- an
+        // ingestor just skips the stream here and waits for the tombstone to
+        // clear.
+        if PARSEABLE.options.mode != Mode::Ingest {
+            spawn_stream_deletion(stream.to_string(), tenant_id.clone());
+        }
+        return Ok(None);
+    }
+
     let mut arrow_schema: Schema = Schema::empty();
 
     let schema = storage
@@ -513,6 +537,7 @@ pub async fn setup_logstream_metadata(
         dataset_tags,
         dataset_labels,
         infer_timestamp,
+        deleting: false,
     };
 
     Ok(metadata)

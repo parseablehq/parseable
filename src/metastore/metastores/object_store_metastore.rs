@@ -55,7 +55,7 @@ use crate::{
     storage::{
         ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY,
         SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
-        TARGETS_ROOT_DIRECTORY,
+        TARGETS_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
         object_storage::{
             alert_json_path, alert_state_json_path, filter_path, manifest_path, mttr_json_path,
             outbound_http_policy_json_path, parseable_json_path, schema_path, stream_json_path,
@@ -1413,6 +1413,7 @@ impl Metastore for ObjectStoreMetastore {
                         && name != USERS_ROOT_DIR
                         && name != SETTINGS_ROOT_DIRECTORY
                         && name != ALERTS_ROOT_DIRECTORY
+                        && name != TOMBSTONE_ROOT_DIRECTORY
                 })
                 .collect::<Vec<_>>();
             for stream in streams {

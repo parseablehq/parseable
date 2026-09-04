@@ -45,12 +45,14 @@ use crate::{
                 utils::{IngestionStats, QueriedStats, StorageStats, merge_queried_stats},
             },
             logstream::error::StreamError,
-            modal::{NodeMetadata, NodeType},
         },
     },
     parseable::{PARSEABLE, StreamNotFound},
     stats,
-    storage::{ObjectStoreFormat, StreamType},
+    storage::{
+        ObjectStoreFormat, StreamType,
+        object_storage::{spawn_stream_deletion, stream_json_path, to_bytes, tombstone_path},
+    },
     utils::get_tenant_id_from_request,
 };
 const STATS_DATE_QUERY_PARAM: &str = "date";
@@ -73,15 +75,67 @@ pub async fn delete(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
+    // Fetched once, up front: every step below this point is either
+    // infallible or best-effort, so nothing after this line can bail out
+    // with "stream not found" partway through an already-durably-started
+    // deletion.
+    let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+
+    // Flip the in-memory guard before any `.await` point: check_or_load_stream's
+    // resident-stream fast path doesn't itself consult is_tombstoned, so a
+    // concurrent request on this node could otherwise slip through in the
+    // window between the tombstone becoming durable and this flag being set.
+    stream.mark_deleting();
+
     let objectstore = PARSEABLE.storage.get_object_store();
-    // Delete from storage
-    objectstore.delete_stream(&stream_name, &tenant_id).await?;
-    let stream_dir = PARSEABLE.get_or_create_stream(&stream_name, &tenant_id);
-    if let Err(err) = fs::remove_dir_all(&stream_dir.data_path) {
+
+    // Durable marker first: if the process crashes anywhere after this
+    // point, restart-recovery resumes the deletion instead of silently
+    // leaving the stream half-deleted with no record of it.
+    objectstore
+        .put_object(
+            &tombstone_path(&stream_name, &tenant_id),
+            to_bytes(&()),
+            &tenant_id,
+        )
+        .await?;
+
+    // Best-effort: makes the stream vanish from listings almost
+    // immediately, without touching every listing endpoint individually.
+    // Not fatal if it fails -- is_deleting()/is_tombstoned() checks already
+    // block reads and writes regardless of whether this file is gone yet.
+    if let Err(e) = objectstore
+        .delete_object(&stream_json_path(&stream_name, &tenant_id), &tenant_id)
+        .await
+    {
+        warn!(
+            "failed to eagerly delete stream.json for {stream_name}, will be removed with the rest of the prefix: {e}"
+        );
+    }
+
+    // Scheduled immediately once the stream is durably tombstoned and
+    // flagged locally, before any of the remaining best-effort steps --
+    // none of them are allowed to leave the deletion itself unscheduled if
+    // they fail.
+    spawn_stream_deletion(stream_name.clone(), tenant_id.clone());
+
+    let fanout_stream_name = stream_name.clone();
+    cluster::for_each_live_node(&tenant_id, move |node| {
+        let url = format!(
+            "{}{}/logstream/{}/sync",
+            node.domain_name,
+            base_path_without_preceding_slash(),
+            fanout_stream_name
+        );
+        async move { cluster::send_stream_delete_request(&url, node).await }
+    })
+    .await?;
+
+    if let Err(err) = fs::remove_dir_all(&stream.data_path) {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,
-            stream_dir.data_path.to_string_lossy()
+            stream.data_path.to_string_lossy()
         )
     }
 
@@ -93,32 +147,10 @@ pub async fn delete(
             .await?;
     }
 
-    let ingestor_metadata: Vec<NodeMetadata> =
-        cluster::get_node_info(NodeType::Ingestor, &tenant_id)
-            .await
-            .map_err(|err| {
-                error!("Fatal: failed to get ingestor info: {:?}", err);
-                err
-            })?;
-
-    for ingestor in ingestor_metadata {
-        let url = format!(
-            "{}{}/logstream/{}/sync",
-            ingestor.domain_name,
-            base_path_without_preceding_slash(),
-            stream_name
-        );
-
-        // delete the stream
-        cluster::send_stream_delete_request(&url, ingestor.clone()).await?;
-    }
-
-    // Delete from memory
-    PARSEABLE.streams.delete(&stream_name, &tenant_id);
-    stats::delete_stats(&stream_name, "json", &tenant_id)
-        .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
-
-    Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
+    Ok((
+        format!("log stream {stream_name} deletion started"),
+        StatusCode::ACCEPTED,
+    ))
 }
 
 pub async fn put_stream(
