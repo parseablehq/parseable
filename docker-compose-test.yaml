@@ -64,6 +64,8 @@ services:
     image: quay.io/parseablehq/quest:main
     platform: linux/amd64
     pull_policy: always
+    environment:
+      - QUEST_EDITION=oss
     command: [
       "load",
       "http://parseable:8000",
