@@ -172,18 +172,16 @@ async fn enough_available_memory() -> Result<(), ExecuteError> {
     let mut s = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
     );
-    s.refresh_all();
     let threshold = (PARSEABLE.options.query_mem_threshold / 100.0) as f64;
-
     let f = async {
         loop {
             if let Some(cgroup) = s.cgroup_limits() {
-                if (cgroup.rss as f64) < threshold * (cgroup.total_memory as f64) {
+                if (cgroup.rss as f64) > threshold * (cgroup.total_memory as f64) {
                     return;
                 }
             } else {
                 s.refresh_memory();
-                if (s.used_memory() as f64) < threshold * (s.total_memory() as f64) {
+                if (s.used_memory() as f64) > threshold * (s.total_memory() as f64) {
                     return;
                 }
             }

@@ -512,20 +512,11 @@ pub struct Options {
     #[arg(
         long,
         env = "P_RESOURCE_CHECK_INTERVAL",
-        default_value = "15",
+        default_value = "5",
         value_parser = validation::validate_seconds,
         help = "Resource monitoring check interval in seconds"
     )]
     pub resource_check_interval: u64,
-
-    #[arg(
-        long,
-        env = "P_CPU_THRESHOLD",
-        default_value = "100.0",
-        value_parser = validation::validate_percentage,
-        help = "CPU utilization threshold percentage (0.0-100.0) for resource monitoring"
-    )]
-    pub cpu_utilization_threshold: f32,
 
     #[arg(
         long,
@@ -536,13 +527,13 @@ pub struct Options {
     )]
     pub memory_utilization_threshold: f32,
 
-    // Integration features
     #[arg(
         long,
-        env = "P_OPENAI_API_KEY",
-        help = "OpenAI key to enable llm features"
+        env = "P_RESOURCE_CHECK_ENABLED",
+        default_value = "false",
+        help = "Flag to enable resource check"
     )]
-    pub open_ai_key: Option<String>,
+    pub resource_check_enabled: bool,
 
     #[arg(
         long,
