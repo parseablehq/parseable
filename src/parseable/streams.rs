@@ -80,17 +80,6 @@ use super::{
 
 static HOSTNAME: OnceCell<String> = OnceCell::new();
 
-const DISK_WRITE_BATCH_ROWS_VAR: &str = "DISK_WRITE_BATCH_ROWS";
-static DISK_WRITE_BATCH_ROWS: Lazy<usize> = Lazy::new(|| {
-    if let Ok(var) = std::env::var(DISK_WRITE_BATCH_ROWS_VAR)
-        && let Ok(var) = var.parse::<usize>()
-    {
-        var
-    } else {
-        1
-    }
-});
-
 const INPROCESS_DIR_PREFIX: &str = "processing_";
 const METRIC_NAME_BLOOM_FILTER_NDV: u64 = 32768;
 const METRIC_ROW_GROUP_PREP_IN_FLIGHT_VAR: &str = "METRIC_ROW_GROUP_PREP_IN_FLIGHT";
@@ -280,7 +269,7 @@ impl Stream {
             );
             let file_path = self.data_path.join(&filename);
 
-            guard.push_disk(filename, record, file_path, range, *DISK_WRITE_BATCH_ROWS)?;
+            guard.push_disk(filename, record, file_path, range)?;
         }
 
         if let Some(mem) = guard.mem.as_mut() {
@@ -686,7 +675,7 @@ impl Stream {
         // Swap out stale writers under the lock, drop them after releasing it.
         // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
         // outside the lock avoids blocking concurrent push() calls.
-        let (mut stale_writers, pending_writes) = {
+        let stale_writers = {
             let mut writer = self.writer.lock().map_err(|poisoned| {
                 StagingError::PoisonError(PoisonError::new(format!(
                     "Writer lock poisoned while flushing data for stream {} - {}",
@@ -699,7 +688,6 @@ impl Stream {
             }
             writer.take_flushable_disk(forced)
         };
-        pending_writes.flush_into(&mut stale_writers, &self.data_path)?;
         // DiskWriter::Drop I/O happens here, outside the lock
         drop(stale_writers);
         Ok(())
