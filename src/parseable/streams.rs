@@ -18,7 +18,6 @@
  */
 
 use arrow_array::{ArrayRef, RecordBatch};
-use arrow_ipc::reader::StreamReader;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::derive::{Deref, DerefMut};
@@ -72,7 +71,11 @@ use crate::{
 
 use super::{
     ARROW_FILE_EXTENSION, LogStream, PART_FILE_EXTENSION,
-    staging::{StagingError, reader::MergedReverseRecordReader, writer::Writer},
+    staging::{
+        StagingError,
+        reader::{MergedReverseRecordReader, get_reverse_reader},
+        writer::Writer,
+    },
 };
 
 static HOSTNAME: OnceCell<String> = OnceCell::new();
@@ -951,6 +954,8 @@ impl Stream {
         let _schemas: Vec<Result<Option<Schema>, StagingError>> = staging_files.into_par_iter().map(
             |(parquet_path, arrow_files)| -> Result<Option<Schema>, StagingError> {
                 let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+                self.quarantine_invalid_arrow_files(&record_reader.invalid_files);
+                let readable_arrow_files = record_reader.readable_files.clone();
                 if record_reader.readers.is_empty() {
                     Ok(None)
                 } else {
@@ -977,7 +982,7 @@ impl Stream {
                         "Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}"
                     );
                 } else {
-                    self.cleanup_arrow_files_and_dir(&arrow_files, tenant_id);
+                    self.cleanup_arrow_files_and_dir(&readable_arrow_files, tenant_id);
                 }
                 Ok(Some(merged_schema))
                 }
@@ -1046,6 +1051,7 @@ impl Stream {
                 let Some(record) = merged_iter.next() else {
                     break;
                 };
+                let record = record?;
                 let record_rows = record.num_rows();
                 buffered_rows += record_rows;
                 buffer.push(record);
@@ -1088,8 +1094,8 @@ impl Stream {
             }
             writer.close()?;
         } else {
-            for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
-                writer.write(record)?;
+            for record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
+                writer.write(&record?)?;
             }
             writer.close()?;
         }
@@ -1200,6 +1206,68 @@ impl Stream {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Remove invalid Arrow files from the conversion queue without deleting
+    /// them. This prevents an unrecoverable crash artifact from being retried
+    /// on every startup while retaining it for inspection.
+    fn quarantine_invalid_arrow_files(&self, arrow_files: &[PathBuf]) {
+        if arrow_files.is_empty() {
+            return;
+        }
+
+        let quarantine_dir = self.data_path.join("quarantine");
+        if let Err(err) = fs::create_dir_all(&quarantine_dir) {
+            error!(
+                "Failed to create Arrow quarantine directory {}: {err}",
+                quarantine_dir.display()
+            );
+            return;
+        }
+
+        let mut parent_dirs = HashSet::new();
+        for file in arrow_files {
+            let Some(file_name) = file.file_name() else {
+                continue;
+            };
+            if let Some(parent) = file.parent() {
+                parent_dirs.insert(parent.to_owned());
+            }
+
+            // Always use a unique target. The same filename can be present in
+            // multiple processing directories after an interrupted move.
+            let target =
+                quarantine_dir.join(format!("{}.{}", Ulid::new(), file_name.to_string_lossy()));
+
+            match fs::rename(file, &target) {
+                Ok(()) => error!(
+                    "Quarantined invalid Arrow file {} as {}",
+                    file.display(),
+                    target.display()
+                ),
+                Err(err) => error!(
+                    "Failed to quarantine invalid Arrow file {}: {err}",
+                    file.display()
+                ),
+            }
+        }
+
+        for parent in parent_dirs {
+            if parent
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(INPROCESS_DIR_PREFIX))
+                && fs::read_dir(&parent)
+                    .ok()
+                    .is_some_and(|mut entries| entries.next().is_none())
+                && let Err(err) = fs::remove_dir(&parent)
+            {
+                warn!(
+                    "Failed to remove empty inprocess directory {}: {err}",
+                    parent.display()
+                );
             }
         }
     }
@@ -1467,10 +1535,34 @@ impl Stream {
                         continue;
                     }
                     Ok(_) => {
-                        // Try to validate the arrow file by reading its schema
+                        // Validate complete record batches, not only the schema.
+                        // A crash can leave a valid schema followed by a
+                        // truncated record-batch body.
                         match File::open(&path) {
                             Ok(file) => {
-                                if let Err(e) = StreamReader::try_new_buffered(file, None) {
+                                let validation = get_reverse_reader(file).and_then(|mut reader| {
+                                    let mut rows = 0usize;
+                                    for batch in &mut reader {
+                                        let batch = batch.map_err(std::io::Error::other)?;
+                                        rows = rows.checked_add(batch.num_rows()).ok_or_else(
+                                            || {
+                                                std::io::Error::new(
+                                                    std::io::ErrorKind::InvalidData,
+                                                    "Arrow row count overflow",
+                                                )
+                                            },
+                                        )?;
+                                    }
+                                    if rows == 0 {
+                                        return Err(std::io::Error::new(
+                                            std::io::ErrorKind::InvalidData,
+                                            "Arrow stream has no recoverable rows",
+                                        ));
+                                    }
+                                    Ok(rows)
+                                });
+
+                                if let Err(e) = validation {
                                     // File is invalid/corrupted, remove it
                                     warn!(
                                         "Removing invalid/corrupted .part file: {:?} for stream {}: {e}",
@@ -1483,7 +1575,7 @@ impl Stream {
                                         );
                                     }
                                 } else {
-                                    // File has valid schema, rename to .arrows
+                                    // File has at least one fully readable batch.
                                     let mut arrow_path = path.clone();
                                     arrow_path.set_extension(ARROW_FILE_EXTENSION);
 
@@ -2072,6 +2164,57 @@ mod tests {
         // Verify parquet files were created and the arrow files deleted
         assert_eq!(staging.parquet_files().len(), 1);
         assert_eq!(staging.arrow_files().len(), 0);
+    }
+
+    #[test]
+    fn orphan_arrow_part_with_complete_batch_becomes_valid_parquet() {
+        let temp_dir = TempDir::new().unwrap();
+        let stream_name = "test_stream";
+        let options = Arc::new(Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            row_group_size: 1048576,
+            ..Default::default()
+        });
+        let staging = Stream::new(
+            options,
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let schema = Schema::new(vec![
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]);
+        write_log(&staging, &schema, 1);
+
+        // Simulate a crash after a complete batch was flushed but before Drop
+        // wrote the eight-byte EOS marker and renamed the file.
+        let arrow_path = staging.arrow_files().pop().unwrap();
+        let len = arrow_path.metadata().unwrap().len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&arrow_path)
+            .unwrap()
+            .set_len(len - 8)
+            .unwrap();
+        let part_path = arrow_path.with_extension(PART_FILE_EXTENSION);
+        std::fs::rename(&arrow_path, &part_path).unwrap();
+
+        staging.recover_orphan_part_files();
+        assert_eq!(staging.arrow_files().len(), 1);
+
+        let schema = staging
+            .convert_disk_files_to_parquet(None, None, false, true, &None)
+            .unwrap();
+        assert!(schema.is_some());
+        assert_eq!(staging.parquet_files().len(), 1);
+        assert!(staging.arrow_files().is_empty());
     }
 
     #[tokio::test]

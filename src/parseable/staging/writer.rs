@@ -312,6 +312,10 @@ impl DiskWriter {
     pub fn write(&mut self, rb: &RecordBatch) -> Result<usize, StagingError> {
         self.size += rb.size();
         self.inner.write(rb).map_err(StagingError::Arrow)?;
+        // A process crash does not run Drop, so do not leave the tail of an
+        // acknowledged record batch only in BufWriter's userspace buffer.
+        // The EOS marker can be recovered, but missing batch bytes cannot.
+        self.inner.flush().map_err(StagingError::Arrow)?;
         Ok(self.size)
     }
 }
@@ -449,5 +453,44 @@ impl<const N: usize> MutableBuffer<N> {
             self.inner.push(rb.clone());
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs::File, sync::Arc};
+
+    use arrow_array::{Int32Array, RecordBatch};
+    use arrow_ipc::reader::StreamReader;
+    use arrow_schema::{DataType, Field, Schema};
+    use chrono::Utc;
+    use temp_dir::TempDir;
+
+    use crate::{OBJECT_STORE_DATA_GRANULARITY, utils::time::TimeRange};
+
+    use super::DiskWriter;
+
+    #[test]
+    fn disk_writer_flushes_each_complete_batch_before_drop() {
+        let dir = TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .join("schema.date=2026-09-08.hour=11.minute=27.test.data.arrows");
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let range = TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
+        let mut writer = DiskWriter::try_new(path, &schema, range).unwrap();
+
+        writer.write(&batch).unwrap();
+
+        // Simulate what another process sees before Drop writes the EOS marker.
+        let file = File::open(&writer.path).unwrap();
+        let mut reader = StreamReader::try_new(file, None).unwrap();
+        let persisted = reader.next().unwrap().unwrap();
+        assert_eq!(persisted.num_rows(), 3);
     }
 }

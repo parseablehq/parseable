@@ -26,8 +26,8 @@ use std::{
 };
 
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
-use arrow_ipc::{MessageHeader, reader::StreamReader, root_as_message_unchecked};
-use arrow_schema::Schema;
+use arrow_ipc::{MessageHeader, reader::StreamReader, root_as_message};
+use arrow_schema::{ArrowError, Schema};
 use byteorder::{LittleEndian, ReadBytesExt};
 use itertools::kmerge_by;
 use tracing::{error, info_span};
@@ -40,12 +40,16 @@ use crate::{
 #[derive(Debug)]
 pub struct MergedReverseRecordReader {
     pub readers: Vec<StreamReader<BufReader<OffsetReader<File>>>>,
+    pub readable_files: Vec<PathBuf>,
+    pub invalid_files: Vec<PathBuf>,
 }
 
 impl MergedReverseRecordReader {
     pub fn try_new(file_paths: &[PathBuf]) -> Self {
         let _span = info_span!("open_arrow_files", file_count = file_paths.len()).entered();
         let mut readers = Vec::with_capacity(file_paths.len());
+        let mut readable_files = Vec::with_capacity(file_paths.len());
+        let mut invalid_files = Vec::new();
         for path in file_paths {
             match File::open(path) {
                 Err(err) => {
@@ -57,30 +61,47 @@ impl MergedReverseRecordReader {
                         Ok(r) => r,
                         Err(err) => {
                             error!("Invalid file detected, ignoring it: {path:?}; error = {err}");
+                            invalid_files.push(path.clone());
                             continue;
                         }
                     };
                     readers.push(reader);
+                    readable_files.push(path.clone());
                 }
             }
         }
 
-        Self { readers }
+        Self {
+            readers,
+            readable_files,
+            invalid_files,
+        }
     }
 
     pub fn merged_iter(
         self,
         schema: Arc<Schema>,
         time_partition: Option<String>,
-    ) -> impl Iterator<Item = RecordBatch> {
-        let adapted_readers = self.readers.into_iter().map(|reader| reader.flatten());
-        kmerge_by(adapted_readers, move |a: &RecordBatch, b: &RecordBatch| {
-            let a_time = get_timestamp_millis(a, time_partition.as_deref());
-            let b_time = get_timestamp_millis(b, time_partition.as_deref());
-            a_time > b_time
-        })
-        .map(|batch| reverse(&batch))
-        .map(move |batch| adapt_batch(&schema, &batch))
+    ) -> impl Iterator<Item = Result<RecordBatch, ArrowError>> {
+        let adapted_readers = self.readers;
+        kmerge_by(
+            adapted_readers,
+            move |a: &Result<RecordBatch, ArrowError>, b: &Result<RecordBatch, ArrowError>| {
+                match (a, b) {
+                    (Ok(a), Ok(b)) => {
+                        let a_time = get_timestamp_millis(a, time_partition.as_deref());
+                        let b_time = get_timestamp_millis(b, time_partition.as_deref());
+                        a_time > b_time
+                    }
+                    // Surface decoding errors through the iterator instead of silently
+                    // dropping them with Iterator::flatten.
+                    (Err(_), _) => true,
+                    (_, Err(_)) => false,
+                }
+            },
+        )
+        .map(|batch| batch.map(|batch| reverse(&batch)))
+        .map(move |batch| batch.map(|batch| adapt_batch(&schema, &batch)))
     }
 
     pub fn merged_schema(&self) -> Schema {
@@ -214,18 +235,54 @@ impl<R: Read + Seek> Read for OffsetReader<R> {
 pub fn get_reverse_reader<T: Read + Seek>(
     mut reader: T,
 ) -> Result<StreamReader<BufReader<OffsetReader<T>>>, io::Error> {
-    let mut offset = 0;
+    let file_len = reader.seek(SeekFrom::End(0))?;
+    reader.rewind()?;
+
+    let mut offset: usize = 0;
     let mut messages = Vec::new();
 
-    while let Some(res) = find_limit_and_type(&mut reader).transpose() {
-        match res {
-            Ok((header, size)) => {
+    loop {
+        match find_limit_and_type(&mut reader) {
+            Ok(Some((header, size))) => {
+                let next_offset = offset.checked_add(size).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Arrow message size overflow")
+                })?;
+
+                // Seeking beyond EOF succeeds for regular files. Check the declared
+                // message boundary explicitly so a crash-truncated record batch is
+                // never handed to StreamReader as if it were complete.
+                if next_offset as u64 > file_len {
+                    break;
+                }
                 messages.push((header, offset, size));
-                offset += size;
+                offset = next_offset;
             }
-            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof && !messages.is_empty() => break,
+            Ok(None) => break,
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof && !messages.is_empty() => {
+                break;
+            }
             Err(err) => return Err(err),
         }
+    }
+
+    if messages
+        .first()
+        .is_none_or(|(header, _, _)| *header != MessageHeader::Schema)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Arrow stream has no complete schema message",
+        ));
+    }
+
+    if !messages
+        .iter()
+        .any(|(header, _, _)| *header == MessageHeader::RecordBatch)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Arrow stream has no complete record batch",
+        ));
     }
 
     // reverse everything leaving the first because it has schema message.
@@ -272,14 +329,27 @@ fn find_limit_and_type(
     reader.read_exact(&mut message)?;
     size += metadata_size;
 
-    let message = unsafe { root_as_message_unchecked(&message) };
+    let message = root_as_message(&message).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid Arrow IPC message: {err}"),
+        )
+    })?;
     let header = message.header_type();
-    let message_size = message.bodyLength();
-    size += message_size as usize;
+    let message_size = usize::try_from(message.bodyLength())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid Arrow IPC body length"))?;
+    size = size
+        .checked_add(message_size)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Arrow message size overflow"))?;
 
     let padding = (8 - (size % 8)) % 8;
-    reader.seek(SeekFrom::Current(padding as i64 + message_size))?;
-    size += padding;
+    let seek_by = message_size
+        .checked_add(padding)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Arrow message size overflow"))?;
+    reader.seek(SeekFrom::Current(seek_by as i64))?;
+    size = size
+        .checked_add(padding)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Arrow message size overflow"))?;
 
     Ok(Some((header, size)))
 }
@@ -296,9 +366,12 @@ mod tests {
         Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, cast::AsArray,
         types::Int64Type,
     };
-    use arrow_ipc::writer::{
-        DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions, StreamWriter,
-        write_message,
+    use arrow_ipc::{
+        MessageHeader,
+        writer::{
+            DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions, StreamWriter,
+            write_message,
+        },
     };
     use arrow_schema::{DataType, Field, Schema};
     use chrono::Utc;
@@ -313,7 +386,7 @@ mod tests {
         utils::time::TimeRange,
     };
 
-    use super::get_reverse_reader;
+    use super::{find_limit_and_type, get_reverse_reader};
 
     fn rb(rows: usize) -> RecordBatch {
         let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..(rows as i64)));
@@ -339,6 +412,54 @@ mod tests {
         }
 
         writer.into_inner().unwrap()
+    }
+
+    fn truncate_last_record_batch(bytes: &mut Vec<u8>) {
+        let mut cursor = Cursor::new(bytes.as_slice());
+        let mut offset = 0usize;
+        let mut last_record_batch = None;
+        while let Some((header, size)) = find_limit_and_type(&mut cursor).unwrap() {
+            if header == MessageHeader::RecordBatch {
+                last_record_batch = Some((offset, size));
+            }
+            offset += size;
+        }
+
+        let (offset, size) = last_record_batch.expect("record batch message");
+        bytes.truncate(offset + size / 2);
+    }
+
+    #[test]
+    fn reverse_reader_recovers_complete_batches_before_truncated_tail() {
+        let mut bytes = write_mem(&[rb(2), rb(3)]);
+        truncate_last_record_batch(&mut bytes);
+
+        let reader = get_reverse_reader(Cursor::new(bytes)).unwrap();
+        let batches = reader.collect::<Result<Vec<_>, _>>().unwrap();
+
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 2);
+    }
+
+    #[test]
+    fn reverse_reader_rejects_stream_without_complete_batch() {
+        let mut bytes = write_mem(&[rb(2)]);
+        truncate_last_record_batch(&mut bytes);
+
+        let err = get_reverse_reader(Cursor::new(bytes)).unwrap_err();
+        assert!(err.to_string().contains("no complete record batch"));
+    }
+
+    #[test]
+    fn reverse_reader_accepts_complete_batches_without_eos() {
+        let mut bytes = write_mem(&[rb(2)]);
+        bytes.truncate(bytes.len() - 8);
+
+        let reader = get_reverse_reader(Cursor::new(bytes)).unwrap();
+        let batches = reader.collect::<Result<Vec<_>, _>>().unwrap();
+
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 2);
     }
 
     #[test]
@@ -524,7 +645,10 @@ mod tests {
         // But first message should be schema, so we'll still read them in order
 
         // Read batch 3
-        let batch = reader.next().expect("Failed to read batch");
+        let batch = reader
+            .next()
+            .expect("Failed to read batch")
+            .expect("Invalid batch");
         assert_eq!(batch.num_rows(), 2);
         let id_array = batch
             .column(0)
@@ -535,7 +659,10 @@ mod tests {
         assert_eq!(id_array.value(1), 30);
 
         // Read batch 2
-        let batch = reader.next().expect("Failed to read batch");
+        let batch = reader
+            .next()
+            .expect("Failed to read batch")
+            .expect("Invalid batch");
         assert_eq!(batch.num_rows(), 2);
         let id_array = batch
             .column(0)
@@ -546,7 +673,10 @@ mod tests {
         assert_eq!(id_array.value(1), 20);
 
         // Read batch 1
-        let batch = reader.next().expect("Failed to read batch");
+        let batch = reader
+            .next()
+            .expect("Failed to read batch")
+            .expect("Invalid batch");
         assert_eq!(batch.num_rows(), 2);
         let id_array = batch
             .column(0)
@@ -623,7 +753,10 @@ mod tests {
             MergedReverseRecordReader::try_new(&[file_path.into()]).merged_iter(schema, None);
 
         // Should get the batch
-        let result_batch = reader.next().expect("Failed to read batch");
+        let result_batch = reader
+            .next()
+            .expect("Failed to read batch")
+            .expect("Invalid batch");
         let id_array = result_batch
             .column(0)
             .as_any()
