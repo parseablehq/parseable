@@ -46,7 +46,6 @@ use crate::migration;
 use crate::storage;
 use crate::storage::field_stats::get_dataset_stats;
 use crate::sync;
-use crate::sync::sync_start;
 
 use crate::handlers::http::alert_target_policy;
 use actix_web::Resource;
@@ -141,8 +140,9 @@ impl ParseableServer for Server {
 
         storage::retention::load_retention_from_global();
 
-        // local sync on init
-        thread::spawn(sync_start);
+        // Reserve the startup backlog before periodic sync can claim files.
+        let (startup_snapshot_tx, startup_snapshot_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || sync::sync_start_and_signal(startup_snapshot_tx));
 
         if let Some(htm) = PARSEABLE
             .options
@@ -164,9 +164,17 @@ impl ParseableServer for Server {
             htm.start_all_tasks().await;
         }
 
-        // Run sync on a background thread
+        // Conversion may continue in startup sync; periodic sync only waits
+        // for the short processing-file snapshot.
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        thread::spawn(|| sync::handler(cancel_rx));
+        thread::spawn(move || {
+            if startup_snapshot_rx.recv().is_err() {
+                tracing::warn!(
+                    "Startup sync exited before signaling snapshot completion; starting periodic sync"
+                );
+            }
+            sync::handler(cancel_rx)
+        });
 
         if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;

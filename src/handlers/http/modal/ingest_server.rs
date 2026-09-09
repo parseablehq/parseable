@@ -31,7 +31,6 @@ use tokio::sync::oneshot;
 
 use crate::handlers::http::middleware::IntraClusterRequest;
 use crate::handlers::http::modal::NodeType;
-use crate::sync::sync_start;
 use crate::{
     Server, analytics,
     handlers::{
@@ -114,12 +113,20 @@ impl ParseableServer for IngestServer {
 
         migration::run_migration(&PARSEABLE).await?;
 
-        // local sync on init
-        thread::spawn(sync_start);
+        // Reserve the startup backlog before periodic sync can claim files.
+        let (startup_snapshot_tx, startup_snapshot_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || sync::sync_start_and_signal(startup_snapshot_tx));
 
         // Run sync on a background thread
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        thread::spawn(|| sync::handler(cancel_rx));
+        thread::spawn(move || {
+            if startup_snapshot_rx.recv().is_err() {
+                tracing::warn!(
+                    "Startup sync exited before signaling snapshot completion; starting periodic sync"
+                );
+            }
+            sync::handler(cancel_rx)
+        });
 
         tokio::spawn(airplane::server());
 

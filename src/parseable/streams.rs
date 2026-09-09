@@ -19,7 +19,7 @@
 
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{NaiveDateTime, Timelike, Utc};
+use chrono::{NaiveDate, NaiveDateTime, Timelike, Utc};
 use derive_more::derive::{Deref, DerefMut};
 use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
@@ -35,7 +35,6 @@ use parquet::{
     },
     schema::types::ColumnPath,
 };
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use relative_path::RelativePathBuf;
 use std::sync::PoisonError;
 use std::{
@@ -150,6 +149,49 @@ fn chunk_arrow_file_groups(
     chunked
 }
 
+/// Extracts the event minute from a staging output name such as
+/// `date=2026-09-09.hour=10.minute=36.host.data.<ulid>.parquet`.
+fn staging_event_minute(path: &Path) -> Option<NaiveDateTime> {
+    let filename = path.file_name()?.to_str()?;
+    let mut date = None;
+    let mut hour = None;
+    let mut minute = None;
+    for component in filename.split('.') {
+        if let Some(value) = component.strip_prefix("date=") {
+            date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok();
+        } else if let Some(value) = component.strip_prefix("hour=") {
+            hour = value.parse::<u32>().ok();
+        } else if let Some(value) = component.strip_prefix("minute=") {
+            minute = value.parse::<u32>().ok();
+        }
+    }
+    date?.and_hms_opt(hour?, minute?, 0)
+}
+
+/// Produces deterministic, oldest-event-minute-first conversion work. The
+/// file-count cap is retained so a single very large minute remains bounded.
+fn ordered_arrow_file_groups(
+    grouped: HashMap<PathBuf, Vec<PathBuf>>,
+) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    let mut groups = chunk_arrow_file_groups(grouped)
+        .into_iter()
+        .collect::<Vec<_>>();
+    for (_, files) in &mut groups {
+        files.sort();
+    }
+    groups.sort_by(|(left, _), (right, _)| {
+        match (staging_event_minute(left), staging_event_minute(right)) {
+            (Some(left_minute), Some(right_minute)) => {
+                left_minute.cmp(&right_minute).then_with(|| left.cmp(right))
+            }
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.cmp(right),
+        }
+    });
+    groups
+}
+
 struct PreparedMetricRowGroup {
     batch: RecordBatch,
 }
@@ -206,6 +248,35 @@ pub struct Stream {
     schema_writer: Mutex<()>,
     pub ingestor_id: Option<String>,
 }
+
+/// Startup conversion owns this immutable processing-file snapshot. Periodic
+/// sync may run while it is consumed because it only claims root Arrow files
+/// and its newly-created processing directory.
+pub(crate) struct StartupSyncPlan {
+    stream: StreamRef,
+    tenant_id: Option<String>,
+    staging_files: Vec<(PathBuf, Vec<PathBuf>)>,
+}
+
+impl StartupSyncPlan {
+    pub(crate) fn execute(self) -> Result<(), StagingError> {
+        let time_partition = self.stream.get_time_partition();
+        let custom_partition = self.stream.get_custom_partition();
+        let schema = self.stream.convert_arrow_file_groups_to_parquet(
+            self.staging_files,
+            time_partition.as_ref(),
+            custom_partition.as_ref(),
+            &self.tenant_id,
+        )?;
+        if let Some(schema) = schema
+            && !self.stream.get_static_schema_flag()
+        {
+            self.stream.stage_schema_file(schema)?;
+        }
+        Ok(())
+    }
+}
+
 impl Stream {
     pub fn new(
         options: Arc<Options>,
@@ -378,25 +449,28 @@ impl Stream {
         group_minute: u128,
         init_signal: bool,
         shutdown_signal: bool,
-    ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let random_string = ulid::Ulid::new().to_string();
-        let inprocess_dir = Self::inprocess_folder(&self.data_path, group_minute);
-
-        let arrow_files = self.fetch_arrow_files_for_conversion(exclude, shutdown_signal);
-        if !arrow_files.is_empty() {
-            if let Err(e) = fs::create_dir_all(&inprocess_dir) {
-                error!("Failed to create inprocess directory: {e}");
-                return HashMap::new();
+    ) -> Vec<(PathBuf, Vec<PathBuf>)> {
+        if init_signal {
+            // Startup owns only this one-time snapshot of processing files.
+            // Root Arrow files are left for regular sync so startup never
+            // races a live writer or a periodic cycle for the same file.
+            self.group_inprocess_arrow_files(&Ulid::new().to_string())
+        } else {
+            let arrow_files = self.fetch_arrow_files_for_conversion(exclude, shutdown_signal);
+            if arrow_files.is_empty() {
+                return Vec::new();
             }
 
+            // Never reuse a directory that may belong to the immutable startup
+            // snapshot (possible when a process restarts within the same minute).
+            let inprocess_dir = self.available_inprocess_folder(group_minute);
+            if let Err(e) = fs::create_dir_all(&inprocess_dir) {
+                error!("Failed to create inprocess directory: {e}");
+                return Vec::new();
+            }
             self.move_arrow_files(arrow_files, &inprocess_dir);
+            self.group_single_inprocess_arrow_files(&inprocess_dir, &Ulid::new().to_string())
         }
-        if init_signal {
-            // Group from all inprocess folders
-            return self.group_inprocess_arrow_files(&random_string);
-        }
-
-        self.group_single_inprocess_arrow_files(&inprocess_dir, &random_string)
     }
 
     /// Groups arrow files only from the specified inprocess folder
@@ -404,10 +478,10 @@ impl Stream {
         &self,
         inprocess_dir: &Path,
         random_string: &str,
-    ) -> HashMap<PathBuf, Vec<PathBuf>> {
+    ) -> Vec<(PathBuf, Vec<PathBuf>)> {
         let mut grouped: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let Ok(dir) = fs::read_dir(inprocess_dir) else {
-            return grouped;
+            return Vec::new();
         };
         for entry in dir.flatten() {
             let path = entry.path();
@@ -424,11 +498,13 @@ impl Stream {
                 }
             }
         }
-        chunk_arrow_file_groups(grouped)
+        ordered_arrow_file_groups(grouped)
     }
 
-    /// Returns a mapping for inprocess arrow files (init_signal=true).
-    fn group_inprocess_arrow_files(&self, random_string: &str) -> HashMap<PathBuf, Vec<PathBuf>> {
+    /// Takes one logical snapshot across every existing processing directory.
+    /// Files sharing the same event-minute/output prefix are consolidated even
+    /// when a crash left them in different processing directories.
+    fn group_inprocess_arrow_files(&self, random_string: &str) -> Vec<(PathBuf, Vec<PathBuf>)> {
         let mut grouped: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         for inprocess_file in self.inprocess_arrow_files() {
             if let Some(parquet_path) =
@@ -442,7 +518,7 @@ impl Stream {
                 warn!("Unexpected arrow file: {}", inprocess_file.display());
             }
         }
-        chunk_arrow_file_groups(grouped)
+        ordered_arrow_file_groups(grouped)
     }
 
     /// Returns arrow files for conversion, filtering by time and removing invalid files.
@@ -503,6 +579,16 @@ impl Stream {
 
     fn inprocess_folder(base: &Path, minute: u128) -> PathBuf {
         base.join(format!("{INPROCESS_DIR_PREFIX}{minute}"))
+    }
+
+    fn available_inprocess_folder(&self, minute: u128) -> PathBuf {
+        let preferred = Self::inprocess_folder(&self.data_path, minute);
+        if !preferred.exists() {
+            preferred
+        } else {
+            self.data_path
+                .join(format!("{INPROCESS_DIR_PREFIX}{minute}_{}", Ulid::new()))
+        }
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -886,19 +972,23 @@ impl Stream {
 
     fn update_staging_metrics(
         &self,
-        staging_files: &HashMap<PathBuf, Vec<PathBuf>>,
+        staging_files: &[(PathBuf, Vec<PathBuf>)],
         tenant_id: &Option<String>,
     ) {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        let total_arrow_files = staging_files.values().map(|v| v.len()).sum::<usize>();
+        let total_arrow_files = staging_files
+            .iter()
+            .map(|(_, files)| files.len())
+            .sum::<usize>();
         metrics::STAGING_FILES
             .with_label_values(&[&self.stream_name, tenant_str])
             .set(total_arrow_files as i64);
 
         let total_arrow_files_size = staging_files
-            .values()
-            .map(|v| {
-                v.iter()
+            .iter()
+            .map(|(_, files)| {
+                files
+                    .iter()
                     .filter_map(|file| file.metadata().ok().map(|meta| meta.len()))
                     .sum::<u64>()
             })
@@ -927,94 +1017,46 @@ impl Stream {
         );
         let _guard = span.enter();
 
-        let mut schemas = Vec::new();
-
         let now = SystemTime::now();
         let group_minute = minute_from_system_time(now) - 1;
         let staging_files =
             self.arrow_files_grouped_exclude_time(now, group_minute, init_signal, shutdown_signal);
         span.record("file_group_count", staging_files.len());
+        self.convert_arrow_file_groups_to_parquet(
+            staging_files,
+            time_partition,
+            custom_partition,
+            tenant_id,
+        )
+    }
+
+    fn convert_arrow_file_groups_to_parquet(
+        &self,
+        staging_files: Vec<(PathBuf, Vec<PathBuf>)>,
+        time_partition: Option<&String>,
+        custom_partition: Option<&String>,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<Schema>, StagingError> {
         if staging_files.is_empty() {
             self.reset_staging_metrics(tenant_id);
             return Ok(None);
         }
 
         self.update_staging_metrics(&staging_files, tenant_id);
+        let mut schemas = Vec::new();
 
-        let _schemas: Vec<Result<Option<Schema>, StagingError>> = staging_files.into_par_iter().map(
-            |(parquet_path, arrow_files)| -> Result<Option<Schema>, StagingError> {
-                let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
-                self.remove_invalid_arrow_files(&record_reader.invalid_files, tenant_id);
-                let readable_arrow_files = record_reader.readable_files.clone();
-                if record_reader.readers.is_empty() {
-                    Ok(None)
-                } else {
-                    let merged_schema = record_reader.merged_schema();
-                    let props =
-                        self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
-
-                    let schema = Arc::new(merged_schema.clone());
-
-                    let mut part_path = parquet_path.clone();
-                    part_path.add_extension(PART_FILE_EXTENSION);
-
-                    let write_result = self.write_parquet_part_file(
-                        &part_path,
-                        record_reader,
-                        &schema,
-                        &props,
-                        time_partition,
-                    );
-                    match write_result {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            Self::remove_partial_parquet_file(&part_path);
-                            return Ok(None);
-                        }
-                        Err(err) => {
-                            Self::remove_partial_parquet_file(&part_path);
-                            if matches!(&err, StagingError::Arrow(_)) {
-                                error!(
-                                    "Arrow decode failed while building {}: {err}",
-                                    parquet_path.display()
-                                );
-                                let invalid_files = Self::invalid_arrow_files(
-                                    &readable_arrow_files,
-                                );
-                                if invalid_files.is_empty() {
-                                    warn!(
-                                        "Arrow decode failure could not be attributed to a source file; retaining group for retry"
-                                    );
-                                } else {
-                                    self.remove_invalid_arrow_files(&invalid_files, tenant_id);
-                                }
-                                return Ok(None);
-                            }
-                            return Err(err);
-                        }
-                    }
-
-                    if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
-                        error!(
-                            "Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}"
-                        );
-                        Self::remove_partial_parquet_file(&part_path);
-                        return Err(e.into());
-                    }
-
-                    self.cleanup_arrow_files_and_dir(&readable_arrow_files, tenant_id);
-                    Ok(Some(merged_schema))
-                }
-            },
-        )
-        .collect();
-
-        for res in _schemas {
-            {
-                let s = res?;
-                if let Some(s) = s {
-                    schemas.push(s)
-                }
+        // Groups are already ordered by event minute. Process one at a time so
+        // recovery memory does not scale with backlog length or CPU count.
+        for (parquet_path, arrow_files) in staging_files {
+            let schema = self.convert_arrow_group(
+                parquet_path,
+                arrow_files,
+                time_partition,
+                custom_partition,
+                tenant_id,
+            )?;
+            if let Some(schema) = schema {
+                schemas.push(schema);
             }
         }
         if schemas.is_empty() {
@@ -1022,6 +1064,73 @@ impl Stream {
         }
 
         Ok(Some(Schema::try_merge(schemas)?))
+    }
+
+    /// Converts one Parquet output group and removes its Arrow sources only
+    /// after the final Parquet rename succeeds.
+    fn convert_arrow_group(
+        &self,
+        parquet_path: PathBuf,
+        arrow_files: Vec<PathBuf>,
+        time_partition: Option<&String>,
+        custom_partition: Option<&String>,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<Schema>, StagingError> {
+        let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+        self.remove_invalid_arrow_files(&record_reader.invalid_files, tenant_id);
+        let readable_arrow_files = record_reader.readable_files.clone();
+        if record_reader.readers.is_empty() {
+            return Ok(None);
+        }
+
+        let merged_schema = record_reader.merged_schema();
+        let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
+        let schema = Arc::new(merged_schema.clone());
+        let mut part_path = parquet_path.clone();
+        part_path.add_extension(PART_FILE_EXTENSION);
+
+        let write_result = self.write_parquet_part_file(
+            &part_path,
+            record_reader,
+            &schema,
+            &props,
+            time_partition,
+        );
+        match write_result {
+            Ok(true) => {}
+            Ok(false) => {
+                Self::remove_partial_parquet_file(&part_path);
+                return Ok(None);
+            }
+            Err(err) => {
+                Self::remove_partial_parquet_file(&part_path);
+                if matches!(&err, StagingError::Arrow(_)) {
+                    error!(
+                        "Arrow decode failed while building {}: {err}",
+                        parquet_path.display()
+                    );
+                    let invalid_files = Self::invalid_arrow_files(&readable_arrow_files);
+                    if invalid_files.is_empty() {
+                        warn!(
+                            "Arrow decode failure could not be attributed to a source file; retaining group for retry"
+                        );
+                    } else {
+                        self.remove_invalid_arrow_files(&invalid_files, tenant_id);
+                    }
+                    return Ok(None);
+                }
+                return Err(err);
+            }
+        }
+
+        if let Err(err) = std::fs::rename(&part_path, &parquet_path) {
+            error!("Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {err}");
+            Self::remove_partial_parquet_file(&part_path);
+            return Err(err.into());
+        }
+
+        self.cleanup_arrow_files_and_dir(&readable_arrow_files, tenant_id);
+        Ok(Some(merged_schema))
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -1208,7 +1317,19 @@ impl Stream {
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn cleanup_arrow_files_and_dir(&self, arrow_files: &[PathBuf], tenant_id: &Option<String>) {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        for (i, file) in arrow_files.iter().enumerate() {
+        let processing_dirs = arrow_files
+            .iter()
+            .filter_map(|file| file.parent())
+            .filter(|parent| {
+                parent
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(INPROCESS_DIR_PREFIX))
+            })
+            .map(Path::to_path_buf)
+            .collect::<HashSet<_>>();
+
+        for file in arrow_files {
             match file.metadata() {
                 Ok(meta) => {
                     let file_size = meta.len();
@@ -1232,28 +1353,28 @@ impl Stream {
                     warn!("File ({}) not found; Error = {err}", file.display());
                 }
             }
+        }
 
-            // After deleting the last file, try to remove the inprocess directory if empty
-            if i == arrow_files.len() - 1
-                && let Some(parent_dir) = file.parent()
-            {
-                match fs::read_dir(parent_dir) {
-                    Ok(mut entries) => {
-                        if entries.next().is_none()
-                            && let Err(err) = fs::remove_dir(parent_dir)
-                        {
-                            warn!(
-                                "Failed to remove inprocess directory {}: {err}",
-                                parent_dir.display()
-                            );
-                        }
-                    }
-                    Err(err) => {
+        // One logical startup group can span several processing directories.
+        // Remove every contributing directory once its final file is gone.
+        for parent_dir in processing_dirs {
+            match fs::read_dir(&parent_dir) {
+                Ok(mut entries) => {
+                    if entries.next().is_none()
+                        && let Err(err) = fs::remove_dir(&parent_dir)
+                    {
                         warn!(
-                            "Failed to read inprocess directory {}: {err}",
+                            "Failed to remove inprocess directory {}: {err}",
                             parent_dir.display()
                         );
                     }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    warn!(
+                        "Failed to read inprocess directory {}: {err}",
+                        parent_dir.display()
+                    );
                 }
             }
         }
@@ -1669,6 +1790,38 @@ impl Stream {
         }
     }
 
+    /// Recovers and flushes startup writers, then snapshots only files already
+    /// present in processing directories. Root Arrow files remain owned by
+    /// periodic sync, which can start as soon as every stream is snapshotted.
+    fn prepare_startup_sync(
+        self: &Arc<Self>,
+        tenant_id: Option<String>,
+    ) -> Result<StartupSyncPlan, StagingError> {
+        self.recover_orphan_part_files();
+
+        let start_flush = Instant::now();
+        self.flush(true)?;
+        if self.get_stream_type().eq(&StreamType::UserDefined) {
+            info!(
+                "Startup flush for stream ({}) took: {}s",
+                self.stream_name,
+                start_flush.elapsed().as_secs_f64()
+            );
+        }
+
+        let staging_files = self.group_inprocess_arrow_files(&Ulid::new().to_string());
+        info!(
+            "Captured {} startup parquet groups for stream {}",
+            staging_files.len(),
+            self.stream_name
+        );
+        Ok(StartupSyncPlan {
+            stream: Arc::clone(self),
+            tenant_id,
+            staging_files,
+        })
+    }
+
     /// First flushes arrows onto disk and then converts the arrow into parquet
     #[instrument(
         name = "flush_and_convert",
@@ -1755,6 +1908,35 @@ impl Streams {
             .or_default()
             .insert(stream_name, stream.clone());
         stream
+    }
+
+    /// Performs the short, exclusive startup preflight and returns immutable
+    /// plans that can be converted while regular sync runs independently.
+    pub(crate) fn prepare_startup_sync(&self) -> Vec<StartupSyncPlan> {
+        let tenants = PARSEABLE
+            .list_tenants()
+            .unwrap_or_else(|| vec![DEFAULT_TENANT.to_owned()]);
+        let mut plans = Vec::new();
+
+        for tenant_id in tenants {
+            let streams = self
+                .read()
+                .expect(LOCK_EXPECT)
+                .get(&tenant_id)
+                .map(|tenant_streams| tenant_streams.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            for stream in streams {
+                match stream.prepare_startup_sync(Some(tenant_id.clone())) {
+                    Ok(plan) => plans.push(plan),
+                    Err(err) => error!(
+                        "Failed to prepare startup sync for stream {}: {err:?}",
+                        stream.stream_name
+                    ),
+                }
+            }
+        }
+
+        plans
     }
 
     /// TODO: validate possibility of stream continuing to exist despite being deleted
@@ -1962,6 +2144,155 @@ mod tests {
         let files = staging.arrow_files();
 
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn startup_groups_across_directories_and_orders_by_event_minute() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let staging = Stream::new(
+            Arc::new(options),
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let old_dir = staging.data_path.join("processing_3");
+        let new_dir = staging.data_path.join("processing_20");
+        let malformed_dir = staging.data_path.join("processing_unknown");
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::create_dir_all(&malformed_dir).unwrap();
+
+        fs::write(
+            old_dir.join("schema-a.date=2026-09-09.hour=10.minute=36.host.data.arrows"),
+            b"old",
+        )
+        .unwrap();
+        fs::write(
+            new_dir.join("schema-b.date=2026-09-09.hour=10.minute=36.host.data.arrows"),
+            b"new",
+        )
+        .unwrap();
+        fs::write(
+            old_dir.join("schema-c.date=2026-09-09.hour=10.minute=10.host.data.arrows"),
+            b"ten",
+        )
+        .unwrap();
+        fs::write(
+            new_dir.join("schema-d.date=2026-09-09.hour=10.minute=9.host.data.arrows"),
+            b"nine",
+        )
+        .unwrap();
+
+        let groups = staging.group_inprocess_arrow_files("snapshot");
+        let minutes = groups
+            .iter()
+            .map(|(path, _)| staging_event_minute(path).unwrap().minute())
+            .collect::<Vec<_>>();
+        assert_eq!(minutes, vec![9, 10, 36]);
+        assert_eq!(groups[2].1.len(), 2);
+        assert!(groups[2].1.iter().any(|path| path.starts_with(&old_dir)));
+        assert!(groups[2].1.iter().any(|path| path.starts_with(&new_dir)));
+    }
+
+    #[test]
+    fn startup_snapshot_ignores_root_arrow_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let staging = Stream::new(
+            Arc::new(options),
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let processing_dir = staging.data_path.join("processing_1");
+        fs::create_dir_all(&processing_dir).unwrap();
+        let filename = "schema.date=2026-09-09.hour=10.minute=36.host.data.arrows";
+        fs::write(processing_dir.join(filename), b"processing").unwrap();
+        let root_arrow = staging.data_path.join(filename);
+        fs::write(&root_arrow, b"root").unwrap();
+
+        let groups = staging.arrow_files_grouped_exclude_time(
+            SystemTime::now(),
+            minute_from_system_time(SystemTime::now()) - 1,
+            true,
+            false,
+        );
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1.len(), 1);
+        assert!(groups[0].1[0].starts_with(&processing_dir));
+        assert!(root_arrow.exists());
+    }
+
+    #[test]
+    fn periodic_sync_does_not_reuse_a_reserved_processing_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let staging = Stream::new(
+            Arc::new(options),
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let group_minute = 42;
+        let reserved_dir = Stream::inprocess_folder(&staging.data_path, group_minute);
+        fs::create_dir_all(&reserved_dir).unwrap();
+        let filename = "schema.date=2026-09-09.hour=10.minute=36.host.data.arrows";
+        let reserved_arrow = reserved_dir.join(filename);
+        fs::write(&reserved_arrow, b"reserved").unwrap();
+        let root_arrow = staging.data_path.join(filename);
+        fs::write(&root_arrow, b"root").unwrap();
+
+        let groups =
+            staging.arrow_files_grouped_exclude_time(SystemTime::now(), group_minute, false, true);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1.len(), 1);
+        assert_ne!(groups[0].1[0].parent(), Some(reserved_dir.as_path()));
+        assert!(reserved_arrow.exists());
+        assert!(!root_arrow.exists());
+    }
+
+    #[test]
+    fn cleanup_removes_all_empty_contributing_processing_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let staging = Stream::new(
+            Arc::new(options),
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let first_dir = staging.data_path.join("processing_1");
+        let second_dir = staging.data_path.join("processing_2");
+        fs::create_dir_all(&first_dir).unwrap();
+        fs::create_dir_all(&second_dir).unwrap();
+        let first_file = first_dir.join("first.arrows");
+        let second_file = second_dir.join("second.arrows");
+        fs::write(&first_file, b"first").unwrap();
+        fs::write(&second_file, b"second").unwrap();
+
+        staging.cleanup_arrow_files_and_dir(&[first_file, second_file], &None);
+
+        assert!(!first_dir.exists());
+        assert!(!second_dir.exists());
     }
 
     #[test]
