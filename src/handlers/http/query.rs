@@ -559,9 +559,6 @@ pub async fn create_streams_for_distributed(
     streams: Vec<String>,
     tenant_id: &Option<String>,
 ) -> Result<(), QueryError> {
-    if PARSEABLE.options.mode != Mode::Query && PARSEABLE.options.mode != Mode::Prism {
-        return Ok(());
-    }
     let mut join_set = JoinSet::new();
     for stream_name in streams {
         let id = tenant_id.to_owned();

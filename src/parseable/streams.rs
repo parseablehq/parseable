@@ -18,7 +18,6 @@
  */
 
 use arrow_array::{ArrayRef, RecordBatch};
-use arrow_ipc::reader::StreamReader;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::derive::{Deref, DerefMut};
@@ -43,6 +42,7 @@ use std::{
     collections::VecDeque,
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions, remove_file, write},
+    io::Read,
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
@@ -71,22 +71,16 @@ use crate::{
 };
 
 use super::{
-    ARROW_FILE_EXTENSION, LogStream, PART_FILE_EXTENSION,
-    staging::{StagingError, reader::MergedReverseRecordReader, writer::Writer},
+    ARROW_FILE_EXTENSION, ARROW_PART_FILE_SUFFIX, LogStream, PARQUET_PART_FILE_SUFFIX,
+    PART_FILE_EXTENSION,
+    staging::{
+        StagingError,
+        reader::{MergedReverseRecordReader, get_reverse_reader},
+        writer::Writer,
+    },
 };
 
 static HOSTNAME: OnceCell<String> = OnceCell::new();
-
-const DISK_WRITE_BATCH_ROWS_VAR: &str = "DISK_WRITE_BATCH_ROWS";
-static DISK_WRITE_BATCH_ROWS: Lazy<usize> = Lazy::new(|| {
-    if let Ok(var) = std::env::var(DISK_WRITE_BATCH_ROWS_VAR)
-        && let Ok(var) = var.parse::<usize>()
-    {
-        var
-    } else {
-        1
-    }
-});
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
 const METRIC_NAME_BLOOM_FILTER_NDV: u64 = 32768;
@@ -277,7 +271,7 @@ impl Stream {
             );
             let file_path = self.data_path.join(&filename);
 
-            guard.push_disk(filename, record, file_path, range, *DISK_WRITE_BATCH_ROWS)?;
+            guard.push_disk(filename, record, file_path, range)?;
         }
 
         if let Some(mem) = guard.mem.as_mut() {
@@ -683,7 +677,7 @@ impl Stream {
         // Swap out stale writers under the lock, drop them after releasing it.
         // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
         // outside the lock avoids blocking concurrent push() calls.
-        let (mut stale_writers, pending_writes) = {
+        let stale_writers = {
             let mut writer = self.writer.lock().map_err(|poisoned| {
                 StagingError::PoisonError(PoisonError::new(format!(
                     "Writer lock poisoned while flushing data for stream {} - {}",
@@ -696,7 +690,6 @@ impl Stream {
             }
             writer.take_flushable_disk(forced)
         };
-        pending_writes.flush_into(&mut stale_writers, &self.data_path)?;
         // DiskWriter::Drop I/O happens here, outside the lock
         drop(stale_writers);
         Ok(())
@@ -951,6 +944,8 @@ impl Stream {
         let _schemas: Vec<Result<Option<Schema>, StagingError>> = staging_files.into_par_iter().map(
             |(parquet_path, arrow_files)| -> Result<Option<Schema>, StagingError> {
                 let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+                self.remove_invalid_arrow_files(&record_reader.invalid_files, tenant_id);
+                let readable_arrow_files = record_reader.readable_files.clone();
                 if record_reader.readers.is_empty() {
                     Ok(None)
                 } else {
@@ -960,26 +955,55 @@ impl Stream {
 
                     let schema = Arc::new(merged_schema.clone());
 
-                    let part_path = parquet_path.with_extension("part");
+                    let mut part_path = parquet_path.clone();
+                    part_path.add_extension(PART_FILE_EXTENSION);
 
-                    if !self.write_parquet_part_file(
+                    let write_result = self.write_parquet_part_file(
                         &part_path,
                         record_reader,
                         &schema,
                         &props,
                         time_partition,
-                    )? {
-                        return Ok(None)
+                    );
+                    match write_result {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            Self::remove_partial_parquet_file(&part_path);
+                            return Ok(None);
+                        }
+                        Err(err) => {
+                            Self::remove_partial_parquet_file(&part_path);
+                            if matches!(&err, StagingError::Arrow(_)) {
+                                error!(
+                                    "Arrow decode failed while building {}: {err}",
+                                    parquet_path.display()
+                                );
+                                let invalid_files = Self::invalid_arrow_files(
+                                    &readable_arrow_files,
+                                );
+                                if invalid_files.is_empty() {
+                                    warn!(
+                                        "Arrow decode failure could not be attributed to a source file; retaining group for retry"
+                                    );
+                                } else {
+                                    self.remove_invalid_arrow_files(&invalid_files, tenant_id);
+                                }
+                                return Ok(None);
+                            }
+                            return Err(err);
+                        }
                     }
 
                     if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
-                    error!(
-                        "Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}"
-                    );
-                } else {
-                    self.cleanup_arrow_files_and_dir(&arrow_files, tenant_id);
-                }
-                Ok(Some(merged_schema))
+                        error!(
+                            "Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}"
+                        );
+                        Self::remove_partial_parquet_file(&part_path);
+                        return Err(e.into());
+                    }
+
+                    self.cleanup_arrow_files_and_dir(&readable_arrow_files, tenant_id);
+                    Ok(Some(merged_schema))
                 }
             },
         )
@@ -1001,6 +1025,7 @@ impl Stream {
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    /// Writes one conversion group to a temporary Parquet file.
     fn write_parquet_part_file(
         &self,
         part_path: &Path,
@@ -1016,7 +1041,8 @@ impl Stream {
         .entered();
         let mut part_file = OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(true)
             .open(part_path)
             .map_err(|_| StagingError::Create)?;
         let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
@@ -1046,6 +1072,7 @@ impl Stream {
                 let Some(record) = merged_iter.next() else {
                     break;
                 };
+                let record = record?;
                 let record_rows = record.num_rows();
                 buffered_rows += record_rows;
                 buffer.push(record);
@@ -1088,22 +1115,50 @@ impl Stream {
             }
             writer.close()?;
         } else {
-            for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
-                writer.write(record)?;
+            for record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
+                writer.write(&record?)?;
             }
             writer.close()?;
         }
+
+        drop(part_file);
 
         if !Self::is_valid_parquet_file(part_path, &self.stream_name) {
             error!(
                 "Invalid parquet file {part_path:?} detected for stream {stream_name}, removing it",
                 stream_name = &self.stream_name
             );
-            remove_file(part_path).expect("File should be removable if it is invalid");
+            Self::remove_partial_parquet_file(part_path);
             return Ok(false);
         }
         trace!("Parquet file successfully constructed");
         Ok(true)
+    }
+
+    /// Removes a temporary Parquet output left by a failed conversion.
+    fn remove_partial_parquet_file(part_path: &Path) {
+        match remove_file(part_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => warn!(
+                "Failed to remove partial parquet file {}: {err}",
+                part_path.display()
+            ),
+        }
+    }
+
+    /// Returns files whose Arrow bodies cannot be decoded completely.
+    fn invalid_arrow_files(arrow_files: &[PathBuf]) -> Vec<PathBuf> {
+        arrow_files
+            .iter()
+            .filter_map(|path| {
+                let invalid = match File::open(path).and_then(get_reverse_reader) {
+                    Ok(mut reader) => reader.any(|batch| batch.is_err()),
+                    Err(_) => true,
+                };
+                invalid.then(|| path.clone())
+            })
+            .collect()
     }
 
     /// function to validate parquet files
@@ -1202,6 +1257,26 @@ impl Stream {
                 }
             }
         }
+    }
+
+    /// Logs and deletes invalid Arrow files so they cannot poison later retries.
+    fn remove_invalid_arrow_files(&self, arrow_files: &[PathBuf], tenant_id: &Option<String>) {
+        for file in arrow_files {
+            match file.metadata() {
+                Ok(meta) => warn!(
+                    "Removing invalid/corrupted Arrow file {} for stream {}, size_bytes={}",
+                    file.display(),
+                    self.stream_name,
+                    meta.len()
+                ),
+                Err(err) => warn!(
+                    "Removing invalid/corrupted Arrow file {} for stream {}, size unavailable: {err}",
+                    file.display(),
+                    self.stream_name
+                ),
+            }
+        }
+        self.cleanup_arrow_files_and_dir(arrow_files, tenant_id);
     }
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
@@ -1435,9 +1510,27 @@ impl Stream {
         None
     }
 
-    /// Recovers orphaned .part files from a previous interrupted run.
-    /// These are incomplete arrow files that weren't finalized before the server crashed.
-    /// Valid .part files are renamed to .arrows for processing, invalid ones are removed.
+    /// Returns whether a temporary file contains Parquet output.
+    ///
+    /// The magic-byte fallback recognizes legacy bare `.part` files created
+    /// before Arrow and Parquet temporary suffixes were separated.
+    fn is_parquet_part_file(path: &Path) -> bool {
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        if file_name.is_some_and(|name| name.ends_with(PARQUET_PART_FILE_SUFFIX)) {
+            return true;
+        }
+        if file_name.is_some_and(|name| name.ends_with(ARROW_PART_FILE_SUFFIX)) {
+            return false;
+        }
+
+        let mut magic = [0_u8; 4];
+        File::open(path)
+            .and_then(|mut file| file.read_exact(&mut magic))
+            .is_ok()
+            && magic == *b"PAR1"
+    }
+
+    /// Recovers orphaned Arrow parts and removes rebuildable Parquet parts.
     fn recover_orphan_part_files(&self) {
         let Ok(dir) = self.data_path.read_dir() else {
             return;
@@ -1466,26 +1559,75 @@ impl Stream {
                         }
                         continue;
                     }
-                    Ok(_) => {
-                        // Try to validate the arrow file by reading its schema
+                    Ok(meta) => {
+                        if Self::is_parquet_part_file(&path) {
+                            warn!(
+                                "Removing orphaned temporary Parquet file {:?} for stream {}, size_bytes={}. Deleting it is safe because its source .arrows files remain in processing_* and will rebuild the Parquet on restart",
+                                path,
+                                self.stream_name,
+                                meta.len()
+                            );
+                            if let Err(delete_err) = remove_file(&path) {
+                                error!(
+                                    "Failed to remove orphaned temporary Parquet file {:?}: {delete_err}",
+                                    path
+                                );
+                            }
+                            continue;
+                        }
+
+                        // Validate complete record batches, not only the schema.
+                        // A crash can leave a valid schema followed by a
+                        // truncated record-batch body.
                         match File::open(&path) {
                             Ok(file) => {
-                                if let Err(e) = StreamReader::try_new_buffered(file, None) {
-                                    // File is invalid/corrupted, remove it
+                                let validation = get_reverse_reader(file).and_then(|mut reader| {
+                                    let mut rows = 0usize;
+                                    for batch in &mut reader {
+                                        let batch = batch.map_err(std::io::Error::other)?;
+                                        rows = rows.checked_add(batch.num_rows()).ok_or_else(
+                                            || {
+                                                std::io::Error::new(
+                                                    std::io::ErrorKind::InvalidData,
+                                                    "Arrow row count overflow",
+                                                )
+                                            },
+                                        )?;
+                                    }
+                                    if rows == 0 {
+                                        return Err(std::io::Error::new(
+                                            std::io::ErrorKind::InvalidData,
+                                            "Arrow stream has no recoverable rows",
+                                        ));
+                                    }
+                                    Ok(rows)
+                                });
+
+                                if let Err(e) = validation {
                                     warn!(
-                                        "Removing invalid/corrupted .part file: {:?} for stream {}: {e}",
-                                        path, self.stream_name
+                                        "Removing invalid/corrupted .part file: {:?} for stream {}, size_bytes={}: {e}",
+                                        path,
+                                        self.stream_name,
+                                        meta.len()
                                     );
-                                    if let Err(e) = remove_file(&path) {
+                                    if let Err(delete_err) = remove_file(&path) {
                                         error!(
-                                            "Failed to remove invalid .part file {:?}: {e}",
+                                            "Failed to remove invalid/corrupted .part file {:?}: {delete_err}",
                                             path
                                         );
                                     }
                                 } else {
-                                    // File has valid schema, rename to .arrows
-                                    let mut arrow_path = path.clone();
-                                    arrow_path.set_extension(ARROW_FILE_EXTENSION);
+                                    // File has at least one fully readable batch.
+                                    let mut arrow_path = if path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .is_some_and(|name| name.ends_with(ARROW_PART_FILE_SUFFIX))
+                                    {
+                                        path.with_extension("")
+                                    } else {
+                                        // Legacy Arrow files used a bare `.part` suffix.
+                                        path.with_extension(ARROW_FILE_EXTENSION)
+                                    };
 
                                     // If arrow file with same name exists, generate a unique name
                                     if arrow_path.exists() {
@@ -1961,6 +2103,33 @@ mod tests {
         staging.flush(true).unwrap();
     }
 
+    fn write_compressible_log(staging: &StreamRef, schema: &Schema, mins: i64) {
+        let time: NaiveDateTime = Utc::now()
+            .checked_sub_signed(TimeDelta::minutes(mins))
+            .unwrap()
+            .naive_utc();
+        let rows = 4096;
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![
+                Arc::new(TimestampMillisecondArray::from_iter_values(0..rows as i64)),
+                Arc::new(Int32Array::from_iter_values(0..rows as i32)),
+                Arc::new(StringArray::from(vec!["compressible-value"; rows])),
+            ],
+        )
+        .unwrap();
+        staging
+            .push(
+                "corrupt",
+                &batch,
+                time,
+                &HashMap::new(),
+                StreamType::UserDefined,
+            )
+            .unwrap();
+        staging.flush(true).unwrap();
+    }
+
     #[test]
     fn different_minutes_multiple_arrow_files_to_parquet() {
         let temp_dir = TempDir::new().unwrap();
@@ -2072,6 +2241,152 @@ mod tests {
         // Verify parquet files were created and the arrow files deleted
         assert_eq!(staging.parquet_files().len(), 1);
         assert_eq!(staging.arrow_files().len(), 0);
+    }
+
+    #[test]
+    fn corrupt_arrow_body_is_removed_without_blocking_other_groups() {
+        let temp_dir = TempDir::new().unwrap();
+        let stream_name = "test_stream";
+        let options = Arc::new(Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            row_group_size: 1048576,
+            ..Default::default()
+        });
+        let staging = Stream::new(
+            options,
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let schema = Schema::new(vec![
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]);
+
+        write_compressible_log(&staging, &schema, 2);
+        let corrupt_path = staging.arrow_files().pop().unwrap();
+        let mut bytes = fs::read(&corrupt_path).unwrap();
+        let lz4_magic = [0x04, 0x22, 0x4d, 0x18];
+        let magic_offset = bytes
+            .windows(lz4_magic.len())
+            .position(|window| window == lz4_magic)
+            .expect("compressed Arrow body");
+        bytes[magic_offset] ^= 0xff;
+        fs::write(&corrupt_path, bytes).unwrap();
+
+        // A second minute forms an independent conversion group that must
+        // still finish even though the first group contains a corrupt body.
+        write_log(&staging, &schema, 1);
+        let result = staging
+            .convert_disk_files_to_parquet(None, None, false, true, &None)
+            .unwrap();
+
+        assert!(result.is_some());
+        assert_eq!(staging.parquet_files().len(), 1);
+        assert!(staging.inprocess_arrow_files().is_empty());
+        assert!(fs::read_dir(&staging.data_path).unwrap().all(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_none_or(|extension| extension != PART_FILE_EXTENSION)
+        }));
+    }
+
+    #[test]
+    fn orphan_arrow_part_with_complete_batch_becomes_valid_parquet() {
+        let temp_dir = TempDir::new().unwrap();
+        let stream_name = "test_stream";
+        let options = Arc::new(Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            row_group_size: 1048576,
+            ..Default::default()
+        });
+        let staging = Stream::new(
+            options,
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let schema = Schema::new(vec![
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]);
+        write_log(&staging, &schema, 1);
+
+        // Simulate a crash after a complete batch was flushed but before Drop
+        // wrote the eight-byte EOS marker and renamed the file.
+        let arrow_path = staging.arrow_files().pop().unwrap();
+        let len = arrow_path.metadata().unwrap().len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&arrow_path)
+            .unwrap()
+            .set_len(len - 8)
+            .unwrap();
+        let mut part_path = arrow_path.clone();
+        part_path.add_extension(PART_FILE_EXTENSION);
+        std::fs::rename(&arrow_path, &part_path).unwrap();
+
+        staging.recover_orphan_part_files();
+        assert_eq!(staging.arrow_files().len(), 1);
+
+        let schema = staging
+            .convert_disk_files_to_parquet(None, None, false, true, &None)
+            .unwrap();
+        assert!(schema.is_some());
+        assert_eq!(staging.parquet_files().len(), 1);
+        assert!(staging.arrow_files().is_empty());
+    }
+
+    #[test]
+    fn corrupt_orphan_part_is_removed() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Arc::new(Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        });
+        let staging = Stream::new(
+            options,
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        fs::create_dir_all(&staging.data_path).unwrap();
+        let part_path = staging.data_path.join("orphan.arrows.part");
+        fs::write(&part_path, b"not an Arrow stream").unwrap();
+
+        staging.recover_orphan_part_files();
+
+        assert!(!part_path.exists());
+    }
+
+    #[test]
+    fn arrow_and_parquet_part_files_are_distinguished() {
+        let temp_dir = TempDir::new().unwrap();
+        let arrow_part = temp_dir.path().join("schema.data.arrows.part");
+        let parquet_part = temp_dir.path().join("date=2026-09-09.data.parquet.part");
+        let legacy_parquet_part = temp_dir.path().join("date=2026-09-09.data.part");
+        fs::write(&arrow_part, b"PAR1").unwrap();
+        fs::write(&parquet_part, b"not finalized").unwrap();
+        fs::write(&legacy_parquet_part, b"PAR1").unwrap();
+
+        assert!(!Stream::is_parquet_part_file(&arrow_part));
+        assert!(Stream::is_parquet_part_file(&parquet_part));
+        assert!(Stream::is_parquet_part_file(&legacy_parquet_part));
     }
 
     #[tokio::test]
