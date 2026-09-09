@@ -673,14 +673,10 @@ impl Stream {
             shutdown_signal,
             tenant_id,
         )?;
-        // check if there is already a schema file in staging pertaining to this stream
-        // if yes, then merge them and save
-
-        if let Some(schema) = schema {
-            let static_schema_flag = self.get_static_schema_flag();
-            if !static_schema_flag {
-                self.stage_schema_file(schema)?;
-            }
+        if let Some(schema) = schema
+            && !self.get_static_schema_flag()
+        {
+            self.stage_schema_file(schema)?;
         }
 
         Ok(())
@@ -1048,17 +1044,25 @@ impl Stream {
         // Groups are already ordered by event minute. Process one at a time so
         // recovery memory does not scale with backlog length or CPU count.
         for (parquet_path, arrow_files) in staging_files {
-            let schema = self.convert_arrow_group(
-                parquet_path,
+            match self.convert_arrow_group(
+                parquet_path.clone(),
                 arrow_files,
                 time_partition,
                 custom_partition,
                 tenant_id,
-            )?;
-            if let Some(schema) = schema {
-                schemas.push(schema);
+            ) {
+                Ok(Some(schema)) => schemas.push(schema),
+                Ok(None) => {}
+                Err(err) => {
+                    error!(
+                        "Failed to convert Arrow group for stream {} to {}: {err}",
+                        self.stream_name,
+                        parquet_path.display()
+                    );
+                }
             }
         }
+
         if schemas.is_empty() {
             return Ok(None);
         }
@@ -2628,6 +2632,70 @@ mod tests {
                 .extension()
                 .is_none_or(|extension| extension != PART_FILE_EXTENSION)
         }));
+    }
+
+    #[test]
+    fn conversion_continues_after_group_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Arc::new(Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            row_group_size: 1048576,
+            ..Default::default()
+        });
+        let staging = Stream::new(
+            options,
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let schema = Schema::new(vec![
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]);
+        write_log(&staging, &schema, 2);
+        write_log(&staging, &schema, 1);
+
+        let arrow_files = staging.arrow_files();
+        assert_eq!(arrow_files.len(), 2);
+        let first_dir = staging.data_path.join("processing_first");
+        let second_dir = staging.data_path.join("processing_second");
+        fs::create_dir_all(&first_dir).unwrap();
+        fs::create_dir_all(&second_dir).unwrap();
+        let first_arrow = first_dir.join(arrow_files[0].file_name().unwrap());
+        let second_arrow = second_dir.join(arrow_files[1].file_name().unwrap());
+        fs::rename(&arrow_files[0], &first_arrow).unwrap();
+        fs::rename(&arrow_files[1], &second_arrow).unwrap();
+
+        // The missing parent makes only the first Parquet creation fail.
+        let failed_parquet = staging
+            .data_path
+            .join("missing")
+            .join("date=2026-09-09.hour=13.minute=26.host.data.failed.parquet");
+        let successful_parquet = staging
+            .data_path
+            .join("date=2026-09-09.hour=13.minute=27.host.data.success.parquet");
+        let converted_schema = staging
+            .convert_arrow_file_groups_to_parquet(
+                vec![
+                    (failed_parquet, vec![first_arrow.clone()]),
+                    (successful_parquet.clone(), vec![second_arrow.clone()]),
+                ],
+                None,
+                None,
+                &None,
+            )
+            .unwrap();
+
+        assert!(converted_schema.is_some());
+        assert!(first_arrow.exists());
+        assert!(!second_arrow.exists());
+        assert!(successful_parquet.exists());
     }
 
     #[test]
