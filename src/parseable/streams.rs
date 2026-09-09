@@ -258,22 +258,33 @@ pub(crate) struct StartupSyncPlan {
     staging_files: Vec<(PathBuf, Vec<PathBuf>)>,
 }
 
+#[derive(Default)]
+struct ArrowFileConversionOutcome {
+    schema: Option<Schema>,
+    first_error: Option<StagingError>,
+}
+
+impl ArrowFileConversionOutcome {
+    fn into_result(self) -> Result<Option<Schema>, StagingError> {
+        if let Some(err) = self.first_error {
+            Err(err)
+        } else {
+            Ok(self.schema)
+        }
+    }
+}
+
 impl StartupSyncPlan {
     pub(crate) fn execute(self) -> Result<(), StagingError> {
         let time_partition = self.stream.get_time_partition();
         let custom_partition = self.stream.get_custom_partition();
-        let schema = self.stream.convert_arrow_file_groups_to_parquet(
+        let outcome = self.stream.convert_arrow_file_groups_to_parquet(
             self.staging_files,
             time_partition.as_ref(),
             custom_partition.as_ref(),
             &self.tenant_id,
         )?;
-        if let Some(schema) = schema
-            && !self.stream.get_static_schema_flag()
-        {
-            self.stream.stage_schema_file(schema)?;
-        }
-        Ok(())
+        self.stream.finish_arrow_file_conversion(outcome)
     }
 }
 
@@ -666,20 +677,14 @@ impl Stream {
 
         // read arrow files on disk
         // convert them to parquet
-        let schema = self.convert_disk_files_to_parquet(
+        let outcome = self.convert_disk_files_to_parquet_outcome(
             time_partition.as_ref(),
             custom_partition.as_ref(),
             init_signal,
             shutdown_signal,
             tenant_id,
         )?;
-        if let Some(schema) = schema
-            && !self.get_static_schema_flag()
-        {
-            self.stage_schema_file(schema)?;
-        }
-
-        Ok(())
+        self.finish_arrow_file_conversion(outcome)
     }
 
     pub fn stage_schema_file(&self, mut schema: Schema) -> Result<(), StagingError> {
@@ -1006,6 +1011,24 @@ impl Stream {
         shutdown_signal: bool,
         tenant_id: &Option<String>,
     ) -> Result<Option<Schema>, StagingError> {
+        self.convert_disk_files_to_parquet_outcome(
+            time_partition,
+            custom_partition,
+            init_signal,
+            shutdown_signal,
+            tenant_id,
+        )?
+        .into_result()
+    }
+
+    fn convert_disk_files_to_parquet_outcome(
+        &self,
+        time_partition: Option<&String>,
+        custom_partition: Option<&String>,
+        init_signal: bool,
+        shutdown_signal: bool,
+        tenant_id: &Option<String>,
+    ) -> Result<ArrowFileConversionOutcome, StagingError> {
         let span = info_span!(
             "convert_disk_files_to_parquet",
             stream_name = %self.stream_name,
@@ -1032,14 +1055,15 @@ impl Stream {
         time_partition: Option<&String>,
         custom_partition: Option<&String>,
         tenant_id: &Option<String>,
-    ) -> Result<Option<Schema>, StagingError> {
+    ) -> Result<ArrowFileConversionOutcome, StagingError> {
         if staging_files.is_empty() {
             self.reset_staging_metrics(tenant_id);
-            return Ok(None);
+            return Ok(ArrowFileConversionOutcome::default());
         }
 
         self.update_staging_metrics(&staging_files, tenant_id);
         let mut schemas = Vec::new();
+        let mut first_error = None;
 
         // Groups are already ordered by event minute. Process one at a time so
         // recovery memory does not scale with backlog length or CPU count.
@@ -1059,15 +1083,39 @@ impl Stream {
                         self.stream_name,
                         parquet_path.display()
                     );
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
                 }
             }
         }
 
-        if schemas.is_empty() {
-            return Ok(None);
-        }
+        let schema = if schemas.is_empty() {
+            None
+        } else {
+            Some(Schema::try_merge(schemas)?)
+        };
+        Ok(ArrowFileConversionOutcome {
+            schema,
+            first_error,
+        })
+    }
 
-        Ok(Some(Schema::try_merge(schemas)?))
+    /// Stages schemas from successful groups before surfacing an unresolved
+    /// group failure to the caller.
+    fn finish_arrow_file_conversion(
+        &self,
+        outcome: ArrowFileConversionOutcome,
+    ) -> Result<(), StagingError> {
+        if let Some(schema) = outcome.schema
+            && !self.get_static_schema_flag()
+        {
+            self.stage_schema_file(schema)?;
+        }
+        if let Some(err) = outcome.first_error {
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Converts one Parquet output group and removes its Arrow sources only
@@ -2680,7 +2728,7 @@ mod tests {
         let successful_parquet = staging
             .data_path
             .join("date=2026-09-09.hour=13.minute=27.host.data.success.parquet");
-        let converted_schema = staging
+        let outcome = staging
             .convert_arrow_file_groups_to_parquet(
                 vec![
                     (failed_parquet, vec![first_arrow.clone()]),
@@ -2692,10 +2740,13 @@ mod tests {
             )
             .unwrap();
 
-        assert!(converted_schema.is_some());
+        assert!(outcome.schema.is_some());
+        assert!(outcome.first_error.is_some());
+        assert!(staging.finish_arrow_file_conversion(outcome).is_err());
         assert!(first_arrow.exists());
         assert!(!second_arrow.exists());
         assert!(successful_parquet.exists());
+        assert_eq!(staging.schema_files().len(), 1);
     }
 
     #[test]
