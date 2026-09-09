@@ -45,7 +45,7 @@ use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinSet;
 use tracing::{error, info, info_span, instrument, trace, warn};
@@ -81,9 +81,6 @@ use super::{
 static HOSTNAME: OnceCell<String> = OnceCell::new();
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
-const QUARANTINE_DIR: &str = "quarantine";
-const QUARANTINE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-const MAX_QUARANTINE_FILES_PER_STREAM: usize = 1024;
 const METRIC_NAME_BLOOM_FILTER_NDV: u64 = 32768;
 const METRIC_ROW_GROUP_PREP_IN_FLIGHT_VAR: &str = "METRIC_ROW_GROUP_PREP_IN_FLIGHT";
 /// Caps how many arrow files feed a single parquet conversion group. A
@@ -936,7 +933,6 @@ impl Stream {
             self.arrow_files_grouped_exclude_time(now, group_minute, init_signal, shutdown_signal);
         span.record("file_group_count", staging_files.len());
         if staging_files.is_empty() {
-            self.cleanup_quarantine_files();
             self.reset_staging_metrics(tenant_id);
             return Ok(None);
         }
@@ -946,7 +942,7 @@ impl Stream {
         let _schemas: Vec<Result<Option<Schema>, StagingError>> = staging_files.into_par_iter().map(
             |(parquet_path, arrow_files)| -> Result<Option<Schema>, StagingError> {
                 let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
-                self.quarantine_invalid_arrow_files(&record_reader.invalid_files, tenant_id);
+                self.remove_invalid_arrow_files(&record_reader.invalid_files, tenant_id);
                 let readable_arrow_files = record_reader.readable_files.clone();
                 if record_reader.readers.is_empty() {
                     Ok(None)
@@ -987,7 +983,7 @@ impl Stream {
                                         "Arrow decode failure could not be attributed to a source file; retaining group for retry"
                                     );
                                 } else {
-                                    self.quarantine_invalid_arrow_files(&invalid_files, tenant_id);
+                                    self.remove_invalid_arrow_files(&invalid_files, tenant_id);
                                 }
                                 return Ok(None);
                             }
@@ -1009,8 +1005,6 @@ impl Stream {
             },
         )
         .collect();
-
-        self.cleanup_quarantine_files();
 
         for res in _schemas {
             {
@@ -1262,122 +1256,16 @@ impl Stream {
         }
     }
 
-    /// Remove invalid Arrow files from the conversion queue without deleting
-    /// them. This prevents an unrecoverable crash artifact from being retried
-    /// on every startup while retaining it for inspection.
-    fn quarantine_invalid_arrow_files(&self, arrow_files: &[PathBuf], tenant_id: &Option<String>) {
-        if arrow_files.is_empty() {
-            return;
-        }
-
-        let quarantine_dir = self.data_path.join(QUARANTINE_DIR);
-        if let Err(err) = fs::create_dir_all(&quarantine_dir) {
-            error!(
-                "Failed to create Arrow quarantine directory {}: {err}",
-                quarantine_dir.display()
-            );
-            return;
-        }
-
-        let mut parent_dirs = HashSet::new();
+    /// Logs and deletes invalid Arrow files so they cannot poison later retries.
+    fn remove_invalid_arrow_files(&self, arrow_files: &[PathBuf], tenant_id: &Option<String>) {
         for file in arrow_files {
-            let Some(file_name) = file.file_name() else {
-                continue;
-            };
-            if let Some(parent) = file.parent() {
-                parent_dirs.insert(parent.to_owned());
-            }
-
-            // Always use a unique target. The same filename can be present in
-            // multiple processing directories after an interrupted move.
-            let target =
-                quarantine_dir.join(format!("{}.{}", Ulid::new(), file_name.to_string_lossy()));
-
-            match fs::rename(file, &target) {
-                Ok(()) => {
-                    error!(
-                        "Quarantined invalid Arrow file {} as {}",
-                        file.display(),
-                        target.display()
-                    );
-                    metrics::STAGING_QUARANTINED_FILES
-                        .with_label_values(&[
-                            &self.stream_name,
-                            tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
-                        ])
-                        .inc();
-                }
-                Err(err) => error!(
-                    "Failed to quarantine invalid Arrow file {}: {err}",
-                    file.display()
-                ),
-            }
+            warn!(
+                "Removing invalid/corrupted Arrow file {} for stream {}",
+                file.display(),
+                self.stream_name
+            );
         }
-
-        for parent in parent_dirs {
-            if parent
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(INPROCESS_DIR_PREFIX))
-                && fs::read_dir(&parent)
-                    .ok()
-                    .is_some_and(|mut entries| entries.next().is_none())
-                && let Err(err) = fs::remove_dir(&parent)
-            {
-                warn!(
-                    "Failed to remove empty inprocess directory {}: {err}",
-                    parent.display()
-                );
-            }
-        }
-    }
-
-    /// Bounds retained quarantine evidence by age and file count.
-    fn cleanup_quarantine_files(&self) {
-        let quarantine_dir = self.data_path.join(QUARANTINE_DIR);
-        let Ok(entries) = fs::read_dir(&quarantine_dir) else {
-            return;
-        };
-
-        let now = SystemTime::now();
-        let mut retained = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(metadata) = entry.metadata() else {
-                continue;
-            };
-            if !metadata.is_file() {
-                continue;
-            }
-
-            let modified = metadata.modified().unwrap_or(now);
-            if now
-                .duration_since(modified)
-                .is_ok_and(|age| age > QUARANTINE_RETENTION)
-            {
-                if let Err(err) = remove_file(&path) {
-                    warn!(
-                        "Failed to remove expired quarantine file {}: {err}",
-                        path.display()
-                    );
-                }
-            } else {
-                retained.push((modified, path));
-            }
-        }
-
-        retained.sort_unstable_by_key(|(modified, _)| *modified);
-        let remove_count = retained
-            .len()
-            .saturating_sub(MAX_QUARANTINE_FILES_PER_STREAM);
-        for (_, path) in retained.into_iter().take(remove_count) {
-            if let Err(err) = remove_file(&path) {
-                warn!(
-                    "Failed to enforce quarantine file limit for {}: {err}",
-                    path.display()
-                );
-            }
-        }
+        self.cleanup_arrow_files_and_dir(arrow_files, tenant_id);
     }
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
@@ -1614,8 +1502,8 @@ impl Stream {
     /// Recovers orphaned .part files from a previous interrupted run.
     /// These are incomplete arrow files that weren't finalized before the server crashed.
     /// Valid .part files are renamed to .arrows for processing; invalid ones
-    /// are quarantined for inspection.
-    fn recover_orphan_part_files(&self, tenant_id: &Option<String>) {
+    /// are logged and removed.
+    fn recover_orphan_part_files(&self) {
         let Ok(dir) = self.data_path.read_dir() else {
             return;
         };
@@ -1673,13 +1561,15 @@ impl Stream {
 
                                 if let Err(e) = validation {
                                     warn!(
-                                        "Quarantining invalid/corrupted .part file: {:?} for stream {}: {e}",
+                                        "Removing invalid/corrupted .part file: {:?} for stream {}: {e}",
                                         path, self.stream_name
                                     );
-                                    self.quarantine_invalid_arrow_files(
-                                        std::slice::from_ref(&path),
-                                        tenant_id,
-                                    );
+                                    if let Err(delete_err) = remove_file(&path) {
+                                        error!(
+                                            "Failed to remove invalid/corrupted .part file {:?}: {delete_err}",
+                                            path
+                                        );
+                                    }
                                 } else {
                                     // File has at least one fully readable batch.
                                     let mut arrow_path = path.clone();
@@ -1741,7 +1631,7 @@ impl Stream {
     ) -> Result<(), StagingError> {
         // On init, recover any orphaned .part files from previous interrupted runs
         if init_signal {
-            self.recover_orphan_part_files(tenant_id);
+            self.recover_orphan_part_files();
         }
 
         let start_flush = Instant::now();
@@ -2300,7 +2190,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_arrow_body_is_quarantined_without_blocking_other_groups() {
+    fn corrupt_arrow_body_is_removed_without_blocking_other_groups() {
         let temp_dir = TempDir::new().unwrap();
         let stream_name = "test_stream";
         let options = Arc::new(Options {
@@ -2346,12 +2236,6 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(staging.parquet_files().len(), 1);
         assert!(staging.inprocess_arrow_files().is_empty());
-        assert_eq!(
-            fs::read_dir(staging.data_path.join(QUARANTINE_DIR))
-                .unwrap()
-                .count(),
-            1
-        );
         assert!(fs::read_dir(&staging.data_path).unwrap().all(|entry| {
             entry
                 .unwrap()
@@ -2401,7 +2285,7 @@ mod tests {
         let part_path = arrow_path.with_extension(PART_FILE_EXTENSION);
         std::fs::rename(&arrow_path, &part_path).unwrap();
 
-        staging.recover_orphan_part_files(&None);
+        staging.recover_orphan_part_files();
         assert_eq!(staging.arrow_files().len(), 1);
 
         let schema = staging
@@ -2413,7 +2297,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_orphan_part_is_quarantined() {
+    fn corrupt_orphan_part_is_removed() {
         let temp_dir = TempDir::new().unwrap();
         let options = Arc::new(Options {
             local_staging_path: temp_dir.path().to_path_buf(),
@@ -2430,15 +2314,9 @@ mod tests {
         let part_path = staging.data_path.join("orphan.part");
         fs::write(&part_path, b"not an Arrow stream").unwrap();
 
-        staging.recover_orphan_part_files(&None);
+        staging.recover_orphan_part_files();
 
         assert!(!part_path.exists());
-        assert_eq!(
-            fs::read_dir(staging.data_path.join(QUARANTINE_DIR))
-                .unwrap()
-                .count(),
-            1
-        );
     }
 
     #[tokio::test]

@@ -180,19 +180,6 @@ pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
-/// Number of staging artifacts quarantined after validation failures.
-pub static STAGING_QUARANTINED_FILES: Lazy<IntCounterVec> = Lazy::new(|| {
-    IntCounterVec::new(
-        Opts::new(
-            "staging_quarantined_files",
-            "Staging files quarantined after validation or conversion failures",
-        )
-        .namespace(METRICS_NAMESPACE),
-        &["stream", "tenant_id"],
-    )
-    .expect("metric can be created")
-});
-
 pub static PROCESS_CPU_USAGE_PERCENT_AVG: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
@@ -783,9 +770,6 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(STAGING_FILES.clone()))
-        .expect("metric can be registered");
-    registry
-        .register(Box::new(STAGING_QUARANTINED_FILES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
