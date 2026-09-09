@@ -38,6 +38,7 @@ use crate::{
 };
 
 #[derive(Debug)]
+/// Merges reverse readers while retaining the source-file validation result.
 pub struct MergedReverseRecordReader {
     pub readers: Vec<StreamReader<BufReader<OffsetReader<File>>>>,
     pub readable_files: Vec<PathBuf>,
@@ -45,6 +46,7 @@ pub struct MergedReverseRecordReader {
 }
 
 impl MergedReverseRecordReader {
+    /// Opens valid Arrow files and separates files that fail structural validation.
     pub fn try_new(file_paths: &[PathBuf]) -> Self {
         let _span = info_span!("open_arrow_files", file_count = file_paths.len()).entered();
         let mut readers = Vec::with_capacity(file_paths.len());
@@ -78,6 +80,7 @@ impl MergedReverseRecordReader {
         }
     }
 
+    /// Merges all readers in reverse timestamp order and adapts each batch to `schema`.
     pub fn merged_iter(
         self,
         schema: Arc<Schema>,
@@ -104,6 +107,7 @@ impl MergedReverseRecordReader {
         .map(move |batch| batch.map(|batch| adapt_batch(&schema, &batch)))
     }
 
+    /// Returns the union of schemas exposed by all readable Arrow streams.
     pub fn merged_schema(&self) -> Schema {
         Schema::try_merge(
             self.readers
@@ -232,6 +236,7 @@ impl<R: Read + Seek> Read for OffsetReader<R> {
     }
 }
 
+/// Builds a reverse Arrow stream reader from complete IPC messages.
 pub fn get_reverse_reader<T: Read + Seek>(
     mut reader: T,
 ) -> Result<StreamReader<BufReader<OffsetReader<T>>>, io::Error> {
@@ -303,7 +308,7 @@ pub fn get_reverse_reader<T: Read + Seek>(
     })
 }
 
-// return limit for
+/// Returns the IPC message type and its padded byte length.
 fn find_limit_and_type(
     reader: &mut (impl Read + Seek),
 ) -> Result<Option<(MessageHeader, usize)>, io::Error> {

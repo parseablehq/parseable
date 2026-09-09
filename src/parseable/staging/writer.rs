@@ -89,6 +89,7 @@ impl Default for Writer {
 }
 
 impl Writer {
+    /// Appends a batch to the writer for its schema/minute file.
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn push_disk(
         &mut self,
@@ -111,6 +112,7 @@ impl Writer {
         }
     }
 
+    /// Detaches completed disk writers, or all writers when `forced` is true.
     pub fn take_flushable_disk(&mut self, forced: bool) -> HashMap<String, DiskWriter> {
         let mut flushable_disk = HashMap::new();
         let old_disk = std::mem::take(&mut self.disk);
@@ -165,6 +167,7 @@ impl DiskWriter {
         Ok(Self { inner, path, range })
     }
 
+    /// Returns whether this writer belongs to the current time range.
     pub fn is_current(&self) -> bool {
         self.range.contains(Utc::now())
     }
