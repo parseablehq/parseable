@@ -1259,11 +1259,19 @@ impl Stream {
     /// Logs and deletes invalid Arrow files so they cannot poison later retries.
     fn remove_invalid_arrow_files(&self, arrow_files: &[PathBuf], tenant_id: &Option<String>) {
         for file in arrow_files {
-            warn!(
-                "Removing invalid/corrupted Arrow file {} for stream {}",
-                file.display(),
-                self.stream_name
-            );
+            match file.metadata() {
+                Ok(meta) => warn!(
+                    "Removing invalid/corrupted Arrow file {} for stream {}, size_bytes={}",
+                    file.display(),
+                    self.stream_name,
+                    meta.len()
+                ),
+                Err(err) => warn!(
+                    "Removing invalid/corrupted Arrow file {} for stream {}, size unavailable: {err}",
+                    file.display(),
+                    self.stream_name
+                ),
+            }
         }
         self.cleanup_arrow_files_and_dir(arrow_files, tenant_id);
     }
@@ -1531,7 +1539,7 @@ impl Stream {
                         }
                         continue;
                     }
-                    Ok(_) => {
+                    Ok(meta) => {
                         // Validate complete record batches, not only the schema.
                         // A crash can leave a valid schema followed by a
                         // truncated record-batch body.
@@ -1561,8 +1569,10 @@ impl Stream {
 
                                 if let Err(e) = validation {
                                     warn!(
-                                        "Removing invalid/corrupted .part file: {:?} for stream {}: {e}",
-                                        path, self.stream_name
+                                        "Removing invalid/corrupted .part file: {:?} for stream {}, size_bytes={}: {e}",
+                                        path,
+                                        self.stream_name,
+                                        meta.len()
                                     );
                                     if let Err(delete_err) = remove_file(&path) {
                                         error!(
