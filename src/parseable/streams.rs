@@ -1562,7 +1562,7 @@ impl Stream {
                     Ok(meta) => {
                         if Self::is_parquet_part_file(&path) {
                             warn!(
-                                "Removing orphaned temporary Parquet file {:?} for stream {}, size_bytes={}; source Arrow files will be retried",
+                                "Removing orphaned temporary Parquet file {:?} for stream {}, size_bytes={}. Deleting it is safe because its source .arrows files remain in processing_* and will rebuild the Parquet on restart",
                                 path,
                                 self.stream_name,
                                 meta.len()
