@@ -42,6 +42,7 @@ use std::{
     collections::VecDeque,
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions, remove_file, write},
+    io::Read,
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
@@ -70,7 +71,8 @@ use crate::{
 };
 
 use super::{
-    ARROW_FILE_EXTENSION, LogStream, PART_FILE_EXTENSION,
+    ARROW_FILE_EXTENSION, ARROW_PART_FILE_SUFFIX, LogStream, PARQUET_PART_FILE_SUFFIX,
+    PART_FILE_EXTENSION,
     staging::{
         StagingError,
         reader::{MergedReverseRecordReader, get_reverse_reader},
@@ -953,7 +955,8 @@ impl Stream {
 
                     let schema = Arc::new(merged_schema.clone());
 
-                    let part_path = parquet_path.with_extension("part");
+                    let mut part_path = parquet_path.clone();
+                    part_path.add_extension(PART_FILE_EXTENSION);
 
                     let write_result = self.write_parquet_part_file(
                         &part_path,
@@ -1507,10 +1510,27 @@ impl Stream {
         None
     }
 
-    /// Recovers orphaned .part files from a previous interrupted run.
-    /// These are incomplete arrow files that weren't finalized before the server crashed.
-    /// Valid .part files are renamed to .arrows for processing; invalid ones
-    /// are logged and removed.
+    /// Returns whether a temporary file contains Parquet output.
+    ///
+    /// The magic-byte fallback recognizes legacy bare `.part` files created
+    /// before Arrow and Parquet temporary suffixes were separated.
+    fn is_parquet_part_file(path: &Path) -> bool {
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        if file_name.is_some_and(|name| name.ends_with(PARQUET_PART_FILE_SUFFIX)) {
+            return true;
+        }
+        if file_name.is_some_and(|name| name.ends_with(ARROW_PART_FILE_SUFFIX)) {
+            return false;
+        }
+
+        let mut magic = [0_u8; 4];
+        File::open(path)
+            .and_then(|mut file| file.read_exact(&mut magic))
+            .is_ok()
+            && magic == *b"PAR1"
+    }
+
+    /// Recovers orphaned Arrow parts and removes rebuildable Parquet parts.
     fn recover_orphan_part_files(&self) {
         let Ok(dir) = self.data_path.read_dir() else {
             return;
@@ -1540,6 +1560,22 @@ impl Stream {
                         continue;
                     }
                     Ok(meta) => {
+                        if Self::is_parquet_part_file(&path) {
+                            warn!(
+                                "Removing orphaned temporary Parquet file {:?} for stream {}, size_bytes={}; source Arrow files will be retried",
+                                path,
+                                self.stream_name,
+                                meta.len()
+                            );
+                            if let Err(delete_err) = remove_file(&path) {
+                                error!(
+                                    "Failed to remove orphaned temporary Parquet file {:?}: {delete_err}",
+                                    path
+                                );
+                            }
+                            continue;
+                        }
+
                         // Validate complete record batches, not only the schema.
                         // A crash can leave a valid schema followed by a
                         // truncated record-batch body.
@@ -1582,8 +1618,16 @@ impl Stream {
                                     }
                                 } else {
                                     // File has at least one fully readable batch.
-                                    let mut arrow_path = path.clone();
-                                    arrow_path.set_extension(ARROW_FILE_EXTENSION);
+                                    let mut arrow_path = if path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .is_some_and(|name| name.ends_with(ARROW_PART_FILE_SUFFIX))
+                                    {
+                                        path.with_extension("")
+                                    } else {
+                                        // Legacy Arrow files used a bare `.part` suffix.
+                                        path.with_extension(ARROW_FILE_EXTENSION)
+                                    };
 
                                     // If arrow file with same name exists, generate a unique name
                                     if arrow_path.exists() {
@@ -2292,7 +2336,8 @@ mod tests {
             .unwrap()
             .set_len(len - 8)
             .unwrap();
-        let part_path = arrow_path.with_extension(PART_FILE_EXTENSION);
+        let mut part_path = arrow_path.clone();
+        part_path.add_extension(PART_FILE_EXTENSION);
         std::fs::rename(&arrow_path, &part_path).unwrap();
 
         staging.recover_orphan_part_files();
@@ -2321,12 +2366,27 @@ mod tests {
             &None,
         );
         fs::create_dir_all(&staging.data_path).unwrap();
-        let part_path = staging.data_path.join("orphan.part");
+        let part_path = staging.data_path.join("orphan.arrows.part");
         fs::write(&part_path, b"not an Arrow stream").unwrap();
 
         staging.recover_orphan_part_files();
 
         assert!(!part_path.exists());
+    }
+
+    #[test]
+    fn arrow_and_parquet_part_files_are_distinguished() {
+        let temp_dir = TempDir::new().unwrap();
+        let arrow_part = temp_dir.path().join("schema.data.arrows.part");
+        let parquet_part = temp_dir.path().join("date=2026-09-09.data.parquet.part");
+        let legacy_parquet_part = temp_dir.path().join("date=2026-09-09.data.part");
+        fs::write(&arrow_part, b"PAR1").unwrap();
+        fs::write(&parquet_part, b"not finalized").unwrap();
+        fs::write(&legacy_parquet_part, b"PAR1").unwrap();
+
+        assert!(!Stream::is_parquet_part_file(&arrow_part));
+        assert!(Stream::is_parquet_part_file(&parquet_part));
+        assert!(Stream::is_parquet_part_file(&legacy_parquet_part));
     }
 
     #[tokio::test]

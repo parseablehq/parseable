@@ -146,10 +146,9 @@ impl DiskWriter {
         // a rudimentary way to ensure one parquet per arrow file
         if *ONE_PARQUET_PER_ARROW {
             path.set_extension(Ulid::new().to_string());
-            path.add_extension(PART_FILE_EXTENSION);
-        } else {
-            path.set_extension(PART_FILE_EXTENSION);
+            path.add_extension(ARROW_FILE_EXTENSION);
         }
+        path.add_extension(PART_FILE_EXTENSION);
 
         let file = OpenOptions::new()
             .write(true)
@@ -192,9 +191,8 @@ impl Drop for DiskWriter {
             return;
         }
 
-        let mut arrow_path = self.path.to_owned();
-
-        arrow_path.set_extension(ARROW_FILE_EXTENSION);
+        // `.arrows.part` becomes `.arrows` while preserving a per-file ULID.
+        let mut arrow_path = self.path.with_extension("");
         // If file exists, append a random string before .date to avoid overwriting
         if arrow_path.exists() {
             let file_name = arrow_path.file_name().unwrap().to_string_lossy();
@@ -344,6 +342,7 @@ mod tests {
         .unwrap();
         let range = TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
         let mut writer = DiskWriter::try_new(path, &schema, range).unwrap();
+        assert!(writer.path.to_string_lossy().ends_with(".arrows.part"));
 
         writer.write(&batch).unwrap();
 
