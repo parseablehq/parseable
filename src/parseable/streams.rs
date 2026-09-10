@@ -35,6 +35,7 @@ use parquet::{
     },
     schema::types::ColumnPath,
 };
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use relative_path::RelativePathBuf;
 use std::sync::PoisonError;
 use std::{
@@ -264,6 +265,12 @@ struct ArrowFileConversionOutcome {
     first_error: Option<StagingError>,
 }
 
+#[derive(Clone, Copy)]
+enum ArrowGroupExecution {
+    Sequential,
+    Parallel,
+}
+
 impl ArrowFileConversionOutcome {
     fn into_result(self) -> Result<Option<Schema>, StagingError> {
         if let Some(err) = self.first_error {
@@ -283,6 +290,7 @@ impl StartupSyncPlan {
             time_partition.as_ref(),
             custom_partition.as_ref(),
             &self.tenant_id,
+            ArrowGroupExecution::Sequential,
         )?;
         self.stream.finish_arrow_file_conversion(outcome)
     }
@@ -1046,6 +1054,7 @@ impl Stream {
             time_partition,
             custom_partition,
             tenant_id,
+            ArrowGroupExecution::Parallel,
         )
     }
 
@@ -1055,6 +1064,7 @@ impl Stream {
         time_partition: Option<&String>,
         custom_partition: Option<&String>,
         tenant_id: &Option<String>,
+        execution: ArrowGroupExecution,
     ) -> Result<ArrowFileConversionOutcome, StagingError> {
         if staging_files.is_empty() {
             self.reset_staging_metrics(tenant_id);
@@ -1065,16 +1075,27 @@ impl Stream {
         let mut schemas = Vec::new();
         let mut first_error = None;
 
-        // Groups are already ordered by event minute. Process one at a time so
-        // recovery memory does not scale with backlog length or CPU count.
-        for (parquet_path, arrow_files) in staging_files {
-            match self.convert_arrow_group(
+        let convert = |(parquet_path, arrow_files): (PathBuf, Vec<PathBuf>)| {
+            let result = self.convert_arrow_group(
                 parquet_path.clone(),
                 arrow_files,
                 time_partition,
                 custom_partition,
                 tenant_id,
-            ) {
+            );
+            (parquet_path, result)
+        };
+        let results: Vec<_> = match execution {
+            // Startup groups are ordered oldest-first and remain sequential so
+            // recovery memory stays bounded.
+            ArrowGroupExecution::Sequential => staging_files.into_iter().map(convert).collect(),
+            // Periodic sync restores normal Rayon conversion across all ready
+            // minute/partition groups in its processing directory.
+            ArrowGroupExecution::Parallel => staging_files.into_par_iter().map(convert).collect(),
+        };
+
+        for (parquet_path, result) in results {
+            match result {
                 Ok(Some(schema)) => schemas.push(schema),
                 Ok(None) => {}
                 Err(err) => {
@@ -1749,32 +1770,14 @@ impl Stream {
                             continue;
                         }
 
-                        // Validate complete record batches, not only the schema.
-                        // A crash can leave a valid schema followed by a
-                        // truncated record-batch body.
+                        // Validate Arrow IPC structure without decoding every
+                        // record batch. get_reverse_reader scans all message
+                        // boundaries, excludes a crash-truncated tail, and
+                        // requires a complete schema and record batch. Full
+                        // body decoding happens once during Parquet conversion.
                         match File::open(&path) {
                             Ok(file) => {
-                                let validation = get_reverse_reader(file).and_then(|mut reader| {
-                                    let mut rows = 0usize;
-                                    for batch in &mut reader {
-                                        let batch = batch.map_err(std::io::Error::other)?;
-                                        rows = rows.checked_add(batch.num_rows()).ok_or_else(
-                                            || {
-                                                std::io::Error::new(
-                                                    std::io::ErrorKind::InvalidData,
-                                                    "Arrow row count overflow",
-                                                )
-                                            },
-                                        )?;
-                                    }
-                                    if rows == 0 {
-                                        return Err(std::io::Error::new(
-                                            std::io::ErrorKind::InvalidData,
-                                            "Arrow stream has no recoverable rows",
-                                        ));
-                                    }
-                                    Ok(rows)
-                                });
+                                let validation = get_reverse_reader(file);
 
                                 if let Err(e) = validation {
                                     warn!(
@@ -1790,7 +1793,7 @@ impl Stream {
                                         );
                                     }
                                 } else {
-                                    // File has at least one fully readable batch.
+                                    // File has at least one structurally complete batch.
                                     let mut arrow_path = if path
                                         .file_name()
                                         .and_then(|name| name.to_str())
@@ -2737,6 +2740,7 @@ mod tests {
                 None,
                 None,
                 &None,
+                ArrowGroupExecution::Sequential,
             )
             .unwrap();
 
@@ -2822,6 +2826,57 @@ mod tests {
         staging.recover_orphan_part_files();
 
         assert!(!part_path.exists());
+    }
+
+    #[test]
+    fn corrupt_arrow_body_is_deferred_to_parquet_conversion() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Arc::new(Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            row_group_size: 1048576,
+            ..Default::default()
+        });
+        let staging = Stream::new(
+            options,
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let schema = Schema::new(vec![
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]);
+        write_compressible_log(&staging, &schema, 1);
+
+        let arrow_path = staging.arrow_files().pop().unwrap();
+        let mut bytes = fs::read(&arrow_path).unwrap();
+        let lz4_magic = [0x04, 0x22, 0x4d, 0x18];
+        let magic_offset = bytes
+            .windows(lz4_magic.len())
+            .position(|window| window == lz4_magic)
+            .expect("compressed Arrow body");
+        bytes[magic_offset] ^= 0xff;
+        fs::write(&arrow_path, bytes).unwrap();
+        let part_path = arrow_path.with_extension("arrows.part");
+        fs::rename(&arrow_path, &part_path).unwrap();
+
+        staging.recover_orphan_part_files();
+
+        assert!(!part_path.exists());
+        assert_eq!(staging.arrow_files().len(), 1);
+
+        let result = staging
+            .convert_disk_files_to_parquet(None, None, false, true, &None)
+            .unwrap();
+        assert!(result.is_none());
+        assert!(staging.inprocess_arrow_files().is_empty());
+        assert!(staging.parquet_files().is_empty());
     }
 
     #[test]
