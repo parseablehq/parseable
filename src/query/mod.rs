@@ -172,9 +172,7 @@ async fn enough_available_memory() -> Result<(), ExecuteError> {
     let mut s = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
     );
-    s.refresh_all();
-    let threshold = (PARSEABLE.options.query_mem_threshold / 100.0) as f64;
-
+    let threshold = (PARSEABLE.options.memory_utilization_threshold / 100.0) as f64;
     let f = async {
         loop {
             if let Some(cgroup) = s.cgroup_limits() {
@@ -203,7 +201,10 @@ pub async fn execute(query: Query, is_streaming: bool, tenant_id: &Option<String
     let id = tenant_id.clone();
 
     // before executing query, check whether enough memory is available or not
-    enough_available_memory().await?;
+    // use resource check env var as gate
+    if PARSEABLE.options.resource_check_enabled {
+        enough_available_memory().await?;
+    }
     QUERY_RUNTIME
         .spawn(async move {
             tokio::time::timeout(

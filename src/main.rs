@@ -20,8 +20,12 @@ use std::process::exit;
 #[cfg(feature = "kafka")]
 use parseable::connectors;
 use parseable::{
-    IngestServer, ParseableServer, QueryServer, Server, banner, metrics, option::Mode,
-    parseable::PARSEABLE, rbac, storage,
+    IngestServer, ParseableServer, QueryServer, Server,
+    analytics::{SYS_INFO, refresh_sys_info},
+    banner, metrics,
+    option::Mode,
+    parseable::PARSEABLE,
+    rbac, storage,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
@@ -30,6 +34,8 @@ use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
+
+use crate::metrics::record_process_metrics_sample;
 
 #[actix_web::main]
 #[cfg_attr(feature = "hotpath", hotpath::main)]
@@ -89,6 +95,27 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let prometheus = metrics::build_metrics_handler();
+    // init process metrics
+    refresh_sys_info();
+    let process_metrics = tokio::task::spawn_blocking(|| {
+        let sys = SYS_INFO.lock().unwrap();
+        let total_mem = if let Some(cgroup) = sys.cgroup_limits() {
+            cgroup.total_memory
+        } else {
+            sys.total_memory()
+        };
+        sysinfo::get_current_pid()
+            .ok()
+            .and_then(|pid| sys.process(pid))
+            .map(|process| (process.cpu_usage() as f64, process.memory(), total_mem))
+    })
+    .await
+    .unwrap();
+    // first measurement
+    if let Some((cpu_usage, memory_bytes, total_mem)) = process_metrics {
+        record_process_metrics_sample(cpu_usage, memory_bytes, total_mem);
+    }
+
     // Start servers
     #[cfg(feature = "kafka")]
     {
