@@ -201,7 +201,10 @@ pub async fn execute(query: Query, is_streaming: bool, tenant_id: &Option<String
     let id = tenant_id.clone();
 
     // before executing query, check whether enough memory is available or not
-    enough_available_memory().await?;
+    // use resource check env var as gate
+    if PARSEABLE.options.resource_check_enabled {
+        enough_available_memory().await?;
+    }
     QUERY_RUNTIME
         .spawn(async move {
             tokio::time::timeout(

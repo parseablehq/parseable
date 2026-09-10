@@ -73,16 +73,13 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                             resource_ok = false;
                         }
                     }
-                    let previous_state = SERVER_OK.load(std::sync::atomic::Ordering::SeqCst);
                     SERVER_OK.store(resource_ok, std::sync::atomic::Ordering::SeqCst);
 
                     // Log state changes
-                    if previous_state != resource_ok {
-                        if resource_ok {
-                            info!("Resource utilization back to normal - requests will be accepted");
-                        } else {
-                            warn!("Resource utilization too high - requests will be rejected");
-                        }
+                    if resource_ok {
+                        info!("Resource utilization back to normal - requests will be accepted");
+                    } else {
+                        warn!("Resource utilization too high - requests will be rejected");
                     }
                 },
                 _ = process_metrics_interval.tick() => {
