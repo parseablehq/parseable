@@ -40,6 +40,27 @@ const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 static SERVER_OK: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(true)));
 
+async fn sample_process_metrics() {
+    refresh_sys_info();
+    let process_metrics = tokio::task::spawn_blocking(|| {
+        let sys = SYS_INFO.lock().unwrap();
+        let total_mem = if let Some(cgroup) = sys.cgroup_limits() {
+            cgroup.total_memory
+        } else {
+            sys.total_memory()
+        };
+        sysinfo::get_current_pid()
+            .ok()
+            .and_then(|pid| sys.process(pid))
+            .map(|process| (process.cpu_usage() as f64, process.memory(), total_mem))
+    })
+    .await
+    .unwrap();
+    if let Some((cpu_usage, memory_bytes, total_mem)) = process_metrics {
+        record_process_metrics_sample(cpu_usage, memory_bytes, total_mem);
+    }
+}
+
 /// Spawn a background task to monitor system resources
 pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
     tokio::spawn(async move {
@@ -80,25 +101,29 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                         info!("Resource utilization back to normal - requests will be accepted");
                     } else {
                         warn!("Resource utilization too high - requests will be rejected");
+
+                        // sleep for rejection duration (+ the check interval)
+                        let rejection_delay = tokio::time::sleep(Duration::from_secs(
+                            PARSEABLE.options.rejection_duration,
+                        ));
+                        tokio::pin!(rejection_delay);
+
+                        loop {
+                            select! {
+                                _ = &mut rejection_delay => break,
+                                _ = process_metrics_interval.tick() => {
+                                    sample_process_metrics().await;
+                                },
+                                _ = &mut shutdown_rx => {
+                                    trace!("Resource monitor shutting down");
+                                    return;
+                                }
+                            }
+                        }
                     }
                 },
                 _ = process_metrics_interval.tick() => {
-                    refresh_sys_info();
-                    let process_metrics = tokio::task::spawn_blocking(|| {
-                        let sys = SYS_INFO.lock().unwrap();
-                        let total_mem = if let Some(cgroup) = sys.cgroup_limits() {
-                            cgroup.total_memory
-                        } else {
-                            sys.total_memory()
-                        };
-                        sysinfo::get_current_pid()
-                            .ok()
-                            .and_then(|pid| sys.process(pid))
-                            .map(|process| (process.cpu_usage() as f64, process.memory(), total_mem))
-                    }).await.unwrap();
-                    if let Some((cpu_usage, memory_bytes, total_mem)) = process_metrics {
-                        record_process_metrics_sample(cpu_usage, memory_bytes, total_mem);
-                    }
+                    sample_process_metrics().await;
                 },
                 _ = &mut shutdown_rx => {
                     trace!("Resource monitor shutting down");

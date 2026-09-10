@@ -510,6 +510,15 @@ pub struct Options {
 
     #[arg(
         long,
+        env = "P_REJECTION_DURATION",
+        default_value = "30",
+        value_parser = validation::validate_seconds,
+        help = "Post threshold breach, reject requests for"
+    )]
+    pub rejection_duration: u64,
+
+    #[arg(
+        long,
         env = "P_MEMORY_THRESHOLD",
         default_value = "100.0",
         value_parser = validation::validate_percentage,
