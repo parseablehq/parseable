@@ -80,6 +80,9 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                         info!("Resource utilization back to normal - requests will be accepted");
                     } else {
                         warn!("Resource utilization too high - requests will be rejected");
+
+                        // sleep for rejection duration (+ the check interval)
+                        tokio::time::sleep(Duration::from_secs(PARSEABLE.options.rejection_duration)).await;
                     }
                 },
                 _ = process_metrics_interval.tick() => {
