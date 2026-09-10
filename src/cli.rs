@@ -465,16 +465,6 @@ pub struct Options {
 
     #[arg(
         long,
-        long = "query-mem-threshold",
-        value_parser = validation::validate_percentage,
-        default_value = "100.0",
-        env = "P_QUERY_MEMORY_THRESHOLD",
-        help = "Set a threshold (percentage) for memory beyond which query will get queued for 10s to prevent OOM"
-    )]
-    pub query_mem_threshold: f32,
-
-    #[arg(
-        long,
         env = "P_PARQUET_METADATA_CACHE_SIZE",
         default_value_t = DEFAULT_PARQUET_METADATA_CACHE_SIZE,
         help = "Maximum size in bytes of the DataFusion Parquet metadata cache"
