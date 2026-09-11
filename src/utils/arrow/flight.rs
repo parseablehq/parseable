@@ -63,6 +63,10 @@ pub async fn run_do_get_rpc(
         .parse::<Uri>()
         .map_err(|_| Status::failed_precondition("Ingester metadata is courupted"))?;
     let channel = Channel::builder(url)
+        .initial_stream_window_size(16 * 1024 * 1024)
+        .initial_connection_window_size(32 * 1024 * 1024)
+        .http2_adaptive_window(true)
+        .tcp_nodelay(true)
         .connect()
         .await
         .map_err(|err| Status::failed_precondition(err.to_string()))?;
@@ -143,6 +147,31 @@ fn lit_timestamp_milli(time: i64) -> Expr {
     Expr::Literal(ScalarValue::TimestampMillisecond(Some(time), None), None)
 }
 
+/// Streaming variant of into_flight_data. Converts a DataFusion record batch
+/// stream directly into Flight data without materializing all batches in memory.
+pub fn into_flight_data_stream(
+    stream: datafusion::execution::SendableRecordBatchStream,
+) -> Result<Response<DoGetStream>, Box<Status>> {
+    let record_stream = stream.map_err(|e| {
+        arrow_flight::error::FlightError::Arrow(arrow_schema::ArrowError::ExternalError(Box::new(
+            e,
+        )))
+    });
+
+    let write_options = IpcWriteOptions::default()
+        .try_with_compression(Some(arrow_ipc::CompressionType(1)))
+        .map_err(|err| Status::failed_precondition(err.to_string()))?;
+
+    let flight_data_stream = FlightDataEncoderBuilder::new()
+        .with_max_flight_data_size(4 * 1024 * 1024)
+        .with_options(write_options)
+        .build(record_stream);
+
+    let flight_data_stream = flight_data_stream.map_err(|err| Status::unknown(err.to_string()));
+
+    Ok(Response::new(Box::pin(flight_data_stream) as DoGetStream))
+}
+
 pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStream>, Box<Status>> {
     let input_stream = futures::stream::iter(records.into_iter().map(Ok));
     let write_options = IpcWriteOptions::default()
@@ -150,7 +179,7 @@ pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStrea
         .map_err(|err| Status::failed_precondition(err.to_string()))?;
 
     let flight_data_stream = FlightDataEncoderBuilder::new()
-        .with_max_flight_data_size(usize::MAX)
+        .with_max_flight_data_size(4 * 1024 * 1024)
         .with_options(write_options)
         // .with_schema(schema.into())
         .build(input_stream);

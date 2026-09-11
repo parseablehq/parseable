@@ -35,7 +35,9 @@ use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::rbac::Users;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::arrow::record_batches_to_json;
-use crate::utils::time::truncate_to_minute;
+use crate::utils::time::{
+    TimeExpressionError, parse_start_time_expression, parse_time_expression, truncate_to_minute,
+};
 use crate::utils::{get_tenant_id_from_request, user_auth_for_datasets};
 
 const DEFAULT_LOG_CONTEXT_PAGE_SIZE: u64 = 500;
@@ -376,8 +378,26 @@ fn log_context_explicit_bounds(
     context_start_time: &str,
     context_end_time: &str,
 ) -> Result<(DateTime<Utc>, DateTime<Utc>), QueryError> {
-    let start = parse_log_context_time_field(context_start_time, "contextStartTime")?;
-    let end = parse_log_context_time_field(context_end_time, "contextEndTime")?;
+    log_context_explicit_bounds_at(context_start_time, context_end_time, Utc::now())
+}
+
+fn log_context_explicit_bounds_at(
+    context_start_time: &str,
+    context_end_time: &str,
+    now: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>), QueryError> {
+    let start = parse_log_context_time_bound(
+        context_start_time,
+        "contextStartTime",
+        now,
+        parse_start_time_expression,
+    )?;
+    let end = parse_log_context_time_bound(
+        context_end_time,
+        "contextEndTime",
+        now,
+        parse_time_expression,
+    )?;
 
     if start >= end {
         return Err(QueryError::CustomError(
@@ -386,6 +406,29 @@ fn log_context_explicit_bounds(
     }
 
     Ok((start, end))
+}
+
+fn parse_log_context_time_bound<F>(
+    raw: &str,
+    field_name: &str,
+    now: DateTime<Utc>,
+    parse_expression: F,
+) -> Result<DateTime<Utc>, QueryError>
+where
+    F: FnOnce(&str, DateTime<Utc>) -> Result<DateTime<Utc>, TimeExpressionError>,
+{
+    let timestamp = match parse_expression(raw, now) {
+        Ok(timestamp) => timestamp,
+        Err(expression_error) => {
+            return parse_log_context_time_field(raw, field_name).map_err(|_| {
+                QueryError::CustomError(format!("Invalid {field_name}: {expression_error}"))
+            });
+        }
+    };
+
+    DateTime::from_timestamp_millis(timestamp.timestamp_millis()).ok_or_else(|| {
+        QueryError::CustomError(format!("{field_name} is outside the supported range"))
+    })
 }
 
 fn validate_log_context_anchor_in_bounds(
@@ -1114,6 +1157,26 @@ mod tests {
         assert!(
             log_context_explicit_bounds("2026-06-17T10:17:00Z", "2026-06-17T10:16:00Z").is_err()
         );
+    }
+
+    #[test]
+    fn log_context_explicit_bounds_accept_mixed_relative_and_rfc3339_times() {
+        let now = parse_log_context_timestamp("2026-08-26T12:00:00Z").unwrap();
+
+        let (start, end) =
+            log_context_explicit_bounds_at("now-15m", "2026-08-26T13:00:00Z", now).unwrap();
+        assert_eq!(format_log_context_api_time(start), "2026-08-26T11:45:00Z");
+        assert_eq!(format_log_context_api_time(end), "2026-08-26T13:00:00Z");
+
+        let (start, end) =
+            log_context_explicit_bounds_at("15m", "2026-08-26T13:00:00Z", now).unwrap();
+        assert_eq!(format_log_context_api_time(start), "2026-08-26T11:45:00Z");
+        assert_eq!(format_log_context_api_time(end), "2026-08-26T13:00:00Z");
+
+        let (start, end) =
+            log_context_explicit_bounds_at("2026-08-26T10:00:00Z", "now-2m", now).unwrap();
+        assert_eq!(format_log_context_api_time(start), "2026-08-26T10:00:00Z");
+        assert_eq!(format_log_context_api_time(end), "2026-08-26T11:58:00Z");
     }
 
     #[test]

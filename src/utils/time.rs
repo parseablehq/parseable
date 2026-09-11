@@ -28,8 +28,20 @@ pub enum TimeParseError {
     OutOfRange(#[from] chrono::OutOfRangeError),
     #[error("Error parsing time: {0}")]
     Chrono(#[from] chrono::ParseError),
+    #[error("Invalid start time: {0}")]
+    InvalidStartTime(#[source] TimeExpressionError),
+    #[error("Invalid end time: {0}")]
+    InvalidEndTime(#[source] TimeExpressionError),
     #[error("Start time cannot be greater than the end time")]
     StartTimeAfterEndTime,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TimeExpressionError {
+    #[error("unsupported time expression `{0}`; expected RFC 3339, `now`, or `now+/-<duration>`")]
+    Invalid(String),
+    #[error("time expression `{0}` is outside the supported range")]
+    OutOfRange(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -174,10 +186,10 @@ impl TimeRange {
     /// Parses human-readable time strings into a `TimeRange` object.
     ///
     /// # Arguments
-    /// - `start_time`: A string representing the start of the time range. This can either be
-    ///   a human-readable duration (e.g., `"2 hours"`) or an RFC 3339 formatted timestamp.
-    /// - `end_time`: A string representing the end of the time range. This can either be
-    ///   the keyword `"now"` (to represent the current time) or an RFC 3339 formatted timestamp.
+    /// - `start_time`: A human-readable duration (e.g., `"15m"`, equivalent to `"now-15m"`),
+    ///   a relative expression, or an RFC 3339 formatted timestamp.
+    /// - `end_time`: `"now"`, a relative expression (e.g., `"now-2m"`), or an RFC 3339
+    ///   formatted timestamp.
     ///
     /// # Errors
     /// - `TimeParseError::StartTimeAfterEndTime`: Returned when the parsed start time is later than the end time.
@@ -186,19 +198,24 @@ impl TimeRange {
     /// # Example
     /// ```ignore
     /// let range = TimeRange::parse_human_time("2 hours", "now");
+    /// let range = TimeRange::parse_human_time("15m", "2023-01-01T15:00:00Z");
+    /// let range = TimeRange::parse_human_time("now-15m", "2023-01-01T15:00:00Z");
+    /// let range = TimeRange::parse_human_time("2023-01-01T12:00:00Z", "now-2m");
     /// let range = TimeRange::parse_human_time("2023-01-01T12:00:00Z", "2023-01-01T15:00:00Z");
     /// ```
     pub fn parse_human_time(start_time: &str, end_time: &str) -> Result<Self, TimeParseError> {
-        let mut start: DateTime<Utc>;
-        let mut end: DateTime<Utc>;
+        Self::parse_human_time_at(start_time, end_time, Utc::now())
+    }
 
-        if end_time == "now" {
-            end = Utc::now();
-            start = end - chrono::Duration::from_std(humantime::parse_duration(start_time)?)?;
-        } else {
-            start = DateTime::parse_from_rfc3339(start_time)?.into();
-            end = DateTime::parse_from_rfc3339(end_time)?.into();
-        };
+    fn parse_human_time_at(
+        start_time: &str,
+        end_time: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Self, TimeParseError> {
+        let mut start = parse_start_time_expression(start_time, now)
+            .map_err(TimeParseError::InvalidStartTime)?;
+        let mut end =
+            parse_time_expression(end_time, now).map_err(TimeParseError::InvalidEndTime)?;
 
         // Truncate seconds, milliseconds, and nanoseconds to zero
         // to ensure that the time range is aligned to the minute
@@ -403,6 +420,82 @@ impl TimeRange {
     }
 }
 
+/// Parses an RFC 3339 timestamp or a `now` expression against a fixed reference time.
+///
+/// Supported relative forms are `now`, `now-<duration>`, and `now+<duration>`.
+/// Both range bounds should use the same `now` value so they resolve consistently.
+pub fn parse_time_expression(
+    value: &str,
+    now: DateTime<Utc>,
+) -> Result<DateTime<Utc>, TimeExpressionError> {
+    let value = value.trim();
+    if value == "now" {
+        return Ok(now);
+    }
+
+    if let Some(math) = value.strip_prefix("now") {
+        return parse_now_math(value, math, now);
+    }
+
+    DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+        .map_err(|_| TimeExpressionError::Invalid(value.to_string()))
+}
+
+/// Parses a start-time expression. A bare duration is shorthand for that duration before `now`.
+pub fn parse_start_time_expression(
+    value: &str,
+    now: DateTime<Utc>,
+) -> Result<DateTime<Utc>, TimeExpressionError> {
+    match parse_time_expression(value, now) {
+        Ok(timestamp) => Ok(timestamp),
+        Err(TimeExpressionError::Invalid(_)) => {
+            let value = value.trim();
+            let duration = humantime::parse_duration(value)
+                .map_err(|_| TimeExpressionError::Invalid(value.to_string()))?;
+            apply_time_offset(value, now, duration, false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn parse_now_math(
+    expression: &str,
+    math: &str,
+    now: DateTime<Utc>,
+) -> Result<DateTime<Utc>, TimeExpressionError> {
+    let math = math.trim_start();
+    let (add, duration) = match math.as_bytes().first() {
+        Some(b'+') => (true, math[1..].trim()),
+        Some(b'-') => (false, math[1..].trim()),
+        _ => return Err(TimeExpressionError::Invalid(expression.to_string())),
+    };
+    if duration.is_empty() {
+        return Err(TimeExpressionError::Invalid(expression.to_string()));
+    }
+
+    let duration = humantime::parse_duration(duration)
+        .map_err(|_| TimeExpressionError::Invalid(expression.to_string()))?;
+    apply_time_offset(expression, now, duration, add)
+}
+
+fn apply_time_offset(
+    expression: &str,
+    base: DateTime<Utc>,
+    duration: std::time::Duration,
+    add: bool,
+) -> Result<DateTime<Utc>, TimeExpressionError> {
+    let duration = chrono::Duration::from_std(duration)
+        .map_err(|_| TimeExpressionError::OutOfRange(expression.to_string()))?;
+    let timestamp = if add {
+        base.checked_add_signed(duration)
+    } else {
+        base.checked_sub_signed(duration)
+    };
+
+    timestamp.ok_or_else(|| TimeExpressionError::OutOfRange(expression.to_string()))
+}
+
 pub fn truncate_to_minute(dt: DateTime<Utc>) -> DateTime<Utc> {
     // Get the date and time components we want to keep
     let year = dt.year();
@@ -518,6 +611,47 @@ mod tests {
     }
 
     #[test]
+    fn end_time_now_with_rfc3339_start_time() {
+        let start_time = truncate_to_minute(Utc::now() - Duration::hours(1));
+
+        let parsed = TimeRange::parse_human_time(&start_time.to_rfc3339(), "now").unwrap();
+
+        assert_eq!(parsed.start, start_time);
+        assert!(parsed.end <= Utc::now());
+        assert!(parsed.start <= parsed.end);
+    }
+
+    #[test]
+    fn mixed_relative_and_rfc3339_bounds() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 26, 12, 0, 0).unwrap();
+
+        let relative_start =
+            TimeRange::parse_human_time_at("now-15m", "2026-08-26T13:00:00Z", now).unwrap();
+        assert_eq!(relative_start.start, now - Duration::minutes(15));
+        assert_eq!(
+            relative_start.end,
+            Utc.with_ymd_and_hms(2026, 8, 26, 13, 0, 0).unwrap()
+        );
+
+        let duration_start =
+            TimeRange::parse_human_time_at("15m", "2026-08-26T13:00:00Z", now).unwrap();
+        assert_eq!(duration_start.start, relative_start.start);
+        assert_eq!(duration_start.end, relative_start.end);
+
+        let relative_end =
+            TimeRange::parse_human_time_at("2026-08-26T10:00:00Z", "now-2m", now).unwrap();
+        assert_eq!(
+            relative_end.start,
+            Utc.with_ymd_and_hms(2026, 8, 26, 10, 0, 0).unwrap()
+        );
+        assert_eq!(relative_end.end, now - Duration::minutes(2));
+
+        let future_end =
+            TimeRange::parse_human_time_at("2026-08-26T10:00:00Z", "now+2m", now).unwrap();
+        assert_eq!(future_end.end, now + Duration::minutes(2));
+    }
+
+    #[test]
     fn start_time_after_end_time() {
         let start_time = "2023-01-01T14:00:00Z";
         let end_time = "2023-01-01T13:00:00Z";
@@ -532,7 +666,7 @@ mod tests {
         let end_time = "2023-01-01T13:00:00Z";
 
         let result = TimeRange::parse_human_time(start_time, end_time);
-        assert!(matches!(result, Err(TimeParseError::Chrono(_))));
+        assert!(matches!(result, Err(TimeParseError::InvalidStartTime(_))));
     }
 
     #[test]
@@ -541,7 +675,7 @@ mod tests {
         let end_time = "not-a-valid-time";
 
         let result = TimeRange::parse_human_time(start_time, end_time);
-        assert!(matches!(result, Err(TimeParseError::Chrono(_))));
+        assert!(matches!(result, Err(TimeParseError::InvalidEndTime(_))));
     }
 
     #[test]
@@ -550,7 +684,23 @@ mod tests {
         let end_time = "now";
 
         let result = TimeRange::parse_human_time(start_time, end_time);
-        assert!(matches!(result, Err(TimeParseError::HumanTime(_))));
+        assert!(matches!(result, Err(TimeParseError::InvalidStartTime(_))));
+    }
+
+    #[test]
+    fn time_expression_arithmetic_is_checked() {
+        assert!(matches!(
+            parse_time_expression("now-1s", DateTime::<Utc>::MIN_UTC),
+            Err(TimeExpressionError::OutOfRange(_))
+        ));
+        assert!(matches!(
+            parse_time_expression("now+1s", DateTime::<Utc>::MAX_UTC),
+            Err(TimeExpressionError::OutOfRange(_))
+        ));
+        assert!(matches!(
+            parse_time_expression("15m", Utc::now()),
+            Err(TimeExpressionError::Invalid(_))
+        ));
     }
 
     #[test]

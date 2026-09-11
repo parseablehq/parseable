@@ -34,6 +34,7 @@ use crate::handlers::http::otel_generator::{
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
 use crate::handlers::http::query_context;
+use crate::handlers::http::resource_check;
 use crate::handlers::http::targets;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
@@ -46,11 +47,11 @@ use crate::migration;
 use crate::storage;
 use crate::storage::field_stats::get_dataset_stats;
 use crate::sync;
-use crate::sync::sync_start;
 
 use crate::handlers::http::alert_target_policy;
 use actix_web::Resource;
 use actix_web::Scope;
+use actix_web::middleware::from_fn;
 use actix_web::web;
 use actix_web::web::resource;
 use actix_web_prometheus::PrometheusMetrics;
@@ -86,7 +87,9 @@ impl ParseableServer for Server {
                 web::scope(&base_path())
                     .service(Self::get_query_factory())
                     .service(Self::get_query_context_factory())
-                    .service(Self::get_ingest_factory())
+                    .service(Self::get_ingest_factory().wrap(from_fn(
+                        resource_check::check_resource_utilization_middleware,
+                    )))
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
                     .service(Self::get_about_factory())
@@ -115,7 +118,9 @@ impl ParseableServer for Server {
                     .service(Self::get_traces_webscope())
                     .service(Self::get_dataset_stats_webscope()),
             )
-            .service(Self::get_ingest_otel_factory())
+            .service(Self::get_ingest_otel_factory().wrap(from_fn(
+                resource_check::check_resource_utilization_middleware,
+            )))
             .service(Self::get_generated());
     }
 
@@ -141,8 +146,9 @@ impl ParseableServer for Server {
 
         storage::retention::load_retention_from_global();
 
-        // local sync on init
-        thread::spawn(sync_start);
+        // Reserve the startup backlog before periodic sync can claim files.
+        let (startup_snapshot_tx, startup_snapshot_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || sync::sync_start_and_signal(startup_snapshot_tx));
 
         if let Some(htm) = PARSEABLE
             .options
@@ -164,9 +170,17 @@ impl ParseableServer for Server {
             htm.start_all_tasks().await;
         }
 
-        // Run sync on a background thread
+        // Conversion may continue in startup sync; periodic sync only waits
+        // for the short processing-file snapshot.
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        thread::spawn(|| sync::handler(cancel_rx));
+        thread::spawn(move || {
+            if startup_snapshot_rx.recv().is_err() {
+                tracing::warn!(
+                    "Startup sync exited before signaling snapshot completion; starting periodic sync"
+                );
+            }
+            sync::handler(cancel_rx)
+        });
 
         if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
@@ -529,7 +543,10 @@ impl Server {
                             .route(
                                 web::post()
                                     .to(ingest::post_event)
-                                    .authorize_for_resource(Action::Ingest),
+                                    .authorize_for_resource(Action::Ingest)
+                                    .wrap(from_fn(
+                                        resource_check::check_resource_utilization_middleware,
+                                    )),
                             )
                             // DELETE "/logstream/{logstream}" ==> Delete log stream
                             .route(

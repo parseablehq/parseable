@@ -25,6 +25,7 @@ use arrow_schema::SchemaRef;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::catalog::SchemaProvider;
 use datafusion::common::tree_node::Transformed;
 use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::{
@@ -45,7 +46,7 @@ use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use futures::Stream;
 use futures::StreamExt;
 use itertools::Itertools;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ops::Bound;
@@ -72,7 +73,7 @@ use crate::handlers::http::query::QueryError;
 use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
-use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
+use crate::storage::{ObjectStorage, ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::{DATE_BIN_EPOCH_ANCHOR, TimeRange, count_api_bin_interval};
 
 /// Boxed record-batch stream used as the streaming half of query results.
@@ -81,6 +82,14 @@ type BoxedBatchStream = SendableRecordBatchStream;
 /// Result type returned by query execution: either collected batches or a streaming adapter, plus field names.
 type QueryResult = Result<(Either<Vec<RecordBatch>, BoxedBatchStream>, Vec<String>), ExecuteError>;
 const DEFAULT_COUNTS_TOP_K: usize = 10;
+
+pub static SCHEMA_PROVIDER: OnceCell<Box<dyn ParseableSchemaProvider>> = OnceCell::new();
+
+/// Additional physical optimizer rules registered by enterprise/plugins.
+/// Must be populated BEFORE `QUERY_SESSION_STATE` is first accessed.
+pub static ADDITIONAL_PHYSICAL_OPTIMIZER_RULES: Lazy<
+    RwLock<Vec<Arc<dyn datafusion::physical_optimizer::PhysicalOptimizerRule + Send + Sync>>>,
+> = Lazy::new(|| RwLock::new(Vec::new()));
 
 pub static QUERY_SESSION_STATE: Lazy<SessionState> =
     Lazy::new(|| Query::create_session_state(PARSEABLE.storage()));
@@ -95,6 +104,26 @@ pub static QUERY_SESSION: Lazy<InMemorySessionContext> = Lazy::new(|| {
         session_context: Arc::new(RwLock::new(ctx)),
     }
 });
+
+/// Trait to enable implementation of SchemaProvider
+pub trait ParseableSchemaProvider: Send + Sync {
+    fn new_provider(
+        &self,
+        storage: Option<Arc<dyn ObjectStorage>>,
+        tenant_id: &Option<String>,
+    ) -> Box<dyn SchemaProvider>;
+}
+
+fn get_schema_provider(tenant_id: &Option<String>) -> Box<dyn SchemaProvider> {
+    if let Some(provider) = SCHEMA_PROVIDER.get() {
+        provider.new_provider(Some(PARSEABLE.storage().get_object_store()), tenant_id)
+    } else {
+        Box::new(GlobalSchemaProvider {
+            storage: PARSEABLE.storage().get_object_store(),
+            tenant_id: tenant_id.to_owned(),
+        })
+    }
+}
 
 pub struct InMemorySessionContext {
     session_context: Arc<RwLock<SessionContext>>,
@@ -117,18 +146,13 @@ impl InMemorySessionContext {
     }
 
     pub fn add_schema(&self, tenant_id: &str) {
+        let schema_provider = get_schema_provider(&Some(tenant_id.to_owned()));
         self.session_context
             .write()
             .expect("SessionContext should be writeable")
             .catalog("datafusion")
             .expect("Default catalog should be available")
-            .register_schema(
-                tenant_id,
-                Arc::new(GlobalSchemaProvider {
-                    storage: PARSEABLE.storage().get_object_store(),
-                    tenant_id: Some(tenant_id.to_owned()),
-                }),
-            )
+            .register_schema(tenant_id, schema_provider.into())
             .expect("Should be able to register new schema");
     }
 
@@ -148,9 +172,7 @@ async fn enough_available_memory() -> Result<(), ExecuteError> {
     let mut s = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
     );
-    s.refresh_all();
-    let threshold = (PARSEABLE.options.query_mem_threshold / 100.0) as f64;
-
+    let threshold = (PARSEABLE.options.memory_utilization_threshold / 100.0) as f64;
     let f = async {
         loop {
             if let Some(cgroup) = s.cgroup_limits() {
@@ -179,7 +201,10 @@ pub async fn execute(query: Query, is_streaming: bool, tenant_id: &Option<String
     let id = tenant_id.clone();
 
     // before executing query, check whether enough memory is available or not
-    enough_available_memory().await?;
+    // use resource check env var as gate
+    if PARSEABLE.options.resource_check_enabled {
+        enough_available_memory().await?;
+    }
     QUERY_RUNTIME
         .spawn(async move {
             tokio::time::timeout(
@@ -216,29 +241,23 @@ impl Query {
             // register multiple schemas
             if let Some(tenants) = PARSEABLE.list_tenants() {
                 for t in tenants.iter() {
-                    let schema_provider = Arc::new(GlobalSchemaProvider {
-                        storage: storage.get_object_store(),
-                        tenant_id: Some(t.clone()),
-                    });
-                    let _ = catalog.register_schema(t, schema_provider);
+                    let schema_provider = get_schema_provider(&Some(t.to_owned()));
+                    let _ = catalog.register_schema(t, schema_provider.into());
                 }
             }
         } else {
             // register just one schema
-            let schema_provider = Arc::new(GlobalSchemaProvider {
-                storage: storage.get_object_store(),
-                tenant_id: None,
-            });
+            let schema_provider = get_schema_provider(&None);
             let _ = catalog.register_schema(
                 &state.config_options().catalog.default_schema,
-                schema_provider,
+                schema_provider.into(),
             );
         }
 
         SessionContext::new_with_state(state)
     }
 
-    fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
+    pub fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
         let runtime_config = storage
             .get_datafusion_runtime()
             .with_disk_manager_builder(DiskManager::builder())
@@ -266,6 +285,7 @@ impl Query {
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
+            .with_collect_statistics(true)
             //batch size has been made configurable via environment variable
             //default value is 20000
             .with_batch_size(PARSEABLE.options.execution_batch_size)
@@ -278,6 +298,24 @@ impl Query {
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
         config.options_mut().execution.parquet.reorder_filters = true;
         config.options_mut().execution.parquet.binary_as_string = true;
+        // Allow unordered Parquet scans to split files into row-group morsels and let idle scan
+        // partitions steal work. Ordered scans set FileScanConfig::preserve_order, which prevents
+        // file reassignment while retaining their advertised output ordering.
+        config
+            .options_mut()
+            .execution
+            .enable_file_stream_work_stealing = true;
+        config.options_mut().optimizer.repartition_file_scans = true;
+
+        // Feed changing TopK / aggregate bounds into Parquet pruning. This is especially useful
+        // for observability queries such as `ORDER BY p_timestamp DESC LIMIT N`.
+        config
+            .options_mut()
+            .optimizer
+            .enable_dynamic_filter_pushdown = true;
+        config.options_mut().optimizer.enable_topk_aggregation = true;
+        config.options_mut().optimizer.enable_topk_repartition = true;
+        config.options_mut().optimizer.enable_sort_pushdown = true;
         // Bump footer-read hint from the 512 KiB default. Streams with
         // many label columns + page-indexed value columns can have
         // parquet footers in the 1-2 MiB range; sizing the hint above
@@ -305,11 +343,19 @@ impl Query {
 
         config.options_mut().explain.show_statistics = true;
 
-        SessionStateBuilder::new()
+        let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_runtime_env(runtime)
-            .build()
+            .with_runtime_env(runtime);
+
+        // Append any additional physical optimizer rules (e.g., enterprise partial agg pushdown)
+        if let Ok(rules) = ADDITIONAL_PHYSICAL_OPTIMIZER_RULES.read() {
+            for rule in rules.iter() {
+                builder = builder.with_physical_optimizer_rule(Arc::clone(rule));
+            }
+        }
+
+        builder.build()
     }
 
     /// this function returns the result of the query
@@ -324,8 +370,8 @@ impl Query {
         )
     )]
     pub async fn execute(&self, is_streaming: bool, tenant_id: &Option<String>) -> QueryResult {
-        let df = QUERY_SESSION
-            .get_ctx()
+        let ctx = QUERY_SESSION.get_ctx();
+        let df = ctx
             .execute_logical_plan(self.final_logical_plan(tenant_id))
             .await?;
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
@@ -341,14 +387,10 @@ impl Query {
             return Ok((Either::Left(vec![]), fields));
         }
 
-        let plan = QUERY_SESSION
-            .get_ctx()
-            .state()
-            .create_physical_plan(df.logical_plan())
-            .await?;
+        let plan = ctx.state().create_physical_plan(df.logical_plan()).await?;
 
         let results = if !is_streaming {
-            let task_ctx = QUERY_SESSION.get_ctx().task_ctx();
+            let task_ctx = ctx.task_ctx();
 
             let batches = collect_partitioned(plan.clone(), task_ctx.clone())
                 .await?
@@ -364,7 +406,7 @@ impl Query {
 
             Either::Left(batches)
         } else {
-            let task_ctx = QUERY_SESSION.get_ctx().task_ctx();
+            let task_ctx = ctx.task_ctx();
 
             let output_partitions = plan.output_partitioning().partition_count();
 
@@ -436,6 +478,7 @@ impl Query {
                 LogicalPlan::Explain(Explain {
                     explain_format: plan.explain_format,
                     verbose: plan.verbose,
+                    show_statistics: plan.show_statistics,
                     stringified_plans: vec![
                         transformed
                             .data
@@ -798,14 +841,6 @@ pub async fn get_manifest_list(
     time_range: &TimeRange,
     tenant_id: &Option<String>,
 ) -> Result<Vec<Manifest>, QueryError> {
-    // get object store
-    let object_store_format: ObjectStoreFormat = serde_json::from_slice(
-        &PARSEABLE
-            .metastore
-            .get_stream_json(stream_name, false, tenant_id, false)
-            .await?,
-    )?;
-
     // all the manifests will go here
     let mut merged_snapshot: Snapshot = Snapshot::default();
 
@@ -826,6 +861,14 @@ pub async fn get_manifest_list(
             }
         }
     } else {
+        // Only needed here: Query/Prism mode merges every ingestor's stream.json
+        // above instead and never reads the base file.
+        let object_store_format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false, tenant_id, false)
+                .await?,
+        )?;
         merged_snapshot = object_store_format.snapshot;
     }
 

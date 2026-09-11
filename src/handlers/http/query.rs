@@ -28,7 +28,7 @@ use actix_web::web::{self, Json};
 use actix_web::{Either, FromRequest, HttpRequest, HttpResponse, Responder};
 use arrow_array::{ArrayRef, RecordBatch, StringArray, UInt64Array};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use datafusion::sql::sqlparser::parser::ParserError;
@@ -55,7 +55,7 @@ use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
-use crate::utils::time::{TimeParseError, TimeRange};
+use crate::utils::time::{TimeParseError, TimeRange, parse_time_expression};
 use crate::utils::{get_tenant_id_from_request, user_auth_for_datasets};
 
 pub const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
@@ -560,10 +560,9 @@ pub async fn create_streams_for_distributed(
     tenant_id: &Option<String>,
 ) -> Result<(), QueryError> {
     // A stream that's already resident in memory but flagged `deleting`
-    // must reject the query outright. Checked unconditionally, ahead of
-    // the mode gate below, since this function backs every query-side
-    // call site (ad-hoc queries, alerts, saved query context, traces),
-    // not just the querier's own reload path.
+    // must reject the query outright. Checked unconditionally, since this
+    // function backs every query-side call site (ad-hoc queries, alerts,
+    // saved query context, traces), not just the querier's own reload path.
     for stream_name in &streams {
         if PARSEABLE.streams.contains(stream_name, tenant_id)
             && let Ok(stream) = PARSEABLE.get_stream(stream_name, tenant_id)
@@ -575,9 +574,6 @@ pub async fn create_streams_for_distributed(
         }
     }
 
-    if PARSEABLE.options.mode != Mode::Query && PARSEABLE.options.mode != Mode::Prism {
-        return Ok(());
-    }
     let mut join_set = JoinSet::new();
     for stream_name in streams {
         let id = tenant_id.to_owned();
@@ -674,13 +670,7 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
         return None;
     }
 
-    let end_time: DateTime<Utc> = if query.end_time == "now" {
-        Utc::now()
-    } else {
-        DateTime::parse_from_rfc3339(&query.end_time)
-            .ok()?
-            .with_timezone(&Utc)
-    };
+    let end_time = parse_time_expression(&query.end_time, Utc::now()).ok()?;
 
     let start_time = end_time - chrono::Duration::minutes(1);
     // when transforming the query, the ingestors are forced to return an array of values

@@ -434,8 +434,7 @@ function Setup-Collector {
         "    compression: none",
         "    headers:",
         "      X-API-Key: $apiKeyValue",
-        "      X-P-Stream: $streamNameValue",
-        "      X-P-Log-Source: otel-metrics"
+        "      X-P-Stream: $streamNameValue"
     )
 
     if (-not [string]::IsNullOrWhiteSpace($TenantId)) {

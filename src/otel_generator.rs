@@ -334,7 +334,6 @@ async fn send_batch(endpoint: &str, auth: &str, tenant_id: Option<&str>, batch: 
         send_signal(
             endpoint,
             "traces",
-            "otel-traces",
             "otel-demo-traces",
             auth,
             tenant_id,
@@ -343,7 +342,6 @@ async fn send_batch(endpoint: &str, auth: &str, tenant_id: Option<&str>, batch: 
         send_signal(
             endpoint,
             "metrics",
-            "otel-metrics",
             "otel-demo-metrics",
             auth,
             tenant_id,
@@ -352,7 +350,6 @@ async fn send_batch(endpoint: &str, auth: &str, tenant_id: Option<&str>, batch: 
         send_signal(
             endpoint,
             "logs",
-            "otel-logs",
             "otel-demo-logs",
             auth,
             tenant_id,
@@ -370,7 +367,6 @@ async fn send_batch(endpoint: &str, auth: &str, tenant_id: Option<&str>, batch: 
 async fn send_signal<T: Serialize + ?Sized>(
     endpoint: &str,
     signal: &str,
-    log_source: &str,
     stream: &str,
     auth: &str,
     tenant_id: Option<&str>,
@@ -381,7 +377,6 @@ async fn send_signal<T: Serialize + ?Sized>(
         .post(format!("{endpoint}/v1/{signal}"))
         .header(AUTHORIZATION, auth)
         .header(CONTENT_TYPE, "application/json")
-        .header("X-P-Log-Source", log_source)
         .header("X-P-Stream", stream)
         .body(body);
     if let Some(tenant_id) = tenant_id {
