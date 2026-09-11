@@ -278,6 +278,7 @@ pub struct NodeMetadata {
     pub token: String,
     pub node_id: String,
     pub flight_port: String,
+    pub query_grpc_port: Option<String>,
     pub node_type: NodeType,
 }
 
@@ -301,6 +302,7 @@ impl NodeMetadata {
         password: &str,
         node_id: String,
         flight_port: String,
+        query_grpc_port: Option<String>,
         node_type: NodeType,
     ) -> Self {
         let token = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
@@ -313,6 +315,7 @@ impl NodeMetadata {
             token: format!("Basic {token}"),
             node_id,
             flight_port,
+            query_grpc_port,
             node_type,
         }
     }
@@ -385,8 +388,12 @@ impl NodeMetadata {
         let mut metadata = vec![];
         if let Ok(obs) = obs {
             for object in obs {
-                //convert to NodeMetadata
-                match serde_json::from_slice::<NodeMetadata>(&object) {
+                // convert to NodeMetadata
+                match Self::from_bytes(
+                    &object,
+                    PARSEABLE.options.flight_port,
+                    PARSEABLE.options.query_grpc_port,
+                ) {
                     Ok(node_metadata) => metadata.push(node_metadata),
                     Err(e) => error!("Failed to deserialize NodeMetadata: {:?}", e),
                 }
@@ -425,7 +432,7 @@ impl NodeMetadata {
             }
 
             let bytes = std::fs::read(&path).expect("File should be present");
-            match Self::from_bytes(&bytes, options.flight_port) {
+            match Self::from_bytes(&bytes, options.flight_port, options.query_grpc_port) {
                 Ok(meta) => return Some(meta),
                 Err(e) => {
                     error!("Failed to extract {} metadata: {}", node_type_str, e);
@@ -481,6 +488,8 @@ impl NodeMetadata {
             meta.flight_port = flight_port;
         }
 
+        meta.query_grpc_port = Some(options.query_grpc_port.to_string());
+
         meta.node_type = node_type;
     }
 
@@ -502,6 +511,7 @@ impl NodeMetadata {
             &options.password,
             get_node_id(),
             options.flight_port.to_string(),
+            Some(options.query_grpc_port.to_string()),
             node_type,
         )
     }
@@ -527,7 +537,7 @@ impl NodeMetadata {
     }
 
     /// Updates json with `flight_port` field if not already present
-    fn from_bytes(bytes: &[u8], flight_port: u16) -> anyhow::Result<Self> {
+    fn from_bytes(bytes: &[u8], flight_port: u16, query_grpc_port: u16) -> anyhow::Result<Self> {
         let mut json: Map<String, Value> = serde_json::from_slice(bytes)?;
 
         // Check version
@@ -566,6 +576,9 @@ impl NodeMetadata {
         // Add flight_port if missing
         json.entry("flight_port")
             .or_insert_with(|| Value::String(flight_port.to_string()));
+
+        json.entry("query_grpc_port")
+            .or_insert_with(|| Value::String(query_grpc_port.to_string()));
 
         // Parse the JSON to our struct
         let metadata: Self = serde_json::from_value(Value::Object(json))?;
@@ -696,10 +709,11 @@ mod test {
             "admin",
             "ingestor_id".to_owned(),
             "8002".to_string(),
+            Some("8003".to_string()),
             NodeType::Ingestor,
         );
 
-        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id": "ingestor_id","flight_port": "8002","node_type":"ingestor"}"#).unwrap();
+        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id": "ingestor_id","flight_port": "8002","query_grpc_port": "8003","node_type":"ingestor"}"#).unwrap();
 
         assert_eq!(rhs, lhs);
     }
@@ -707,14 +721,14 @@ mod test {
     #[rstest]
     fn test_from_bytes_adds_flight_port() {
         let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id"}"#;
-        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        let meta = IngestorMetadata::from_bytes(json, 8002, 8003).unwrap();
         assert_eq!(meta.flight_port, "8002");
     }
 
     #[rstest]
     fn test_from_bytes_preserves_existing_flight_port() {
-        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"9000"}"#;
-        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"9000","query_grpc_port": "8003"}"#;
+        let meta = IngestorMetadata::from_bytes(json, 8002, 8003).unwrap();
         assert_eq!(meta.flight_port, "9000");
     }
 
@@ -728,11 +742,12 @@ mod test {
             "admin",
             "ingestor_id".to_owned(),
             "8002".to_string(),
+            Some("8003".to_string()),
             NodeType::Ingestor,
         );
 
         let lhs = Bytes::from(serde_json::to_vec(&im).unwrap());
-        let rhs = br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id":"ingestor_id","flight_port":"8002","node_type":"ingestor"}"#
+        let rhs = br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id":"ingestor_id","flight_port":"8002","query_grpc_port":"8003","node_type":"ingestor"}"#
                 .try_into_bytes()
                 .unwrap();
 

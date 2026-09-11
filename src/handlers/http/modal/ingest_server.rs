@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::thread;
 
 use actix_web::Scope;
+use actix_web::middleware::from_fn;
 use actix_web::web;
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
@@ -31,7 +32,7 @@ use tokio::sync::oneshot;
 
 use crate::handlers::http::middleware::IntraClusterRequest;
 use crate::handlers::http::modal::NodeType;
-use crate::sync::sync_start;
+use crate::handlers::http::resource_check;
 use crate::{
     Server, analytics,
     handlers::{
@@ -67,7 +68,9 @@ impl ParseableServer for IngestServer {
             .service(
                 // Base path "{url}/api/v1"
                 web::scope(&base_path())
-                    .service(Server::get_ingest_factory())
+                    .service(Server::get_ingest_factory().wrap(from_fn(
+                        resource_check::check_resource_utilization_middleware,
+                    )))
                     .service(Self::logstream_api())
                     .service(Server::get_about_factory())
                     .service(Self::analytics_factory())
@@ -78,7 +81,9 @@ impl ParseableServer for IngestServer {
                     .service(Server::get_readiness_factory())
                     .service(Server::get_otel_generator_ingest_webscope()),
             )
-            .service(Server::get_ingest_otel_factory());
+            .service(Server::get_ingest_otel_factory().wrap(from_fn(
+                resource_check::check_resource_utilization_middleware,
+            )));
     }
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
@@ -114,12 +119,20 @@ impl ParseableServer for IngestServer {
 
         migration::run_migration(&PARSEABLE).await?;
 
-        // local sync on init
-        thread::spawn(sync_start);
+        // Reserve the startup backlog before periodic sync can claim files.
+        let (startup_snapshot_tx, startup_snapshot_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || sync::sync_start_and_signal(startup_snapshot_tx));
 
         // Run sync on a background thread
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        thread::spawn(|| sync::handler(cancel_rx));
+        thread::spawn(move || {
+            if startup_snapshot_rx.recv().is_err() {
+                tracing::warn!(
+                    "Startup sync exited before signaling snapshot completion; starting periodic sync"
+                );
+            }
+            sync::handler(cancel_rx)
+        });
 
         tokio::spawn(airplane::server());
 
@@ -231,7 +244,10 @@ impl IngestServer {
                         .route(
                             web::post()
                                 .to(ingest::post_event)
-                                .authorize_for_resource(Action::Ingest),
+                                .authorize_for_resource(Action::Ingest)
+                                .wrap(from_fn(
+                                    resource_check::check_resource_utilization_middleware,
+                                )),
                         ),
                 )
                 .service(

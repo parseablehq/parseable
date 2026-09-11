@@ -89,8 +89,14 @@ mod streams;
 /// File extension for arrow files in staging
 const ARROW_FILE_EXTENSION: &str = "arrows";
 
-/// File extension for incomplete arrow files
+/// Final extension segment for temporary staging files.
 const PART_FILE_EXTENSION: &str = "part";
+
+/// Filename suffix for incomplete Arrow IPC files.
+const ARROW_PART_FILE_SUFFIX: &str = ".arrows.part";
+
+/// Filename suffix for incomplete Parquet files.
+const PARQUET_PART_FILE_SUFFIX: &str = ".parquet.part";
 
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
