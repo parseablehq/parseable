@@ -63,11 +63,6 @@ fn status_info(config: &Parseable, scheme: &str, id: Uid) {
         credentials = "\"Using default creds admin, admin. Please set credentials with P_USERNAME and P_PASSWORD.\"".red().to_string();
     }
 
-    let llm_status = match &config.options.open_ai_key {
-        Some(_) => "OpenAI Configured".green(),
-        None => "Not Configured".grey(),
-    };
-
     eprintln!(
         "
     Welcome to Parseable Server! Deployment UID: \"{}\"",
@@ -79,13 +74,11 @@ fn status_info(config: &Parseable, scheme: &str, id: Uid) {
     {}
         Address:            {}
         Credentials:        {}
-        Server Mode:        \"{}\"
-        LLM Status:         \"{}\"",
+        Server Mode:        \"{}\"",
         "Server:".to_string().bold(),
         address,
         credentials,
         config.get_server_mode_string(),
-        llm_status
     );
 }
 

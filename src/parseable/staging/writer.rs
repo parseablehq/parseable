@@ -32,8 +32,7 @@ use arrow_ipc::{
 };
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
-use chrono::{TimeDelta, Utc};
-use datafusion::physical_plan::buffer::SizedMessage;
+use chrono::Utc;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use rand::distributions::{Alphanumeric, DistString};
@@ -46,28 +45,6 @@ use crate::{
 };
 
 use super::StagingError;
-
-const DISK_WRITE_BATCH_MAX_AGE_SECS_VAR: &str = "DISK_WRITE_BATCH_MAX_AGE_SECS";
-static DISK_WRITE_BATCH_MAX_AGE_SECS: Lazy<i64> = Lazy::new(|| {
-    if let Ok(var) = std::env::var(DISK_WRITE_BATCH_MAX_AGE_SECS_VAR)
-        && let Ok(var) = var.parse::<i64>()
-    {
-        var
-    } else {
-        1
-    }
-});
-
-const ARROW_FLUSH_SIZE_LIMIT_VAR: &str = "ARROW_FLUSH_SIZE_LIMIT";
-static ARROW_FLUSH_SIZE_LIMIT: Lazy<usize> = Lazy::new(|| {
-    if let Ok(var) = std::env::var(ARROW_FLUSH_SIZE_LIMIT_VAR)
-        && let Ok(var) = var.parse::<usize>()
-    {
-        var
-    } else {
-        1024 * 1024 * 1024 * 10
-    }
-});
 
 const ENABLE_MEMORY_STAGING_VAR: &str = "ENABLE_MEMORY_STAGING";
 pub static ENABLE_MEMORY_STAGING: Lazy<bool> = Lazy::new(|| {
@@ -95,7 +72,6 @@ static ONE_PARQUET_PER_ARROW: Lazy<bool> = Lazy::new(|| {
 pub struct Writer {
     pub mem: Option<MemWriter<4096>>,
     pub disk: HashMap<String, DiskWriter>,
-    disk_pending: HashMap<String, PendingDiskBatch>,
 }
 
 impl Default for Writer {
@@ -108,12 +84,12 @@ impl Default for Writer {
         Self {
             mem,
             disk: HashMap::default(),
-            disk_pending: HashMap::default(),
         }
     }
 }
 
 impl Writer {
+    /// Appends a batch to the writer for its schema/minute file.
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn push_disk(
         &mut self,
@@ -121,45 +97,23 @@ impl Writer {
         rb: &RecordBatch,
         file_path: PathBuf,
         range: TimeRange,
-        batch_rows: usize,
     ) -> Result<(), StagingError> {
-        let now = Utc::now();
-        let pending = self.disk_pending.entry(filename.clone()).or_default();
-        pending.rows += rb.num_rows();
-        pending.range.get_or_insert(range);
-        pending.first_seen.get_or_insert(now);
-        pending.batches.push(rb.clone());
-
-        let should_flush = pending.rows >= batch_rows.max(1)
-            || pending.is_older_than(now, TimeDelta::seconds(*DISK_WRITE_BATCH_MAX_AGE_SECS));
-        if should_flush {
-            self.flush_pending_disk(&filename, file_path)?;
+        match self.disk.get_mut(&filename) {
+            Some(writer) => writer.write(rb),
+            None => {
+                if let Some(parent) = file_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let mut writer = DiskWriter::try_new(file_path, rb.schema().as_ref(), range)?;
+                writer.write(rb)?;
+                self.disk.insert(filename, writer);
+                Ok(())
+            }
         }
-
-        Ok(())
     }
 
-    pub fn flush_pending_disk(
-        &mut self,
-        filename: &str,
-        file_path: PathBuf,
-    ) -> Result<(), StagingError> {
-        let Some(pending) = self.disk_pending.remove(filename) else {
-            return Ok(());
-        };
-        if pending.batches.is_empty() {
-            return Ok(());
-        }
-
-        write_pending_disk_batch(&mut self.disk, filename.to_owned(), pending, file_path)?;
-
-        Ok(())
-    }
-
-    pub fn take_flushable_disk(
-        &mut self,
-        forced: bool,
-    ) -> (HashMap<String, DiskWriter>, PendingDiskWrites) {
+    /// Detaches completed disk writers, or all writers when `forced` is true.
+    pub fn take_flushable_disk(&mut self, forced: bool) -> HashMap<String, DiskWriter> {
         let mut flushable_disk = HashMap::new();
         let old_disk = std::mem::take(&mut self.disk);
         for (filename, writer) in old_disk {
@@ -170,89 +124,7 @@ impl Writer {
             }
         }
 
-        let mut flushable_pending = HashMap::new();
-        let old_pending = std::mem::take(&mut self.disk_pending);
-        let now = Utc::now();
-        for (filename, pending) in old_pending {
-            if !forced
-                && pending.is_current()
-                && !pending.is_older_than(now, TimeDelta::seconds(*DISK_WRITE_BATCH_MAX_AGE_SECS))
-            {
-                self.disk_pending.insert(filename, pending);
-            } else {
-                flushable_pending.insert(filename, pending);
-            }
-        }
-
-        (flushable_disk, PendingDiskWrites(flushable_pending))
-    }
-}
-
-pub struct PendingDiskWrites(HashMap<String, PendingDiskBatch>);
-
-impl PendingDiskWrites {
-    pub fn flush_into(
-        self,
-        disk: &mut HashMap<String, DiskWriter>,
-        data_path: &std::path::Path,
-    ) -> Result<(), StagingError> {
-        for (filename, pending) in self.0 {
-            write_pending_disk_batch(disk, filename.clone(), pending, data_path.join(filename))?;
-        }
-        Ok(())
-    }
-}
-
-fn write_pending_disk_batch(
-    disk: &mut HashMap<String, DiskWriter>,
-    filename: String,
-    pending: PendingDiskBatch,
-    file_path: PathBuf,
-) -> Result<(), StagingError> {
-    if pending.batches.is_empty() {
-        return Ok(());
-    }
-
-    let schema = pending.batches[0].schema();
-    let batch = concat_batches(&schema, pending.batches.iter())?;
-    let s = match disk.get_mut(&filename) {
-        Some(writer) => writer.write(&batch)?,
-        None => {
-            let range = pending.range.expect("pending disk batch must have range");
-            if let Some(parent) = file_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let mut writer = DiskWriter::try_new(file_path, &schema, range)?;
-            let s = writer.write(&batch)?;
-            disk.insert(filename.clone(), writer);
-            s
-        }
-    };
-    if s >= *ARROW_FLUSH_SIZE_LIMIT {
-        disk.remove(&filename);
-    }
-
-    Ok(())
-}
-
-#[derive(Default)]
-struct PendingDiskBatch {
-    rows: usize,
-    batches: Vec<RecordBatch>,
-    range: Option<TimeRange>,
-    first_seen: Option<chrono::DateTime<Utc>>,
-}
-
-impl PendingDiskBatch {
-    fn is_current(&self) -> bool {
-        self.range
-            .as_ref()
-            .is_some_and(|range| range.contains(Utc::now()))
-    }
-
-    fn is_older_than(&self, now: chrono::DateTime<Utc>, age: TimeDelta) -> bool {
-        self.first_seen
-            .is_some_and(|first_seen| now.signed_duration_since(first_seen) >= age)
+        flushable_disk
     }
 }
 
@@ -260,7 +132,6 @@ pub struct DiskWriter {
     inner: StreamWriter<BufWriter<File>>,
     path: PathBuf,
     range: TimeRange,
-    size: usize,
 }
 
 impl DiskWriter {
@@ -275,10 +146,9 @@ impl DiskWriter {
         // a rudimentary way to ensure one parquet per arrow file
         if *ONE_PARQUET_PER_ARROW {
             path.set_extension(Ulid::new().to_string());
-            path.add_extension(PART_FILE_EXTENSION);
-        } else {
-            path.set_extension(PART_FILE_EXTENSION);
+            path.add_extension(ARROW_FILE_EXTENSION);
         }
+        path.add_extension(PART_FILE_EXTENSION);
 
         let file = OpenOptions::new()
             .write(true)
@@ -293,26 +163,23 @@ impl DiskWriter {
                 .unwrap(),
         )?;
 
-        let size = 0;
-
-        Ok(Self {
-            inner,
-            path,
-            range,
-            size,
-        })
+        Ok(Self { inner, path, range })
     }
 
+    /// Returns whether this writer belongs to the current time range.
     pub fn is_current(&self) -> bool {
         self.range.contains(Utc::now())
     }
 
     /// Write a single recordbatch into file
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    pub fn write(&mut self, rb: &RecordBatch) -> Result<usize, StagingError> {
-        self.size += rb.size();
+    pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
         self.inner.write(rb).map_err(StagingError::Arrow)?;
-        Ok(self.size)
+        // A process crash does not run Drop, so do not leave the tail of an
+        // acknowledged record batch only in BufWriter's userspace buffer.
+        // The EOS marker can be recovered, but missing batch bytes cannot.
+        self.inner.flush().map_err(StagingError::Arrow)?;
+        Ok(())
     }
 }
 
@@ -324,9 +191,8 @@ impl Drop for DiskWriter {
             return;
         }
 
-        let mut arrow_path = self.path.to_owned();
-
-        arrow_path.set_extension(ARROW_FILE_EXTENSION);
+        // `.arrows.part` becomes `.arrows` while preserving a per-file ULID.
+        let mut arrow_path = self.path.with_extension("");
         // If file exists, append a random string before .date to avoid overwriting
         if arrow_path.exists() {
             let file_name = arrow_path.file_name().unwrap().to_string_lossy();
@@ -341,11 +207,7 @@ impl Drop for DiskWriter {
         if let Err(err) = std::fs::rename(&self.path, &arrow_path) {
             error!("Couldn't rename file {:?}, error = {err}", self.path);
         }
-        tracing::info!(
-            "flushing {:?} due to drop with size {}\n",
-            self.path,
-            self.size
-        );
+        tracing::info!("flushing {:?} due to drop", self.path);
     }
 }
 
@@ -449,5 +311,76 @@ impl<const N: usize> MutableBuffer<N> {
             self.inner.push(rb.clone());
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs::File, sync::Arc};
+
+    use arrow_array::{Int32Array, RecordBatch};
+    use arrow_ipc::reader::StreamReader;
+    use arrow_schema::{DataType, Field, Schema};
+    use chrono::Utc;
+    use temp_dir::TempDir;
+
+    use crate::{OBJECT_STORE_DATA_GRANULARITY, utils::time::TimeRange};
+
+    use super::{DiskWriter, Writer};
+
+    #[test]
+    fn disk_writer_flushes_each_complete_batch_before_drop() {
+        let dir = TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .join("schema.date=2026-09-08.hour=11.minute=27.test.data.arrows");
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let range = TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
+        let mut writer = DiskWriter::try_new(path, &schema, range).unwrap();
+        assert!(writer.path.to_string_lossy().ends_with(".arrows.part"));
+
+        writer.write(&batch).unwrap();
+
+        // Simulate what another process sees before Drop writes the EOS marker.
+        let file = File::open(&writer.path).unwrap();
+        let mut reader = StreamReader::try_new(file, None).unwrap();
+        let persisted = reader.next().unwrap().unwrap();
+        assert_eq!(persisted.num_rows(), 3);
+    }
+
+    #[test]
+    fn writer_appends_batches_directly_to_one_schema_minute_file() {
+        let dir = TempDir::new().unwrap();
+        let filename = "schema.date=2026-09-08.hour=11.minute=27.test.data.arrows";
+        let path = dir.path().join(filename);
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+        let range = TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
+        let mut writer = Writer::default();
+
+        writer
+            .push_disk(filename.to_owned(), &batch, path.clone(), range.clone())
+            .unwrap();
+        writer
+            .push_disk(filename.to_owned(), &batch, path, range)
+            .unwrap();
+        assert_eq!(writer.disk.len(), 1);
+
+        drop(writer.take_flushable_disk(true));
+        let arrow_path = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "arrows"))
+            .unwrap();
+        let reader = StreamReader::try_new(File::open(arrow_path).unwrap(), None).unwrap();
+        let rows: usize = reader.map(|batch| batch.unwrap().num_rows()).sum();
+        assert_eq!(rows, 6);
     }
 }

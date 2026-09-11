@@ -409,7 +409,6 @@ exporters:
     headers:
       X-API-Key: '$api_key_yaml'
       X-P-Stream: '$stream_name_yaml'
-      X-P-Log-Source: otel-metrics
 ${tenant_header}
 
 service:

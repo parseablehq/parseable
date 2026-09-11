@@ -201,19 +201,21 @@ pub static PROCESS_MEMORY_BYTES_AVG: Lazy<Gauge> = Lazy::new(|| {
     )
     .expect("metric can be created")
 });
-pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64)> = OnceLock::new();
-struct ProcessMetricsAccumulator {
+pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64, u64)> = OnceLock::new();
+pub struct ProcessMetricsAccumulator {
     cpu_usage_avg: AtomicF64,
     memory_bytes_avg: AtomicF64,
+    total_memory: AtomicF64,
 }
 
 impl Default for ProcessMetricsAccumulator {
     fn default() -> Self {
         // PROCESS_METRICS_INIT must be initialized by now
-        let (cpu, mem) = *PROCESS_METRICS_INIT.get().unwrap();
+        let (cpu, mem, total_mem) = *PROCESS_METRICS_INIT.get().unwrap();
         Self {
             cpu_usage_avg: AtomicF64::new(cpu),
             memory_bytes_avg: AtomicF64::new(mem as f64),
+            total_memory: AtomicF64::new(total_mem as f64),
         }
     }
 }
@@ -238,15 +240,27 @@ impl ProcessMetricsAccumulator {
 
         (s_cpu_new, s_mem_new)
     }
+
+    pub fn get_cpu(&self) -> f64 {
+        self.cpu_usage_avg.get()
+    }
+
+    pub fn get_mem(&self) -> f64 {
+        self.memory_bytes_avg.get()
+    }
+
+    pub fn get_total_mem(&self) -> f64 {
+        self.total_memory.get()
+    }
 }
 
-static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
+pub static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
     Lazy::new(ProcessMetricsAccumulator::default);
 
-pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64) {
+pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64, total_mem: u64) {
     if PROCESS_METRICS_INIT.get().is_none() {
         // first measurement
-        let _ = PROCESS_METRICS_INIT.set((cpu_usage_percent, memory_bytes));
+        let _ = PROCESS_METRICS_INIT.set((cpu_usage_percent, memory_bytes, total_mem));
     }
     let (average_cpu_usage, average_memory_bytes) =
         PROCESS_METRICS_ACCUMULATOR.record(cpu_usage_percent, memory_bytes);
@@ -263,7 +277,7 @@ mod process_metrics_tests {
     #[test]
     fn averages_process_metric_samples() {
         // init PROCESS_METRICS_INIT
-        PROCESS_METRICS_INIT.get_or_init(|| (10.0, 100));
+        PROCESS_METRICS_INIT.get_or_init(|| (10.0, 100, 100));
         let accumulator = ProcessMetricsAccumulator::default();
 
         assert_eq!(accumulator.record(10.0, 100), (10.0, 100.0));
@@ -349,6 +363,18 @@ pub static TOTAL_QUERY_CALLS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
         Opts::new("total_query_calls_by_date", "Total query calls by date")
             .namespace(METRICS_NAMESPACE),
         &["date", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_FILES_SCANNED_IN_HOTTIER_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_files_scanned_in_hottier_by_date",
+            "Total files scanned in hottier by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -794,6 +820,9 @@ fn custom_metrics(registry: &Registry) {
         .register(Box::new(TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE.clone()))
         .expect("metric can be registered");
     registry
+        .register(Box::new(TOTAL_FILES_SCANNED_IN_HOTTIER_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
         .register(Box::new(TOTAL_BYTES_SCANNED_IN_QUERY_BY_DATE.clone()))
         .expect("metric can be registered");
     registry
@@ -996,6 +1025,17 @@ pub fn increment_query_calls_by_date(date: &str, tenant_id: &str) {
 pub fn increment_files_scanned_in_query_by_date(count: u64, date: &str, tenant_id: &str) {
     TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE
         .with_label_values(&[date, tenant_id])
+        .inc_by(count);
+}
+
+pub fn increment_files_scanned_in_hottier_by_date(
+    count: u64,
+    date: &str,
+    tenant_id: &str,
+    stream_name: &str,
+) {
+    TOTAL_FILES_SCANNED_IN_HOTTIER_BY_DATE
+        .with_label_values(&[stream_name, date, tenant_id])
         .inc_by(count);
 }
 

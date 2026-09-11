@@ -547,7 +547,7 @@ impl HotTierManager {
         }
     }
 
-    pub(crate) fn disk_path(&self, manifest_path: &str) -> object_store::Result<PathBuf> {
+    pub fn disk_path(&self, manifest_path: &str) -> object_store::Result<PathBuf> {
         hot_tier_disk_path(self.hot_tier_path, manifest_path)
     }
 

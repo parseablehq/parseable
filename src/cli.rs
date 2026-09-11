@@ -437,6 +437,14 @@ pub struct Options {
     )]
     pub flight_port: u16,
 
+    #[arg(
+        long,
+        env = "P_QUERY_GRPC_PORT",
+        default_value = "8003",
+        help = "Port for query gRPC server"
+    )]
+    pub query_grpc_port: u16,
+
     // Performance settings
     #[arg(
         long,
@@ -454,16 +462,6 @@ pub struct Options {
         help = "Set a fixed memory limit for query in Bytes"
     )]
     pub query_memory_pool_size: Option<usize>,
-
-    #[arg(
-        long,
-        long = "query-mem-threshold",
-        value_parser = validation::validate_percentage,
-        default_value = "80.0",
-        env = "P_QUERY_MEMORY_THRESHOLD",
-        help = "Set a threshold (percentage) for memory beyond which query will get queued for 10s to prevent OOM"
-    )]
-    pub query_mem_threshold: f32,
 
     #[arg(
         long,
@@ -504,7 +502,7 @@ pub struct Options {
     #[arg(
         long,
         env = "P_RESOURCE_CHECK_INTERVAL",
-        default_value = "15",
+        default_value = "5",
         value_parser = validation::validate_seconds,
         help = "Resource monitoring check interval in seconds"
     )]
@@ -512,12 +510,12 @@ pub struct Options {
 
     #[arg(
         long,
-        env = "P_CPU_THRESHOLD",
-        default_value = "100.0",
-        value_parser = validation::validate_percentage,
-        help = "CPU utilization threshold percentage (0.0-100.0) for resource monitoring"
+        env = "P_REJECTION_DURATION",
+        default_value = "30",
+        value_parser = validation::validate_seconds,
+        help = "Post threshold breach, reject requests for"
     )]
-    pub cpu_utilization_threshold: f32,
+    pub rejection_duration: u64,
 
     #[arg(
         long,
@@ -528,13 +526,13 @@ pub struct Options {
     )]
     pub memory_utilization_threshold: f32,
 
-    // Integration features
     #[arg(
         long,
-        env = "P_OPENAI_API_KEY",
-        help = "OpenAI key to enable llm features"
+        env = "P_RESOURCE_CHECK_ENABLED",
+        default_value = "false",
+        help = "Flag to enable resource check"
     )]
-    pub open_ai_key: Option<String>,
+    pub resource_check_enabled: bool,
 
     #[arg(
         long,

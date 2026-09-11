@@ -201,6 +201,8 @@ fn is_valid_float_range(min: f64, max: f64) -> bool {
 pub struct Column {
     pub name: String,
     pub stats: Option<TypedStatistics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub null_count: Option<u64>,
     pub uncompressed_size: u64,
     pub compressed_size: u64,
 }

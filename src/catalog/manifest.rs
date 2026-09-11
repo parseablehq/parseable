@@ -22,6 +22,7 @@ use itertools::Itertools;
 use parquet::file::{
     metadata::{RowGroupMetaData, SortingColumn},
     reader::FileReader,
+    statistics::Statistics,
 };
 
 use crate::metastore::metastore_traits::MetastoreObject;
@@ -267,6 +268,10 @@ fn column_statistics(row_groups: &[RowGroupMetaData]) -> HashMap<String, Column>
             if let Some(entry) = columns.get_mut(&col_name) {
                 entry.compressed_size += col.compressed_size() as u64;
                 entry.uncompressed_size += col.uncompressed_size() as u64;
+                entry.null_count = entry
+                    .null_count
+                    .zip(col.statistics().and_then(Statistics::null_count_opt))
+                    .and_then(|(current, other)| current.checked_add(other));
                 if let Some(other) = col.statistics().and_then(|stats| stats.try_into().ok()) {
                     entry.stats = entry.stats.clone().and_then(|this| this.update(other));
                 }
@@ -276,6 +281,7 @@ fn column_statistics(row_groups: &[RowGroupMetaData]) -> HashMap<String, Column>
                     Column {
                         name: col_name,
                         stats: col.statistics().and_then(|stats| stats.try_into().ok()),
+                        null_count: col.statistics().and_then(Statistics::null_count_opt),
                         uncompressed_size: col.uncompressed_size() as u64,
                         compressed_size: col.compressed_size() as u64,
                     },
@@ -301,6 +307,7 @@ mod codec_tests {
                     .map(|c| Column {
                         name: format!("some_reasonably_long_column_name_{c}"),
                         stats: None,
+                        null_count: None,
                         uncompressed_size: 1024,
                         compressed_size: 512,
                     })

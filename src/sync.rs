@@ -312,21 +312,43 @@ pub fn local_sync() -> (
     (handle, outbox_rx, inbox_tx)
 }
 
-/// local and object store sync at the start of the server
+/// Runs startup local and object-store sync.
 #[tokio::main(flavor = "current_thread")]
 pub async fn sync_start() -> anyhow::Result<()> {
+    sync_start_inner(None).await
+}
+
+/// Runs startup sync and signals as soon as processing-file ownership has
+/// been snapshotted. Periodic sync may then run during backlog conversion.
+#[tokio::main(flavor = "current_thread")]
+pub async fn sync_start_and_signal(
+    startup_snapshot_complete: std::sync::mpsc::Sender<()>,
+) -> anyhow::Result<()> {
+    sync_start_inner(Some(startup_snapshot_complete)).await
+}
+
+async fn sync_start_inner(
+    startup_snapshot_complete: Option<std::sync::mpsc::Sender<()>>,
+) -> anyhow::Result<()> {
+    let startup_plans = PARSEABLE.streams.prepare_startup_sync();
+    if let Some(startup_snapshot_complete) = startup_snapshot_complete {
+        let _ = startup_snapshot_complete.send(());
+    }
+
     async {
         // Monitor local sync duration at startup
         monitor_task_duration(
             "startup_local_sync",
             Duration::from_secs(PARSEABLE.options.local_sync_threshold),
-            || async {
-                let mut local_sync_joinset = JoinSet::new();
-                PARSEABLE
-                    .streams
-                    .flush_and_convert(&mut local_sync_joinset, true, false);
-                while let Some(res) = local_sync_joinset.join_next().await {
-                    log_join_result(res, "flush and convert");
+            || async move {
+                // Plans contain all paths from the startup snapshot. Execute
+                // streams and their event-minute groups sequentially to keep
+                // recovery memory bounded.
+                for plan in startup_plans {
+                    match task::spawn_blocking(move || plan.execute()).await {
+                        Ok(result) => log_join_result(Ok(result), "startup flush and convert"),
+                        Err(err) => error!("Issue joining startup flush and convert task: {err}"),
+                    }
                 }
             },
         )
