@@ -311,6 +311,17 @@ pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
 pub const SETTINGS_ROOT_DIRECTORY: &str = ".settings";
 pub const TARGETS_ROOT_DIRECTORY: &str = ".targets";
 pub const MANIFEST_FILE: &str = "manifest.json";
+// top-level registry of streams currently being deleted; kept outside every
+// stream's own prefix so a bulk prefix-delete can never sweep up a marker
+// that's supposed to survive it (see is_tombstoned/tombstone_path)
+pub const TOMBSTONE_ROOT_DIRECTORY: &str = ".tombstones";
+// the marker itself lives one level below `{tenant}/{stream_name}/`, not as
+// a leaf key directly named after the stream: list_dirs_relative on every
+// backend (S3/GCS/Azure via list-with-delimiter's common_prefixes, LocalFS
+// via read_dir + is_dir) only surfaces child *directories*, never leaf
+// objects, so a tombstone recorded as a bare `{stream_name}` key would be
+// invisible to the restart-recovery scan that discovers tombstoned streams
+pub const TOMBSTONE_MARKER_FILE_NAME: &str = ".tombstone";
 
 // max concurrent request allowed for datafusion object store, overridable per
 // backend with P_MAX_OBJECT_STORE_REQUESTS.

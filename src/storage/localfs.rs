@@ -44,11 +44,13 @@ use crate::{
     option::validation,
     parseable::{DEFAULT_TENANT, LogStream},
     storage::SETTINGS_ROOT_DIRECTORY,
+    storage::object_storage::tombstone_path,
 };
 
 use super::{
     ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
     PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    TOMBSTONE_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -533,6 +535,7 @@ impl ObjectStorage for LocalFS {
             USERS_ROOT_DIR,
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,
+            TOMBSTONE_ROOT_DIRECTORY,
         ];
 
         let result = fs::read_dir(&self.root).await;
@@ -553,7 +556,7 @@ impl ObjectStorage for LocalFS {
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
             .into_iter()
-            .map(|entry| dir_with_stream(entry, ignore_dir));
+            .map(|entry| dir_with_stream(entry, ignore_dir, &self.root));
 
         let logstream_dirs: Vec<Option<String>> =
             FuturesUnordered::from_iter(entries).try_collect().await?;
@@ -570,6 +573,7 @@ impl ObjectStorage for LocalFS {
             PARSEABLE_ROOT_DIRECTORY,
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,
+            TOMBSTONE_ROOT_DIRECTORY,
         ];
 
         let result = fs::read_dir(&self.root).await;
@@ -860,6 +864,7 @@ async fn dir_with_old_stream(
 async fn dir_with_stream(
     entry: DirEntry,
     ignore_dirs: &[&str],
+    root: &Path,
 ) -> Result<Option<String>, ObjectStorageError> {
     let dir_name = entry
         .path()
@@ -883,6 +888,14 @@ async fn dir_with_stream(
 
         if stream_json_path.exists() {
             Ok(Some(dir_name))
+        } else if tombstone_path(&dir_name, &None).to_path(root).exists() {
+            // Mid-async-deletion: `.stream.json` is deleted eagerly by the
+            // DELETE handler well before the background job finishes
+            // physically clearing the rest of the prefix, so a directory
+            // without it is expected here, not corrupt -- don't fail the
+            // whole listing over a stream that's in the middle of being
+            // deleted.
+            Ok(None)
         } else {
             let err: Box<dyn std::error::Error + Send + Sync + 'static> =
                 format!("found {}", entry.path().display()).into();
@@ -911,5 +924,88 @@ async fn dir_name(entry: DirEntry) -> Result<Option<String>, ObjectStorageError>
 impl From<fs_extra::error::Error> for ObjectStorageError {
     fn from(e: fs_extra::error::Error) -> Self {
         ObjectStorageError::UnhandledError(Box::new(e))
+    }
+}
+
+#[cfg(test)]
+mod list_streams_tombstone_tests {
+    use temp_dir::TempDir;
+
+    use super::{LocalFS, ObjectStorage};
+    use crate::storage::object_storage::{to_bytes, tombstone_path};
+    use crate::storage::{STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY};
+    use relative_path::RelativePathBuf;
+
+    // Deliberately not using `object_storage::stream_json_path` here: it
+    // reads the global PARSEABLE.options.mode, which isn't initialized under
+    // `cargo test` and crashes the whole test binary. This replicates its
+    // non-Ingest-mode path (tenant/stream/.stream/.stream.json) directly.
+    fn stream_json_path_for_test(stream_name: &str) -> RelativePathBuf {
+        RelativePathBuf::from_iter([
+            "",
+            stream_name,
+            STREAM_ROOT_DIRECTORY,
+            STREAM_METADATA_FILE_NAME,
+        ])
+    }
+
+    #[tokio::test]
+    async fn normal_stream_is_still_listed() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        storage
+            .put_object(&stream_json_path_for_test("mystream"), to_bytes(&()), &None)
+            .await
+            .unwrap();
+
+        let listed = storage.list_streams().await.unwrap();
+        assert!(listed.contains("mystream"));
+    }
+
+    #[tokio::test]
+    async fn stream_mid_deletion_is_skipped_not_a_listing_error() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        // Set up as the DELETE handler leaves it: stream.json already gone,
+        // tombstone marker present, rest of the directory (and its other
+        // files) still there because the background delete hasn't finished.
+        storage
+            .put_object(
+                &stream_json_path_for_test("deleting-stream"),
+                to_bytes(&()),
+                &None,
+            )
+            .await
+            .unwrap();
+        storage
+            .delete_object(&stream_json_path_for_test("deleting-stream"), &None)
+            .await
+            .unwrap();
+        storage
+            .put_object(
+                &tombstone_path("deleting-stream", &None),
+                to_bytes(&()),
+                &None,
+            )
+            .await
+            .unwrap();
+
+        let listed = storage.list_streams().await.unwrap();
+        assert!(!listed.contains("deleting-stream"));
+    }
+
+    #[tokio::test]
+    async fn genuinely_corrupt_directory_still_errors() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        // A real directory with neither a stream.json nor a tombstone is
+        // still treated as unexpected/corrupt, not silently skipped --
+        // the fix narrows the exception to the tombstoned case specifically.
+        std::fs::create_dir_all(dir.path().join("not-a-stream")).unwrap();
+
+        assert!(storage.list_streams().await.is_err());
     }
 }

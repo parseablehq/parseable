@@ -559,6 +559,21 @@ pub async fn create_streams_for_distributed(
     streams: Vec<String>,
     tenant_id: &Option<String>,
 ) -> Result<(), QueryError> {
+    // A stream that's already resident in memory but flagged `deleting`
+    // must reject the query outright. Checked unconditionally, since this
+    // function backs every query-side call site (ad-hoc queries, alerts,
+    // saved query context, traces), not just the querier's own reload path.
+    for stream_name in &streams {
+        if PARSEABLE.streams.contains(stream_name, tenant_id)
+            && let Ok(stream) = PARSEABLE.get_stream(stream_name, tenant_id)
+            && stream.is_deleting()
+        {
+            return Err(QueryError::StreamNotFound(StreamNotFound(
+                stream_name.clone(),
+            )));
+        }
+    }
+
     let mut join_set = JoinSet::new();
     for stream_name in streams {
         let id = tenant_id.to_owned();
