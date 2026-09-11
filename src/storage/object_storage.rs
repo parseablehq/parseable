@@ -68,7 +68,8 @@ use ulid::Ulid;
 use super::{
     ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, ObjectStorageError, ObjectStoreFormat,
     PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, retention::Retention,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, TOMBSTONE_MARKER_FILE_NAME,
+    TOMBSTONE_ROOT_DIRECTORY, retention::Retention,
 };
 
 /// Context for upload operations containing stream information
@@ -1440,6 +1441,81 @@ pub fn stream_json_path(stream_name: &str, tenant_id: &Option<String>) -> Relati
     }
 }
 
+/// Path to a stream's deletion marker. Deliberately lives under
+/// `TOMBSTONE_ROOT_DIRECTORY`, outside the `{tenant}/{stream_name}` prefix
+/// that a bulk stream delete walks, so a mid-deletion crash can never lose
+/// the marker before the deletion it records has actually finished.
+///
+/// The marker is nested one level under `{stream_name}/`, not stored as a
+/// bare key named after the stream: `list_dirs_relative` (used to discover
+/// tombstoned streams on restart) only surfaces child directories on every
+/// backend, so `{stream_name}` must itself resolve to a directory for that
+/// scan to find it.
+#[inline(always)]
+pub fn tombstone_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
+    let tenant = tenant_id.as_deref().unwrap_or("");
+    RelativePathBuf::from_iter([
+        TOMBSTONE_ROOT_DIRECTORY,
+        tenant,
+        stream_name,
+        TOMBSTONE_MARKER_FILE_NAME,
+    ])
+}
+
+/// Whether a stream has a deletion marker present, i.e. a deletion was
+/// started (possibly by a node that has since crashed or restarted) and has
+/// not yet completed.
+pub async fn is_tombstoned(
+    storage: &(impl ObjectStorage + ?Sized),
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<bool, ObjectStorageError> {
+    match storage
+        .head(&tombstone_path(stream_name, tenant_id), tenant_id)
+        .await
+    {
+        Ok(_) => Ok(true),
+        // NoSuchKey is the object-store backends' not-found; LocalFS instead
+        // surfaces a plain io::Error, so both must be treated as "absent"
+        // here (see ObjectStoreMetastore::is_missing_optional_dir for the
+        // same not-found reconciliation across backends).
+        Err(ObjectStorageError::NoSuchKey(_)) => Ok(false),
+        Err(ObjectStorageError::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Stream names with a deletion marker for the given tenant, discovered by
+/// listing `TOMBSTONE_ROOT_DIRECTORY` rather than checking one name at a
+/// time. Used to resume deletions left unfinished by a crashed or restarted
+/// node, since a tombstoned stream whose `.stream.json` is already gone
+/// would otherwise never surface via `list_streams`. See `is_tombstoned` for
+/// the equivalent single-name check.
+///
+/// `list_dirs_relative` only proves a directory exists under the tombstone
+/// root, not that it actually holds a `.tombstone` marker (e.g. a partial or
+/// interrupted write could leave an empty one behind) -- each candidate is
+/// re-checked with `is_tombstoned` before being returned, so a directory
+/// without a real marker is silently skipped rather than misreported.
+pub async fn list_tombstoned_streams(
+    storage: &(impl ObjectStorage + ?Sized),
+    tenant_id: &Option<String>,
+) -> Result<Vec<String>, ObjectStorageError> {
+    let tenant = tenant_id.as_deref().unwrap_or("");
+    let root = RelativePathBuf::from_iter([TOMBSTONE_ROOT_DIRECTORY, tenant]);
+    let candidates = storage.list_dirs_relative(&root, tenant_id).await?;
+
+    let mut confirmed = Vec::with_capacity(candidates.len());
+    for stream_name in candidates {
+        if is_tombstoned(storage, &stream_name, tenant_id).await? {
+            confirmed.push(stream_name);
+        }
+    }
+    Ok(confirmed)
+}
+
 /// if filter_id is an empty str it should not append it to the rel path
 #[inline(always)]
 pub fn filter_path(
@@ -1563,6 +1639,88 @@ pub fn own_manifest_file_name() -> String {
 #[inline]
 pub fn manifest_segment_matches(manifest_path_str: &str, file_name: &str) -> bool {
     manifest_path_str.rsplit('/').next() == Some(file_name)
+}
+
+#[cfg(test)]
+mod tombstone_tests {
+    use super::{ObjectStorage, is_tombstoned, list_tombstoned_streams, to_bytes, tombstone_path};
+    use crate::storage::LocalFS;
+    use temp_dir::TempDir;
+
+    #[tokio::test]
+    async fn no_marker_means_not_tombstoned() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        assert!(!is_tombstoned(&storage, "test_stream", &None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn marker_present_means_tombstoned() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        storage
+            .put_object(&tombstone_path("test_stream", &None), to_bytes(&()), &None)
+            .await
+            .unwrap();
+
+        assert!(is_tombstoned(&storage, "test_stream", &None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn no_markers_means_empty_discovery_list() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        assert!(
+            list_tombstoned_streams(&storage, &None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn marker_present_means_discoverable_by_listing() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        storage
+            .put_object(&tombstone_path("test_stream", &None), to_bytes(&()), &None)
+            .await
+            .unwrap();
+
+        let discovered = list_tombstoned_streams(&storage, &None).await.unwrap();
+        assert_eq!(discovered, vec!["test_stream".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn directory_without_the_actual_marker_is_not_reported_as_tombstoned() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        // A directory can exist under the tombstone root without ever
+        // containing the marker itself (e.g. an interrupted write) --
+        // list_dirs_relative alone can't tell the difference, so
+        // list_tombstoned_streams must re-verify via is_tombstoned.
+        let sibling_path = tombstone_path("test_stream", &None)
+            .parent()
+            .unwrap()
+            .join("not-the-marker");
+        storage
+            .put_object(&sibling_path, to_bytes(&()), &None)
+            .await
+            .unwrap();
+
+        assert!(!is_tombstoned(&storage, "test_stream", &None).await.unwrap());
+        assert!(
+            list_tombstoned_streams(&storage, &None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 #[cfg(test)]

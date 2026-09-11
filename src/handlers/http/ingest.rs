@@ -540,6 +540,8 @@ pub enum PostError {
     MissingQueryParameter,
     #[error(transparent)]
     MetastoreError(#[from] MetastoreError),
+    #[error("Stream {0} is being deleted, please retry after some time")]
+    StreamBeingDeleted(String),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -571,6 +573,8 @@ impl actix_web::ResponseError for PostError {
             | JsonFlattenError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 
             StreamNotFound(_) => StatusCode::NOT_FOUND,
+
+            StreamBeingDeleted(_) => StatusCode::CONFLICT,
 
             MetastoreError(e) => e.status_code(),
         }

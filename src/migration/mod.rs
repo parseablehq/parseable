@@ -513,6 +513,7 @@ pub async fn setup_logstream_metadata(
         dataset_tags,
         dataset_labels,
         infer_timestamp,
+        deleting: false,
     };
 
     Ok(metadata)
