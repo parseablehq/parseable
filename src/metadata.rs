@@ -99,6 +99,11 @@ pub struct LogStreamMetadata {
     pub dataset_tags: Vec<DatasetTag>,
     pub dataset_labels: Vec<String>,
     pub infer_timestamp: bool,
+    /// Transient, in-memory only — never persisted to `ObjectStoreFormat`.
+    /// Set once a deletion has been initiated for this stream so that
+    /// readers/writers reached via an already-resident `Arc<Stream>` reject
+    /// it instead of racing the background deletion.
+    pub deleting: bool,
 }
 
 impl Default for LogStreamMetadata {
@@ -121,6 +126,7 @@ impl Default for LogStreamMetadata {
             dataset_tags: Vec::new(),
             dataset_labels: Vec::new(),
             infer_timestamp: true,
+            deleting: false,
         }
     }
 }

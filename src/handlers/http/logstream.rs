@@ -186,6 +186,9 @@ pub async fn get_schema(
     }
 
     let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+    if stream.is_deleting() {
+        return Err(StreamNotFound(stream_name.clone()).into());
+    }
     match update_schema_when_distributed(&vec![stream_name.clone()], &tenant_id).await {
         Ok(_) => {
             let schema = stream.get_schema();
@@ -313,6 +316,12 @@ pub async fn get_stats(
     {
         return Err(StreamNotFound(stream_name.clone()).into());
     }
+    if PARSEABLE
+        .get_stream(&stream_name, &tenant_id)
+        .is_ok_and(|stream| stream.is_deleting())
+    {
+        return Err(StreamNotFound(stream_name.clone()).into());
+    }
 
     let query_string = req.query_string();
     if !query_string.is_empty() {
@@ -375,6 +384,12 @@ pub async fn get_stream_info(
     if !PARSEABLE
         .check_or_load_stream(&stream_name, &tenant_id)
         .await
+    {
+        return Err(StreamNotFound(stream_name.clone()).into());
+    }
+    if PARSEABLE
+        .get_stream(&stream_name, &tenant_id)
+        .is_ok_and(|stream| stream.is_deleting())
     {
         return Err(StreamNotFound(stream_name.clone()).into());
     }
