@@ -50,7 +50,15 @@ use itertools::Itertools;
 use serde_json::{Value, json};
 use std::fs;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{Instrument, warn};
+
+// Shared between put_stream and delete: without it, a concurrent create/
+// update could read is_deleting()=false right before delete() flips it and
+// writes the tombstone, then go on to write fresh stream data that the
+// background deletion job -- already committed to running by that point --
+// would sweep up from underneath it.
+pub static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub async fn delete(
     req: HttpRequest,
@@ -59,43 +67,55 @@ pub async fn delete(
     let stream_name = logstream.into_inner();
     // Error out if stream doesn't exist in memory, or in the case of query node, in storage as well
     let tenant_id = get_tenant_id_from_request(&req);
-    if !PARSEABLE
-        .check_or_load_stream(&stream_name, &tenant_id)
-        .await
-    {
-        return Err(StreamNotFound(stream_name).into());
-    }
 
     // Fetched once, up front: every step below this point is either
     // infallible or best-effort, so nothing after this line can bail out
     // with "stream not found" partway through an already-durably-started
     // deletion.
-    let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+    let stream = {
+        // Scoped to just this check-through-tombstone-write window:
+        // everything after is already guarded by is_deleting()/
+        // is_tombstoned() checks on the read/write paths.
+        let _guard = CREATE_STREAM_LOCK.lock().await;
 
-    // Flip the in-memory guard before any `.await` point: check_or_load_stream's
-    // resident-stream fast path doesn't itself consult is_tombstoned, so a
-    // concurrent request on this node could otherwise slip through in the
-    // window between the tombstone becoming durable and this flag being set.
-    stream.mark_deleting();
+        if !PARSEABLE
+            .check_or_load_stream(&stream_name, &tenant_id)
+            .await
+        {
+            return Err(StreamNotFound(stream_name).into());
+        }
+
+        let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+
+        // Flip the in-memory guard before any `.await` point: check_or_load_stream's
+        // resident-stream fast path doesn't itself consult is_tombstoned, so a
+        // concurrent request on this node could otherwise slip through in the
+        // window between the tombstone becoming durable and this flag being set.
+        stream.mark_deleting();
+
+        let objectstore = PARSEABLE.storage.get_object_store();
+
+        // Durable marker first: if the process crashes anywhere after this
+        // point, restart-recovery resumes the deletion instead of silently
+        // leaving the stream half-deleted with no record of it.
+        if let Err(e) = objectstore
+            .put_object(
+                &tombstone_path(&stream_name, &tenant_id),
+                to_bytes(&()),
+                &tenant_id,
+            )
+            .await
+        {
+            // Nothing durable happened -- undo the in-memory flag so the stream
+            // isn't left permanently blocked by a transient write failure.
+            stream.clear_deleting();
+            return Err(e.into());
+        }
+
+        stream
+    };
 
     let objectstore = PARSEABLE.storage.get_object_store();
-
-    // Durable marker first: if the process crashes anywhere after this
-    // point, restart-recovery resumes the deletion instead of silently
-    // leaving the stream half-deleted with no record of it.
-    if let Err(e) = objectstore
-        .put_object(
-            &tombstone_path(&stream_name, &tenant_id),
-            to_bytes(&()),
-            &tenant_id,
-        )
-        .await
-    {
-        // Nothing durable happened -- undo the in-memory flag so the stream
-        // isn't left permanently blocked by a transient write failure.
-        stream.clear_deleting();
-        return Err(e.into());
-    }
 
     // Best-effort: makes the stream vanish from listings almost
     // immediately. Not fatal if it fails -- is_deleting()/is_tombstoned()
@@ -259,6 +279,7 @@ pub async fn put_stream(
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
 
+    let _guard = CREATE_STREAM_LOCK.lock().await;
     PARSEABLE
         .create_update_stream(req.headers(), &body, &stream_name, &tenant_id)
         .await?;

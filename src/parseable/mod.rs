@@ -804,10 +804,27 @@ impl Parseable {
             && let Ok(stream) = self.get_stream(stream_name, tenant_id)
             && stream.is_deleting()
         {
-            return Err(StreamError::Custom {
-                msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
-                status: StatusCode::CONFLICT,
-            });
+            // The flag can be stale on a node that never runs the
+            // background deletion job itself (e.g. an ingestor: see its
+            // `delete()` handler) -- it only self-heals once
+            // `sync_all_streams` next notices the tombstone is gone, which
+            // can lag well behind a client recreating the stream right
+            // away. Re-check the durable tombstone before trusting the
+            // in-memory flag, and clear it here instead of blocking
+            // creation for up to a full sync interval.
+            if is_tombstoned(
+                self.storage.get_object_store().as_ref(),
+                stream_name,
+                tenant_id,
+            )
+            .await?
+            {
+                return Err(StreamError::Custom {
+                    msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
+                    status: StatusCode::CONFLICT,
+                });
+            }
+            stream.clear_deleting();
         }
 
         // A tombstoned-but-not-yet-purged stream must be rejected the same

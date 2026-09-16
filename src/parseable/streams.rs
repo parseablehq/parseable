@@ -1632,10 +1632,13 @@ impl Stream {
         self.metadata.write().expect(LOCK_EXPECT).deleting = true;
     }
 
-    /// Undoes a `mark_deleting()` call whose tombstone write then failed.
-    /// Safe only because nothing durable was ever created -- unlike
+    /// Undoes a `mark_deleting()` call, in one of two cases: the tombstone
+    /// write that would have made it durable just failed, or the caller has
+    /// independently confirmed (via `is_tombstoned()`) that the tombstone is
+    /// already gone and this flag is just a stale leftover on a node that
+    /// doesn't run the background deletion job itself. Unlike
     /// `mark_deleting()`, this is not part of the monotonic contract, and
-    /// must never be called once the tombstone actually exists in storage.
+    /// must never be called while the tombstone still exists in storage.
     pub fn clear_deleting(&self) {
         self.metadata.write().expect(LOCK_EXPECT).deleting = false;
     }
