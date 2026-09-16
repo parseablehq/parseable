@@ -1846,9 +1846,11 @@ mod stream_deletion_dedup_tests {
 
     // `spawn_stream_deletion` itself isn't unit-testable here: it reads
     // PARSEABLE.storage/PARSEABLE.streams, and the global PARSEABLE static
-    // isn't initialized under `cargo test`. This instead exercises the
-    // contains_key-then-insert guard directly against the same map the real
-    // function uses, since that guard is the actual dedup mechanism.
+    // isn't initialized under `cargo test`. This instead exercises the same
+    // map the real function uses. The real function's actual dedup guard is
+    // an atomic `entry()` check-and-insert; a plain contains_key-then-insert
+    // here is fine since these tests are single-threaded and only need to
+    // assert the map's observable state, not re-prove atomicity.
     #[test]
     fn duplicate_key_is_recognized_as_already_running() {
         let key = (Some("tenant-a".to_string()), "stream-a".to_string());
