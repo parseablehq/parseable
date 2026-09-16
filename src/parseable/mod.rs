@@ -742,6 +742,86 @@ impl Parseable {
         Ok(())
     }
 
+    /// Rejects a create/update call blocked by an in-progress or stale
+    /// deletion, self-healing a stale `is_deleting()` flag once its
+    /// tombstone is confirmed gone. Returns the (possibly corrected) value
+    /// of `stream_in_memory_dont_update` for the caller's subsequent
+    /// "already exists" check.
+    async fn reject_if_stream_deleting(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+        stream_in_memory_dont_update: bool,
+    ) -> Result<bool, StreamError> {
+        // A stream still resident with is_deleting()=true is functionally
+        // gone (reads/writes are already rejected elsewhere), but its entry
+        // isn't removed from memory until the background deletion job
+        // finishes -- surface that distinctly rather than telling the
+        // caller it "already exists", which reads as if nothing were wrong.
+        if stream_in_memory_dont_update
+            && let Ok(stream) = self.get_stream(stream_name, tenant_id)
+            && stream.is_deleting()
+        {
+            // The flag can be stale on a node that never runs the
+            // background deletion job itself (e.g. an ingestor: see its
+            // `delete()` handler) -- it only self-heals once
+            // `sync_all_streams` next notices the tombstone is gone, which
+            // can lag well behind a client recreating the stream right
+            // away. Re-check the durable tombstone before trusting the
+            // in-memory flag, and clear it here instead of blocking
+            // creation for up to a full sync interval.
+            if is_tombstoned(
+                self.storage.get_object_store().as_ref(),
+                stream_name,
+                tenant_id,
+            )
+            .await?
+            {
+                return Err(StreamError::Custom {
+                    msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
+                    status: StatusCode::CONFLICT,
+                });
+            }
+            stream.clear_deleting();
+
+            // The stale entry itself (data path, schema, old metadata) must
+            // go too, not just the flag -- otherwise the "already exists"
+            // check just below still trips on it, and get_or_create's
+            // resident-entry short-circuit would hand back this same stale
+            // Arc<Stream> instead of actually recreating it. Dropping it
+            // here makes this indistinguishable from a stream that was
+            // never resident in the first place.
+            self.streams.delete(stream_name, tenant_id);
+            return Ok(false);
+        }
+
+        // A tombstoned-but-not-yet-purged stream must be rejected the same
+        // way even when it isn't resident in memory on this node yet (e.g. a
+        // query node before restart-recovery has resumed it, or a node that
+        // never loaded it in the first place). create_stream_and_schema_from_storage
+        // below already checks this internally and returns Ok(false) for a
+        // tombstoned stream, but that's indistinguishable from "doesn't
+        // exist" to its caller -- without this explicit check, the client
+        // could recreate the name while the background deletion job is
+        // still sweeping its prefix, and that job would delete the freshly
+        // created data too.
+        if !stream_in_memory_dont_update
+            && is_tombstoned(
+                self.storage.get_object_store().as_ref(),
+                stream_name,
+                tenant_id,
+            )
+            .await?
+        {
+            return Err(StreamError::Custom {
+                msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
+                status: StatusCode::CONFLICT,
+            });
+        }
+
+        Ok(stream_in_memory_dont_update)
+    }
+
     pub async fn create_update_stream(
         &self,
         headers: &HeaderMap,
@@ -794,62 +874,9 @@ impl Parseable {
 
         let stream_in_memory_dont_update =
             self.streams.contains(stream_name, tenant_id) && !update_stream_flag;
-
-        // A stream still resident with is_deleting()=true is functionally
-        // gone (reads/writes are already rejected elsewhere), but its entry
-        // isn't removed from memory until the background deletion job
-        // finishes -- surface that distinctly rather than telling the
-        // caller it "already exists", which reads as if nothing were wrong.
-        if stream_in_memory_dont_update
-            && let Ok(stream) = self.get_stream(stream_name, tenant_id)
-            && stream.is_deleting()
-        {
-            // The flag can be stale on a node that never runs the
-            // background deletion job itself (e.g. an ingestor: see its
-            // `delete()` handler) -- it only self-heals once
-            // `sync_all_streams` next notices the tombstone is gone, which
-            // can lag well behind a client recreating the stream right
-            // away. Re-check the durable tombstone before trusting the
-            // in-memory flag, and clear it here instead of blocking
-            // creation for up to a full sync interval.
-            if is_tombstoned(
-                self.storage.get_object_store().as_ref(),
-                stream_name,
-                tenant_id,
-            )
-            .await?
-            {
-                return Err(StreamError::Custom {
-                    msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
-                    status: StatusCode::CONFLICT,
-                });
-            }
-            stream.clear_deleting();
-        }
-
-        // A tombstoned-but-not-yet-purged stream must be rejected the same
-        // way even when it isn't resident in memory on this node yet (e.g. a
-        // query node before restart-recovery has resumed it, or a node that
-        // never loaded it in the first place). create_stream_and_schema_from_storage
-        // below already checks this internally and returns Ok(false) for a
-        // tombstoned stream, but that's indistinguishable from "doesn't
-        // exist" to its caller -- without this explicit check, the client
-        // could recreate the name while the background deletion job is
-        // still sweeping its prefix, and that job would delete the freshly
-        // created data too.
-        if !stream_in_memory_dont_update
-            && is_tombstoned(
-                self.storage.get_object_store().as_ref(),
-                stream_name,
-                tenant_id,
-            )
-            .await?
-        {
-            return Err(StreamError::Custom {
-                msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
-                status: StatusCode::CONFLICT,
-            });
-        }
+        let stream_in_memory_dont_update = self
+            .reject_if_stream_deleting(stream_name, tenant_id, stream_in_memory_dont_update)
+            .await?;
 
         // check if stream in storage only if not in memory
         // for Parseable OSS, create_update_stream is called only from query node
