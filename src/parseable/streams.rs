@@ -1632,6 +1632,14 @@ impl Stream {
         self.metadata.write().expect(LOCK_EXPECT).deleting = true;
     }
 
+    /// Undoes a `mark_deleting()` call whose tombstone write then failed.
+    /// Safe only because nothing durable was ever created -- unlike
+    /// `mark_deleting()`, this is not part of the monotonic contract, and
+    /// must never be called once the tombstone actually exists in storage.
+    pub fn clear_deleting(&self) {
+        self.metadata.write().expect(LOCK_EXPECT).deleting = false;
+    }
+
     pub fn is_deleting(&self) -> bool {
         self.metadata.read().expect(LOCK_EXPECT).deleting
     }

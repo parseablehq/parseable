@@ -3,7 +3,7 @@ networks:
 
 services:
   minio:
-    image: minio/minio:RELEASE.2025-02-03T21-03-04Z
+    image: quay.io/minio/minio:RELEASE.2025-02-03T21-03-04Z
     entrypoint:
       - sh
       - -euc

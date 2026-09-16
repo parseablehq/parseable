@@ -496,6 +496,15 @@ impl ObjectStorage for LocalFS {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let result = fs::remove_dir_all(path).await;
+        // A retried deletion (e.g. resumed after a crash between the
+        // directory being removed and the tombstone being cleared) finds
+        // nothing left to remove -- treat that the same as success, matching
+        // S3/Azure/GCS, whose prefix delete is already a no-op success when
+        // the prefix is already empty.
+        let result = match result {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        };
         if result.is_ok() {
             increment_object_store_calls_by_date(
                 "DELETE",

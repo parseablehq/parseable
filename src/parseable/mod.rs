@@ -810,6 +810,30 @@ impl Parseable {
             });
         }
 
+        // A tombstoned-but-not-yet-purged stream must be rejected the same
+        // way even when it isn't resident in memory on this node yet (e.g. a
+        // query node before restart-recovery has resumed it, or a node that
+        // never loaded it in the first place). create_stream_and_schema_from_storage
+        // below already checks this internally and returns Ok(false) for a
+        // tombstoned stream, but that's indistinguishable from "doesn't
+        // exist" to its caller -- without this explicit check, the client
+        // could recreate the name while the background deletion job is
+        // still sweeping its prefix, and that job would delete the freshly
+        // created data too.
+        if !stream_in_memory_dont_update
+            && is_tombstoned(
+                self.storage.get_object_store().as_ref(),
+                stream_name,
+                tenant_id,
+            )
+            .await?
+        {
+            return Err(StreamError::Custom {
+                msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
+                status: StatusCode::CONFLICT,
+            });
+        }
+
         // check if stream in storage only if not in memory
         // for Parseable OSS, create_update_stream is called only from query node
         // for Parseable Enterprise, create_update_stream is called from prism node

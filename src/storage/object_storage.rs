@@ -1441,7 +1441,7 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
                                         spawn_stream_deletion(stream_name, tenant_id);
                                     }
                                 }
-                                Ok(false) => {
+                                Ok(false) if !is_deletion_owner => {
                                     // Deletion already finished elsewhere and
                                     // the tombstone is gone, but this node's
                                     // resident entry was never dropped -- e.g.
@@ -1451,6 +1451,18 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
                                     // name doesn't inherit a stuck
                                     // deleting=true state.
                                     PARSEABLE.streams.delete(&stream_name, &tenant_id);
+                                }
+                                Ok(false) => {
+                                    // On the owning node, an absent tombstone
+                                    // can also just mean this delete hasn't
+                                    // written it yet (mark_deleting() runs
+                                    // first, with the tombstone write still
+                                    // in flight). Reaping here would race
+                                    // that window and let a concurrent reload
+                                    // resurrect the stream mid-deletion --
+                                    // the owner's own spawn_stream_deletion
+                                    // job removes this entry once the actual
+                                    // delete (and tombstone clear) completes.
                                 }
                                 Err(e) => error!(
                                     "failed to check tombstone status for {stream_name}: {e}"

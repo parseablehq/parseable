@@ -92,13 +92,19 @@ pub async fn delete(
     // Durable marker first: if the process crashes anywhere after this
     // point, restart-recovery resumes the deletion instead of silently
     // leaving the stream half-deleted with no record of it.
-    objectstore
+    if let Err(e) = objectstore
         .put_object(
             &tombstone_path(&stream_name, &tenant_id),
             to_bytes(&()),
             &tenant_id,
         )
-        .await?;
+        .await
+    {
+        // Nothing durable happened -- undo the in-memory flag so the stream
+        // isn't left permanently blocked by a transient write failure.
+        stream.clear_deleting();
+        return Err(e.into());
+    }
 
     // Best-effort: makes the stream vanish from listings almost
     // immediately, without touching every listing endpoint individually.
@@ -113,14 +119,13 @@ pub async fn delete(
         );
     }
 
-    // Scheduled immediately once the stream is durably tombstoned and
-    // flagged locally, before any of the remaining best-effort steps --
-    // none of them are allowed to leave the deletion itself unscheduled if
-    // they fail.
-    spawn_stream_deletion(stream_name.clone(), tenant_id.clone());
-
+    // Best-effort: the tombstone is already durable and the stream is
+    // already flagged, so a fan-out failure must not turn an
+    // already-accepted deletion into an error response -- an ingestor that
+    // misses this push self-heals via sync_all_streams within one sync
+    // interval regardless.
     let fanout_stream_name = stream_name.clone();
-    cluster::for_each_live_node(&tenant_id, move |node| {
+    if let Err(e) = cluster::for_each_live_node(&tenant_id, move |node| {
         let url = format!(
             "{}{}/logstream/{}/sync",
             node.domain_name,
@@ -129,7 +134,10 @@ pub async fn delete(
         );
         async move { cluster::send_stream_delete_request(&url, node).await }
     })
-    .await?;
+    .await
+    {
+        warn!("failed to notify all ingestors of deletion of {stream_name}: {e}");
+    }
 
     if let Err(err) = fs::remove_dir_all(&stream.data_path) {
         warn!(
@@ -141,11 +149,18 @@ pub async fn delete(
 
     if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
         && hot_tier_manager.check_stream_hot_tier_exists(&stream_name, &tenant_id)
-    {
-        hot_tier_manager
+        && let Err(e) = hot_tier_manager
             .delete_hot_tier(&stream_name, &tenant_id)
-            .await?;
+            .await
+    {
+        warn!("failed to delete hot tier for stream {stream_name}: {e}");
     }
+
+    // Scheduled only once every other cleanup step above has run, so the
+    // background job (which clears the tombstone on completion) can't race
+    // ahead of them and let a stream recreated under this name get swept up
+    // by leftover fan-out/local/hot-tier cleanup that's still in flight.
+    spawn_stream_deletion(stream_name.clone(), tenant_id.clone());
 
     Ok((
         format!("log stream {stream_name} deletion started"),
