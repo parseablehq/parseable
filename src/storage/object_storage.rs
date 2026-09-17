@@ -1563,11 +1563,22 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
                                         // deleting based on stale snapshot
                                         // data with no tombstone left to ever
                                         // clear it again.
-                                        if is_tombstoned(object_store.as_ref(), &stream_name, &tenant_id)
+                                        match is_tombstoned(object_store.as_ref(), &stream_name, &tenant_id)
                                             .await
-                                            .unwrap_or(false)
                                         {
-                                            stream.mark_deleting();
+                                            Ok(true) => stream.mark_deleting(),
+                                            Ok(false) => {}
+                                            // A real error here (as opposed to
+                                            // "no tombstone") is not evidence
+                                            // the tombstone is gone -- folding
+                                            // it into Ok(false) would leave a
+                                            // still-tombstoned stream
+                                            // unflagged and accepting writes.
+                                            // Leave it be and retry on the
+                                            // next sync interval instead.
+                                            Err(e) => warn!(
+                                                "failed to re-check tombstone for {stream_name} during reconciliation, retrying next sync interval: {e}"
+                                            ),
                                         }
                                     }
                                     // Already flagged: the per-stream loop
