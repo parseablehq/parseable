@@ -95,14 +95,15 @@ pub async fn delete(
             // check the tombstone directly so a retried DELETE against a
             // replica that hasn't resumed this stream yet reports the
             // deletion as already accepted instead of a plain 404
-            // indistinguishable from the stream never having existed.
+            // indistinguishable from the stream never having existed. Real
+            // storage errors propagate instead of being folded into "not
+            // tombstoned", which would otherwise misreport them as 404.
             if is_tombstoned(
                 PARSEABLE.storage.get_object_store().as_ref(),
                 &stream_name,
                 &tenant_id,
             )
-            .await
-            .unwrap_or(false)
+            .await?
             {
                 return Ok((
                     format!("log stream {stream_name} deletion already in progress"),

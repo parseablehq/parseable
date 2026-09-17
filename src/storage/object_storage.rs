@@ -1379,6 +1379,23 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
         let storage = PARSEABLE.storage.get_object_store();
         match storage.delete_stream(stream_name, tenant_id).await {
             Ok(()) => {
+                // Clear the map entry and stats *before* the tombstone, not
+                // after: while the tombstone is still present, any
+                // concurrent create/update for this name is rejected with
+                // 409 by reject_if_stream_deleting's own tombstone check, so
+                // nothing can have recreated this name yet. Clearing the
+                // tombstone first would open a window where a legitimate
+                // recreate succeeds before this cleanup runs -- harmless for
+                // the map entry itself (delete_if_still_deleting only
+                // touches an entry still flagged deleting), but
+                // stats::delete_stats has no such per-entry guard and would
+                // zero out the freshly recreated stream's stats instead.
+                PARSEABLE
+                    .streams
+                    .delete_if_still_deleting(stream_name, tenant_id);
+                if let Err(e) = stats::delete_stats(stream_name, "json", tenant_id) {
+                    warn!("failed to clear stats for deleted stream {stream_name}: {e:?}");
+                }
                 if let Err(e) = storage
                     .delete_object(&tombstone_path(stream_name, tenant_id), tenant_id)
                     .await
@@ -1386,12 +1403,6 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
                     warn!(
                         "background deletion of {stream_name} finished but failed to clear its tombstone: {e}"
                     );
-                }
-                PARSEABLE
-                    .streams
-                    .delete_if_still_deleting(stream_name, tenant_id);
-                if let Err(e) = stats::delete_stats(stream_name, "json", tenant_id) {
-                    warn!("failed to clear stats for deleted stream {stream_name}: {e:?}");
                 }
             }
             Err(e) => error!(
@@ -1539,7 +1550,25 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
                             for stream_name in stream_names {
                                 match PARSEABLE.get_stream(&stream_name, &tenant_id) {
                                     Ok(stream) if !stream.is_deleting() => {
-                                        stream.mark_deleting();
+                                        // list_tombstoned_streams above is a
+                                        // snapshot -- by the time we get
+                                        // here, the original deletion this
+                                        // name was tombstoned for could have
+                                        // already finished and the name been
+                                        // legitimately recreated (its tombstone
+                                        // gone, so the recreate wasn't even
+                                        // blocked). Re-check this one name
+                                        // live, right before acting, so a
+                                        // fresh stream can't be flagged
+                                        // deleting based on stale snapshot
+                                        // data with no tombstone left to ever
+                                        // clear it again.
+                                        if is_tombstoned(object_store.as_ref(), &stream_name, &tenant_id)
+                                            .await
+                                            .unwrap_or(false)
+                                        {
+                                            stream.mark_deleting();
+                                        }
                                     }
                                     // Already flagged: the per-stream loop
                                     // above already owns reconciling this
