@@ -77,14 +77,14 @@ impl ForwardFilePlan {
     /// Every stream begins with the original schema and receives every
     /// dictionary update, preserving Arrow IPC decoder state.
     pub(crate) fn reader_lane_count(&self, readers_per_file: usize) -> usize {
-        readers_per_file.max(1).min(self.record_batches)
+        readers_per_file.clamp(1, self.record_batches)
     }
 
     pub(crate) fn open_lanes(
         self,
         readers_per_file: usize,
     ) -> Result<Vec<ForwardReaderLane>, io::Error> {
-        let lane_count = readers_per_file.max(1).min(self.record_batches);
+        let lane_count = readers_per_file.clamp(1, self.record_batches);
         let (_, schema_offset, schema_size) = self.messages[0];
         let schema_range = (schema_offset as u64, schema_size);
         let mut lane_ranges = vec![vec![schema_range]; lane_count];

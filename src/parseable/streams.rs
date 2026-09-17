@@ -531,10 +531,7 @@ impl MetricForwardRecordIterator {
 
         let total_limit = *METRIC_ARROW_READERS_IN_FLIGHT;
         let per_file_limit = (*METRIC_ARROW_READERS_PER_FILE).min(total_limit);
-        loop {
-            let Some(plan) = self.plans.as_slice().first() else {
-                break;
-            };
+        while let Some(plan) = self.plans.as_slice().first() {
             let reader_lanes = plan.reader_lane_count(per_file_limit);
             if !self.active_files.is_empty() && self.readers_in_flight + reader_lanes > total_limit
             {
@@ -993,7 +990,7 @@ impl Stream {
     /// the same minute.
     fn create_inprocess_folder(&self, minute: u128) -> std::io::Result<PathBuf> {
         let preferred = Self::inprocess_folder(&self.data_path, minute);
-        match fs::create_dir(&preferred) {
+        match fs::DirBuilder::new().create(&preferred) {
             Ok(()) => return Ok(preferred),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(err) => return Err(err),
@@ -1003,7 +1000,7 @@ impl Stream {
             let unique = self
                 .data_path
                 .join(format!("{INPROCESS_DIR_PREFIX}{minute}_{}", Ulid::new()));
-            match fs::create_dir(&unique) {
+            match fs::DirBuilder::new().create(&unique) {
                 Ok(()) => return Ok(unique),
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(err) => return Err(err),
@@ -1953,146 +1950,15 @@ impl Stream {
             .truncate(true)
             .open(part_path)
             .map_err(|_| StagingError::Create)?;
-        // does pruning help with query?
-        let sort_for_metric_pruning = self.is_otel_metrics();
-        let time_partition_field = time_partition.map_or_else(
-            || DEFAULT_TIMESTAMP_KEY.to_string(),
-            |s| s.as_str().to_string(),
-        );
-
-        if sort_for_metric_pruning {
-            let conversion_started = Instant::now();
-            let source_arrow_files = record_reader.readable_files().len();
-            let source_arrow_bytes = record_reader
-                .readable_files()
-                .iter()
-                .filter_map(|path| path.metadata().ok().map(|metadata| metadata.len()))
-                .sum::<u64>();
-            let mut timings = MetricParquetPhaseTimings::default();
-            let arrow_writer =
-                ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
-            let (mut writer, row_group_factory) = arrow_writer.into_serialized_writer()?;
-            let row_group_factory = Arc::new(row_group_factory);
-            let column_paths = Arc::new(
-                writer
-                    .schema_descr()
-                    .columns()
-                    .iter()
-                    .map(|column| column.path().string())
-                    .collect::<Vec<_>>(),
-            );
-            let target = self.options.row_group_size;
-            if target == 0 {
-                return Err(ParquetError::General(
-                    "Parquet row-group target must be greater than zero".to_string(),
-                )
-                .into());
-            }
-
-            // Producer reads, decodes, concatenates, and sorts the next exact
-            // row group while this thread encodes the current row group. The
-            // bounded channel limits prepared batches retained in memory.
-            let prepared_row_groups = Self::spawn_metric_row_group_pipeline(
+        if self.is_otel_metrics() {
+            self.write_metric_parquet_part_file(
+                part_path,
+                &mut part_file,
                 record_reader,
-                schema.clone(),
-                time_partition.cloned(),
-                time_partition_field,
-                target,
-            );
-            let mut preparation_complete = false;
-            let mut next_row_group_index = writer.flushed_row_groups().len();
-            let mut pending_encodings = VecDeque::with_capacity(*METRIC_ROW_GROUP_ENCODE_IN_FLIGHT);
-            while !preparation_complete || !pending_encodings.is_empty() {
-                if !preparation_complete
-                    && pending_encodings.len() < *METRIC_ROW_GROUP_ENCODE_IN_FLIGHT
-                {
-                    let wait_started = Instant::now();
-                    let message = prepared_row_groups.recv().map_err(|err| {
-                        StagingError::ObjectStorage(std::io::Error::other(format!(
-                            "Metric row-group pipeline worker failed: {err}"
-                        )))
-                    })?;
-                    let prepare_wait_duration = wait_started.elapsed();
-                    match message {
-                        MetricRowGroupPipelineMessage::Prepared(prepared) => {
-                            if prepared.batch.num_rows() > target {
-                                return Err(ParquetError::General(format!(
-                                    "Prepared metric row group has {} rows, exceeding target {target}",
-                                    prepared.batch.num_rows()
-                                ))
-                                .into());
-                            }
-                            let preparation = MetricRowGroupPreparationTimings {
-                                arrow_read_decode_duration: prepared.arrow_read_decode_duration,
-                                concat_duration: prepared.concat_duration,
-                                sort_duration: prepared.sort_duration,
-                                prepare_wait_duration,
-                                record_batches: prepared.record_batches,
-                            };
-                            let encode = Self::spawn_metric_row_group_encode(
-                                Arc::clone(&row_group_factory),
-                                Arc::clone(&column_paths),
-                                prepared.batch,
-                                next_row_group_index,
-                            );
-                            pending_encodings.push_back((encode, preparation));
-                            next_row_group_index += 1;
-                            continue;
-                        }
-                        MetricRowGroupPipelineMessage::Failed(err) => return Err(err),
-                        MetricRowGroupPipelineMessage::Complete => preparation_complete = true,
-                    }
-                }
-
-                if let Some((encoded, preparation)) = pending_encodings.pop_front() {
-                    let encoded = encoded.recv().map_err(|err| {
-                        StagingError::ObjectStorage(std::io::Error::other(format!(
-                            "Metric row-group encoding worker failed: {err}"
-                        )))
-                    })??;
-                    Self::write_encoded_metric_row_group(
-                        &self.stream_name,
-                        part_path,
-                        &mut writer,
-                        encoded,
-                        preparation,
-                        &mut timings,
-                    )?;
-                }
-            }
-            let close_started = Instant::now();
-            writer.close()?;
-            timings.parquet_close_duration = close_started.elapsed();
-            let total_duration = conversion_started.elapsed();
-            let output_bytes = part_file
-                .metadata()
-                .map(|metadata| metadata.len())
-                .unwrap_or_default();
-            info!(
-                stream_name = %self.stream_name,
-                parquet_path = %part_path.display(),
-                source_arrow_files,
-                source_arrow_bytes,
-                output_bytes,
-                record_batches = timings.record_batches,
-                rows = timings.rows,
-                row_groups = timings.row_groups,
-                arrow_readers_per_file = *METRIC_ARROW_READERS_PER_FILE,
-                arrow_readers_in_flight = *METRIC_ARROW_READERS_IN_FLIGHT,
-                row_group_prepare_in_flight = *METRIC_ROW_GROUP_PREP_IN_FLIGHT,
-                row_group_encode_in_flight = *METRIC_ROW_GROUP_ENCODE_IN_FLIGHT,
-                columns_per_rayon_task = *PARQUET_COLUMNS_PER_RAYON_TASK,
-                total_ms = total_duration.as_secs_f64() * 1000.0,
-                arrow_read_decode_ms = timings.arrow_read_decode_duration.as_secs_f64() * 1000.0,
-                concat_ms = timings.concat_duration.as_secs_f64() * 1000.0,
-                sort_ms = timings.sort_duration.as_secs_f64() * 1000.0,
-                prepare_wait_ms = timings.prepare_wait_duration.as_secs_f64() * 1000.0,
-                parquet_setup_ms = timings.parquet_setup_duration.as_secs_f64() * 1000.0,
-                parquet_encode_ms = timings.parquet_encode_duration.as_secs_f64() * 1000.0,
-                parquet_append_ms = timings.parquet_append_duration.as_secs_f64() * 1000.0,
-                parquet_close_ms = timings.parquet_close_duration.as_secs_f64() * 1000.0,
-                "Metric Arrow-to-Parquet phase timings"
-            );
+                schema,
+                props,
+                time_partition,
+            )?;
         } else {
             let mut writer =
                 ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
@@ -2114,6 +1980,155 @@ impl Stream {
         }
         trace!("Parquet file successfully constructed");
         Ok(true)
+    }
+
+    /// Writes a metric conversion group with pipelined row-group preparation
+    /// and encoding while preserving row-group output order.
+    fn write_metric_parquet_part_file(
+        &self,
+        part_path: &Path,
+        part_file: &mut File,
+        record_reader: ConversionRecordReader,
+        schema: &Arc<Schema>,
+        props: &WriterProperties,
+        time_partition: Option<&String>,
+    ) -> Result<(), StagingError> {
+        let conversion_started = Instant::now();
+        let source_arrow_files = record_reader.readable_files().len();
+        let source_arrow_bytes = record_reader
+            .readable_files()
+            .iter()
+            .filter_map(|path| path.metadata().ok().map(|metadata| metadata.len()))
+            .sum::<u64>();
+        let mut timings = MetricParquetPhaseTimings::default();
+        let arrow_writer =
+            ArrowWriter::try_new(&mut *part_file, schema.clone(), Some(props.clone()))?;
+        let (mut writer, row_group_factory) = arrow_writer.into_serialized_writer()?;
+        let row_group_factory = Arc::new(row_group_factory);
+        let column_paths = Arc::new(
+            writer
+                .schema_descr()
+                .columns()
+                .iter()
+                .map(|column| column.path().string())
+                .collect::<Vec<_>>(),
+        );
+        let target = self.options.row_group_size;
+        if target == 0 {
+            return Err(ParquetError::General(
+                "Parquet row-group target must be greater than zero".to_string(),
+            )
+            .into());
+        }
+
+        let time_partition_field = time_partition.map_or_else(
+            || DEFAULT_TIMESTAMP_KEY.to_string(),
+            |value| value.as_str().to_string(),
+        );
+        // Producer reads, decodes, concatenates, and sorts the next exact row
+        // group while this thread encodes the current row group.
+        let prepared_row_groups = Self::spawn_metric_row_group_pipeline(
+            record_reader,
+            schema.clone(),
+            time_partition.cloned(),
+            time_partition_field,
+            target,
+        );
+        let mut preparation_complete = false;
+        let mut next_row_group_index = writer.flushed_row_groups().len();
+        let mut pending_encodings = VecDeque::with_capacity(*METRIC_ROW_GROUP_ENCODE_IN_FLIGHT);
+        while !preparation_complete || !pending_encodings.is_empty() {
+            if !preparation_complete && pending_encodings.len() < *METRIC_ROW_GROUP_ENCODE_IN_FLIGHT
+            {
+                let wait_started = Instant::now();
+                let message = prepared_row_groups.recv().map_err(|err| {
+                    StagingError::ObjectStorage(std::io::Error::other(format!(
+                        "Metric row-group pipeline worker failed: {err}"
+                    )))
+                })?;
+                let prepare_wait_duration = wait_started.elapsed();
+                match message {
+                    MetricRowGroupPipelineMessage::Prepared(prepared) => {
+                        if prepared.batch.num_rows() > target {
+                            return Err(ParquetError::General(format!(
+                                "Prepared metric row group has {} rows, exceeding target {target}",
+                                prepared.batch.num_rows()
+                            ))
+                            .into());
+                        }
+                        let preparation = MetricRowGroupPreparationTimings {
+                            arrow_read_decode_duration: prepared.arrow_read_decode_duration,
+                            concat_duration: prepared.concat_duration,
+                            sort_duration: prepared.sort_duration,
+                            prepare_wait_duration,
+                            record_batches: prepared.record_batches,
+                        };
+                        let encode = Self::spawn_metric_row_group_encode(
+                            Arc::clone(&row_group_factory),
+                            Arc::clone(&column_paths),
+                            prepared.batch,
+                            next_row_group_index,
+                        );
+                        pending_encodings.push_back((encode, preparation));
+                        next_row_group_index += 1;
+                        continue;
+                    }
+                    MetricRowGroupPipelineMessage::Failed(err) => return Err(err),
+                    MetricRowGroupPipelineMessage::Complete => preparation_complete = true,
+                }
+            }
+
+            if let Some((encoded, preparation)) = pending_encodings.pop_front() {
+                let encoded = encoded.recv().map_err(|err| {
+                    StagingError::ObjectStorage(std::io::Error::other(format!(
+                        "Metric row-group encoding worker failed: {err}"
+                    )))
+                })??;
+                Self::write_encoded_metric_row_group(
+                    &self.stream_name,
+                    part_path,
+                    &mut writer,
+                    encoded,
+                    preparation,
+                    &mut timings,
+                )?;
+            }
+        }
+
+        let close_started = Instant::now();
+        writer.close()?;
+        timings.parquet_close_duration = close_started.elapsed();
+        let total_duration = conversion_started.elapsed();
+        let output_bytes = part_file
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        info!(
+            stream_name = %self.stream_name,
+            parquet_path = %part_path.display(),
+            source_arrow_files,
+            source_arrow_bytes,
+            output_bytes,
+            record_batches = timings.record_batches,
+            rows = timings.rows,
+            row_groups = timings.row_groups,
+            arrow_readers_per_file = *METRIC_ARROW_READERS_PER_FILE,
+            arrow_readers_in_flight = *METRIC_ARROW_READERS_IN_FLIGHT,
+            row_group_prepare_in_flight = *METRIC_ROW_GROUP_PREP_IN_FLIGHT,
+            row_group_encode_in_flight = *METRIC_ROW_GROUP_ENCODE_IN_FLIGHT,
+            columns_per_rayon_task = *PARQUET_COLUMNS_PER_RAYON_TASK,
+            total_ms = total_duration.as_secs_f64() * 1000.0,
+            arrow_read_decode_ms = timings.arrow_read_decode_duration.as_secs_f64() * 1000.0,
+            concat_ms = timings.concat_duration.as_secs_f64() * 1000.0,
+            sort_ms = timings.sort_duration.as_secs_f64() * 1000.0,
+            prepare_wait_ms = timings.prepare_wait_duration.as_secs_f64() * 1000.0,
+            parquet_setup_ms = timings.parquet_setup_duration.as_secs_f64() * 1000.0,
+            parquet_encode_ms = timings.parquet_encode_duration.as_secs_f64() * 1000.0,
+            parquet_append_ms = timings.parquet_append_duration.as_secs_f64() * 1000.0,
+            parquet_close_ms = timings.parquet_close_duration.as_secs_f64() * 1000.0,
+            "Metric Arrow-to-Parquet phase timings"
+        );
+        Ok(())
     }
 
     /// Removes a temporary Parquet output left by a failed conversion.
