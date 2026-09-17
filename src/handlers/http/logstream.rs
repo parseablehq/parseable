@@ -303,10 +303,12 @@ pub async fn get_retention(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    let retention = PARSEABLE
-        .get_stream(&stream_name, &tenant_id)?
-        .get_retention()
-        .unwrap_or_default();
+    let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+    if stream.is_deleting() {
+        return Err(StreamNotFound(stream_name.clone()).into());
+    }
+
+    let retention = stream.get_retention().unwrap_or_default();
     Ok((web::Json(retention), StatusCode::OK))
 }
 
@@ -327,15 +329,18 @@ pub async fn put_retention(
         return Err(StreamNotFound(stream_name).into());
     }
 
+    let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+    if stream.is_deleting() {
+        return Err(StreamNotFound(stream_name).into());
+    }
+
     PARSEABLE
         .storage
         .get_object_store()
         .put_retention(&stream_name, &retention, &tenant_id)
         .await?;
 
-    PARSEABLE
-        .get_stream(&stream_name, &tenant_id)?
-        .set_retention(retention);
+    stream.set_retention(retention);
 
     Ok((
         format!("set retention configuration for log stream {stream_name}"),
@@ -527,6 +532,10 @@ pub async fn put_stream_hot_tier(
 
     let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
 
+    if stream.is_deleting() {
+        return Err(StreamNotFound(stream_name).into());
+    }
+
     if stream.get_stream_type() == StreamType::Internal {
         return Err(StreamError::Custom {
             msg: "Hot tier can not be updated for internal stream".to_string(),
@@ -600,6 +609,13 @@ pub async fn get_stream_hot_tier(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
+    if PARSEABLE
+        .get_stream(&stream_name, &tenant_id)
+        .is_ok_and(|stream| stream.is_deleting())
+    {
+        return Err(StreamNotFound(stream_name.clone()).into());
+    }
+
     let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() else {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     };
@@ -635,11 +651,13 @@ pub async fn delete_stream_hot_tier(
         return Err(StreamNotFound(stream_name).into());
     }
 
-    if PARSEABLE
-        .get_stream(&stream_name, &tenant_id)?
-        .get_stream_type()
-        == StreamType::Internal
-    {
+    let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+
+    if stream.is_deleting() {
+        return Err(StreamNotFound(stream_name).into());
+    }
+
+    if stream.get_stream_type() == StreamType::Internal {
         return Err(StreamError::Custom {
             msg: "Hot tier can not be deleted for internal stream".to_string(),
             status: StatusCode::BAD_REQUEST,

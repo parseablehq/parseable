@@ -1501,6 +1501,44 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
                 handle,
             );
         }
+
+        // Reconcile tombstones left behind by a deletion whose bulk delete
+        // succeeded but whose final tombstone-clear call failed (e.g. a
+        // transient network error). That stream is already gone from both
+        // this node's memory and from storage by the time that happens, so
+        // the resident-stream loop above never sees it again -- only a scan
+        // of the tombstone directory itself can find it. Same
+        // is_deletion_owner restriction as above: only a node that can
+        // actually run the physical delete should retry it.
+        if PARSEABLE.options.mode != Mode::Ingest {
+            let object_store = object_store.clone();
+            let tenant_id = tenant_id.clone();
+            joinset.spawn_on(
+                async move {
+                    match list_tombstoned_streams(object_store.as_ref(), &tenant_id).await {
+                        Ok(stream_names) => {
+                            for stream_name in stream_names {
+                                // Still resident: already handled by the
+                                // per-stream loop above, don't double-spawn.
+                                if PARSEABLE.streams.contains(&stream_name, &tenant_id) {
+                                    continue;
+                                }
+                                // delete_stream against an already-empty
+                                // prefix is a cheap no-op, so this only ever
+                                // repeats the tombstone clear until it
+                                // succeeds -- safe to retry every interval.
+                                spawn_stream_deletion(stream_name, tenant_id.clone());
+                            }
+                        }
+                        Err(e) => error!(
+                            "failed to list tombstoned streams while syncing tenant {tenant_id:?}: {e}"
+                        ),
+                    }
+                    Ok(())
+                },
+                handle,
+            );
+        }
     }
 }
 
