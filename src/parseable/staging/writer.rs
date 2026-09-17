@@ -268,7 +268,7 @@ impl<const N: usize> MemWriter<N> {
 
         Ok(read_buffer
             .into_iter()
-            .map(|rb| adapt_batch(schema, &rb))
+            .map(|rb| adapt_batch(schema.clone(), &rb))
             .collect())
     }
 }
@@ -277,7 +277,10 @@ fn concat_records(
     schema: &Arc<Schema>,
     record: &[RecordBatch],
 ) -> Result<RecordBatch, StagingError> {
-    let records = record.iter().map(|x| adapt_batch(schema, x)).collect_vec();
+    let records = record
+        .iter()
+        .map(|x| adapt_batch(schema.clone(), x))
+        .collect_vec();
     Ok(concat_batches(schema, records.iter())?)
 }
 

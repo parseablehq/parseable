@@ -17,36 +17,49 @@
  *
  */
 
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{Field, Fields, Schema};
+use arrow::{
+    compute::take,
+    row::{RowConverter, SortField},
+};
+use arrow_array::{ArrayRef, RecordBatch, UInt32Array};
+use arrow_schema::{ArrowError, Field, Fields, Schema, SortOptions};
 use chrono::{NaiveDate, NaiveDateTime, Timelike, Utc};
 use derive_more::derive::{Deref, DerefMut};
 use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
 use parquet::{
-    arrow::ArrowWriter,
+    arrow::{
+        ArrowWriter,
+        arrow_writer::{ArrowColumnChunk, ArrowRowGroupWriterFactory, compute_leaves},
+    },
     basic::Encoding,
+    errors::ParquetError,
     file::{
         FOOTER_SIZE,
         metadata::SortingColumn,
         properties::{BloomFilterPosition, WriterProperties},
         reader::FileReader,
         serialized_reader::SerializedFileReader,
+        writer::SerializedFileWriter,
     },
     schema::types::ColumnPath,
 };
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::{
+    iter::{
+        IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+    },
+    slice::ParallelSliceMut,
+};
 use relative_path::RelativePathBuf;
 use std::sync::PoisonError;
 use std::{
-    collections::VecDeque,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions, remove_file, write},
-    io::Read,
+    io::{Read, Write},
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinSet;
 use tracing::{error, info, info_span, instrument, trace, warn};
@@ -67,7 +80,10 @@ use crate::{
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::{StreamType, object_storage::to_bytes, retention::Retention},
     sync::FLUSH_AND_CONVERT_RUNTIME,
-    utils::time::{Minute, TimeRange},
+    utils::{
+        arrow::adapt_batch,
+        time::{Minute, TimeRange},
+    },
 };
 
 use super::{
@@ -75,21 +91,69 @@ use super::{
     PART_FILE_EXTENSION,
     staging::{
         StagingError,
-        reader::{MergedReverseRecordReader, get_reverse_reader},
+        reader::{
+            ForwardFilePlan, ForwardStreamReader, MergedForwardRecordReader,
+            MergedReverseRecordReader, get_reverse_reader,
+        },
         writer::Writer,
     },
 };
 
 static HOSTNAME: OnceCell<String> = OnceCell::new();
+static METRIC_PARQUET_THREADPOOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .thread_name(|index| format!("metric-parquet-{index}"))
+        .build()
+        .expect("Metric Parquet thread pool should be constructible")
+});
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
 const METRIC_NAME_BLOOM_FILTER_NDV: u64 = 32768;
+const MAX_PERIODIC_PARQUET_GROUPS_PER_STREAM: usize = 2;
+const PARQUET_COLUMNS_PER_RAYON_TASK_VAR: &str = "PARQUET_COLUMNS_PER_RAYON_TASK";
+const METRIC_ARROW_READERS_PER_FILE_VAR: &str = "METRIC_ARROW_READERS_PER_FILE";
+const METRIC_ARROW_READERS_IN_FLIGHT_VAR: &str = "METRIC_ARROW_READERS_IN_FLIGHT";
 const METRIC_ROW_GROUP_PREP_IN_FLIGHT_VAR: &str = "METRIC_ROW_GROUP_PREP_IN_FLIGHT";
-/// Caps how many arrow files feed a single parquet conversion group. A
-/// minute with heavy schema-key churn can stage thousands of small arrow
-/// files; converting them as one group means one kmerge holding an open
-/// reader (and a decoded batch) per file. Chunking bounds that memory
-/// while still collapsing thousands of files into a handful of parquets.
+const METRIC_ROW_GROUP_ENCODE_IN_FLIGHT_VAR: &str = "METRIC_ROW_GROUP_ENCODE_IN_FLIGHT";
+/// Minimum number of Parquet columns encoded by one Rayon task. Lower values
+/// expose more column parallelism; higher values reduce scheduling overhead.
+static PARQUET_COLUMNS_PER_RAYON_TASK: Lazy<usize> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(PARQUET_COLUMNS_PER_RAYON_TASK_VAR)
+        && let Ok(var) = var.parse::<usize>()
+        && var > 0
+    {
+        var
+    } else {
+        8
+    }
+});
+/// Number of independent Arrow IPC decoders used for each metric source file.
+/// Batches are striped across readers and emitted in their original order.
+static METRIC_ARROW_READERS_PER_FILE: Lazy<usize> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(METRIC_ARROW_READERS_PER_FILE_VAR)
+        && let Ok(var) = var.parse::<usize>()
+        && var > 0
+    {
+        var
+    } else {
+        4
+    }
+});
+/// Total Arrow IPC readers allowed to decode ahead for one metric Parquet.
+/// A one-batch file consumes one slot, so small files are decoded concurrently;
+/// a multi-batch file may consume several slots up to the per-file limit.
+static METRIC_ARROW_READERS_IN_FLIGHT: Lazy<usize> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(METRIC_ARROW_READERS_IN_FLIGHT_VAR)
+        && let Ok(var) = var.parse::<usize>()
+        && var > 0
+    {
+        var
+    } else {
+        4
+    }
+});
+/// Caps concurrent metric row-group preparation tasks. Preparation results are
+/// forwarded in source order so Parquet ordering remains deterministic.
 static METRIC_ROW_GROUP_PREP_IN_FLIGHT: Lazy<usize> = Lazy::new(|| {
     if let Ok(var) = std::env::var(METRIC_ROW_GROUP_PREP_IN_FLIGHT_VAR)
         && let Ok(var) = var.parse::<usize>()
@@ -97,7 +161,20 @@ static METRIC_ROW_GROUP_PREP_IN_FLIGHT: Lazy<usize> = Lazy::new(|| {
     {
         var
     } else {
-        1
+        2
+    }
+});
+
+/// Caps concurrently encoded row groups for one metric Parquet file. Row
+/// groups are appended to the final file in source order after encoding.
+static METRIC_ROW_GROUP_ENCODE_IN_FLIGHT: Lazy<usize> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(METRIC_ROW_GROUP_ENCODE_IN_FLIGHT_VAR)
+        && let Ok(var) = var.parse::<usize>()
+        && var > 0
+    {
+        var
+    } else {
+        2
     }
 });
 
@@ -195,6 +272,62 @@ fn ordered_arrow_file_groups(
 
 struct PreparedMetricRowGroup {
     batch: RecordBatch,
+    arrow_read_decode_duration: Duration,
+    concat_duration: Duration,
+    sort_duration: Duration,
+    record_batches: usize,
+}
+
+enum MetricRowGroupPipelineMessage {
+    Prepared(PreparedMetricRowGroup),
+    Failed(StagingError),
+    Complete,
+}
+
+#[derive(Default)]
+struct MetricParquetWriteTimings {
+    setup_duration: Duration,
+    encode_duration: Duration,
+    append_duration: Duration,
+    row_groups: usize,
+    column_encode_timings: Vec<MetricColumnEncodeTiming>,
+}
+
+struct MetricColumnEncodeTiming {
+    path: String,
+    duration: Duration,
+    bytes_written: u64,
+}
+
+struct EncodedMetricRowGroup {
+    row_group_index: usize,
+    rows: usize,
+    chunks: Vec<(ArrowColumnChunk, MetricColumnEncodeTiming)>,
+    setup_duration: Duration,
+    encode_duration: Duration,
+}
+
+struct MetricRowGroupPreparationTimings {
+    arrow_read_decode_duration: Duration,
+    concat_duration: Duration,
+    sort_duration: Duration,
+    prepare_wait_duration: Duration,
+    record_batches: usize,
+}
+
+#[derive(Default)]
+struct MetricParquetPhaseTimings {
+    arrow_read_decode_duration: Duration,
+    concat_duration: Duration,
+    sort_duration: Duration,
+    prepare_wait_duration: Duration,
+    parquet_setup_duration: Duration,
+    parquet_encode_duration: Duration,
+    parquet_append_duration: Duration,
+    parquet_close_duration: Duration,
+    record_batches: usize,
+    rows: usize,
+    row_groups: usize,
 }
 
 /// Returns the filename for parquet if provided arrows file path is valid as per our expectation
@@ -269,6 +402,248 @@ struct ArrowFileConversionOutcome {
 enum ArrowGroupExecution {
     Sequential,
     Parallel,
+}
+
+enum ConversionRecordReader {
+    Forward(MergedForwardRecordReader),
+    Reverse(MergedReverseRecordReader),
+}
+
+type MetricArrowReadResult = Option<Result<RecordBatch, ArrowError>>;
+
+struct MetricForwardReaderLane {
+    reader: Arc<Mutex<ForwardStreamReader>>,
+    sender: std::sync::mpsc::SyncSender<MetricArrowReadResult>,
+    receiver: std::sync::mpsc::Receiver<MetricArrowReadResult>,
+    remaining: usize,
+}
+
+struct ActiveMetricForwardFile {
+    lanes: Vec<MetricForwardReaderLane>,
+    next_batch: usize,
+    total_batches: usize,
+}
+
+impl ActiveMetricForwardFile {
+    fn try_new(plan: ForwardFilePlan, readers_per_file: usize) -> Result<Self, ArrowError> {
+        let readers = plan
+            .open_lanes(readers_per_file)
+            .map_err(|err| ArrowError::IoError(err.to_string(), err))?;
+        let total_batches = readers.iter().map(|lane| lane.record_batches).sum();
+        let lanes = readers
+            .into_iter()
+            .map(|lane| {
+                let reader = Arc::new(Mutex::new(lane.reader));
+                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                Self::schedule_read(Arc::clone(&reader), sender.clone());
+                MetricForwardReaderLane {
+                    reader,
+                    sender,
+                    receiver,
+                    remaining: lane.record_batches,
+                }
+            })
+            .collect();
+        Ok(Self {
+            lanes,
+            next_batch: 0,
+            total_batches,
+        })
+    }
+
+    fn schedule_read(
+        reader: Arc<Mutex<ForwardStreamReader>>,
+        sender: std::sync::mpsc::SyncSender<MetricArrowReadResult>,
+    ) {
+        METRIC_PARQUET_THREADPOOL.spawn(move || {
+            let result = match reader.lock() {
+                Ok(mut reader) => reader.next(),
+                Err(err) => Some(Err(ArrowError::IpcError(format!(
+                    "Metric Arrow reader lock poisoned: {err}"
+                )))),
+            };
+            let _ = sender.send(result);
+        });
+    }
+
+    fn next_batch(&mut self) -> Option<Result<RecordBatch, ArrowError>> {
+        if self.next_batch == self.total_batches {
+            return None;
+        }
+
+        let lane_index = self.next_batch % self.lanes.len();
+        let lane = &mut self.lanes[lane_index];
+        let result = match lane.receiver.recv() {
+            Ok(Some(result)) => result,
+            Ok(None) => Err(ArrowError::IpcError(format!(
+                "Metric Arrow reader lane {lane_index} ended before all assigned batches"
+            ))),
+            Err(err) => Err(ArrowError::IpcError(format!(
+                "Metric Arrow reader lane {lane_index} failed: {err}"
+            ))),
+        };
+        self.next_batch += 1;
+        lane.remaining -= 1;
+        if result.is_ok() && lane.remaining > 0 {
+            Self::schedule_read(Arc::clone(&lane.reader), lane.sender.clone());
+        }
+        Some(result)
+    }
+}
+
+enum MetricForwardFileState {
+    Ready(ActiveMetricForwardFile),
+    Failed(ArrowError),
+}
+
+struct QueuedMetricForwardFile {
+    reader_lanes: usize,
+    state: MetricForwardFileState,
+}
+
+struct MetricForwardRecordIterator {
+    plans: std::vec::IntoIter<ForwardFilePlan>,
+    active_files: VecDeque<QueuedMetricForwardFile>,
+    readers_in_flight: usize,
+    setup_error_queued: bool,
+    schema: Arc<Schema>,
+}
+
+impl MetricForwardRecordIterator {
+    fn new(reader: MergedForwardRecordReader, schema: Arc<Schema>) -> Self {
+        Self {
+            plans: reader.into_file_plans(),
+            active_files: VecDeque::new(),
+            readers_in_flight: 0,
+            setup_error_queued: false,
+            schema,
+        }
+    }
+
+    /// Opens files in source order until the shared reader-lane budget is
+    /// exhausted. One-batch files therefore decode concurrently, while a
+    /// large multi-batch file can use several lanes without increasing the
+    /// maximum number of decoded batches retained in memory.
+    fn fill_reader_budget(&mut self) {
+        if self.setup_error_queued {
+            return;
+        }
+
+        let total_limit = *METRIC_ARROW_READERS_IN_FLIGHT;
+        let per_file_limit = (*METRIC_ARROW_READERS_PER_FILE).min(total_limit);
+        loop {
+            let Some(plan) = self.plans.as_slice().first() else {
+                break;
+            };
+            let reader_lanes = plan.reader_lane_count(per_file_limit);
+            if !self.active_files.is_empty() && self.readers_in_flight + reader_lanes > total_limit
+            {
+                break;
+            }
+
+            let plan = self.plans.next().expect("peeked Arrow file plan");
+            match ActiveMetricForwardFile::try_new(plan, per_file_limit) {
+                Ok(active) => {
+                    let reader_lanes = active.lanes.len();
+                    self.readers_in_flight += reader_lanes;
+                    self.active_files.push_back(QueuedMetricForwardFile {
+                        reader_lanes,
+                        state: MetricForwardFileState::Ready(active),
+                    });
+                }
+                Err(err) => {
+                    self.setup_error_queued = true;
+                    self.active_files.push_back(QueuedMetricForwardFile {
+                        reader_lanes: 0,
+                        state: MetricForwardFileState::Failed(err),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+}
+
+impl Iterator for MetricForwardRecordIterator {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            self.fill_reader_budget();
+            let queued = self.active_files.front_mut()?;
+            match &mut queued.state {
+                MetricForwardFileState::Ready(active) => {
+                    if let Some(batch) = active.next_batch() {
+                        return Some(batch.map(|batch| adapt_batch(self.schema.clone(), &batch)));
+                    }
+                }
+                MetricForwardFileState::Failed(_) => {}
+            }
+
+            let queued = self
+                .active_files
+                .pop_front()
+                .expect("front metric Arrow file");
+            match queued.state {
+                MetricForwardFileState::Ready(_) => {
+                    self.readers_in_flight -= queued.reader_lanes;
+                }
+                MetricForwardFileState::Failed(err) => {
+                    self.setup_error_queued = false;
+                    return Some(Err(err));
+                }
+            }
+        }
+    }
+}
+
+impl ConversionRecordReader {
+    fn for_stream(file_paths: &[PathBuf], forward: bool) -> Self {
+        if forward {
+            Self::Forward(MergedForwardRecordReader::try_new(file_paths))
+        } else {
+            Self::Reverse(MergedReverseRecordReader::try_new(file_paths))
+        }
+    }
+
+    fn reader_count(&self) -> usize {
+        match self {
+            Self::Forward(reader) => reader.file_count(),
+            Self::Reverse(reader) => reader.readers.len(),
+        }
+    }
+
+    fn readable_files(&self) -> &[PathBuf] {
+        match self {
+            Self::Forward(reader) => &reader.readable_files,
+            Self::Reverse(reader) => &reader.readable_files,
+        }
+    }
+
+    fn invalid_files(&self) -> &[PathBuf] {
+        match self {
+            Self::Forward(reader) => &reader.invalid_files,
+            Self::Reverse(reader) => &reader.invalid_files,
+        }
+    }
+
+    fn merged_schema(&self) -> Schema {
+        match self {
+            Self::Forward(reader) => reader.merged_schema(),
+            Self::Reverse(reader) => reader.merged_schema(),
+        }
+    }
+
+    fn merged_iter(
+        self,
+        schema: Arc<Schema>,
+        time_partition: Option<String>,
+    ) -> Box<dyn Iterator<Item = Result<RecordBatch, ArrowError>> + Send> {
+        match self {
+            Self::Forward(reader) => Box::new(MetricForwardRecordIterator::new(reader, schema)),
+            Self::Reverse(reader) => Box::new(reader.merged_iter(schema, time_partition)),
+        }
+    }
 }
 
 impl ArrowFileConversionOutcome {
@@ -482,13 +857,26 @@ impl Stream {
 
             // Never reuse a directory that may belong to the immutable startup
             // snapshot (possible when a process restarts within the same minute).
-            let inprocess_dir = self.available_inprocess_folder(group_minute);
-            if let Err(e) = fs::create_dir_all(&inprocess_dir) {
-                error!("Failed to create inprocess directory: {e}");
-                return Vec::new();
-            }
+            let inprocess_dir = match self.create_inprocess_folder(group_minute) {
+                Ok(inprocess_dir) => inprocess_dir,
+                Err(e) => {
+                    error!("Failed to create inprocess directory: {e}");
+                    return Vec::new();
+                }
+            };
             self.move_arrow_files(arrow_files, &inprocess_dir);
-            self.group_single_inprocess_arrow_files(&inprocess_dir, &Ulid::new().to_string())
+            let groups =
+                self.group_single_inprocess_arrow_files(&inprocess_dir, &Ulid::new().to_string());
+            if groups.is_empty()
+                && let Err(err) = fs::remove_dir(&inprocess_dir)
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                warn!(
+                    "Failed to remove empty processing directory {}: {err}",
+                    inprocess_dir.display()
+                );
+            }
+            groups
         }
     }
 
@@ -600,13 +988,26 @@ impl Stream {
         base.join(format!("{INPROCESS_DIR_PREFIX}{minute}"))
     }
 
-    fn available_inprocess_folder(&self, minute: u128) -> PathBuf {
+    /// Atomically reserves a processing directory. Overlapping periodic
+    /// cycles therefore never share one directory, even when they start in
+    /// the same minute.
+    fn create_inprocess_folder(&self, minute: u128) -> std::io::Result<PathBuf> {
         let preferred = Self::inprocess_folder(&self.data_path, minute);
-        if !preferred.exists() {
-            preferred
-        } else {
-            self.data_path
-                .join(format!("{INPROCESS_DIR_PREFIX}{minute}_{}", Ulid::new()))
+        match fs::create_dir(&preferred) {
+            Ok(()) => return Ok(preferred),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err),
+        }
+
+        loop {
+            let unique = self
+                .data_path
+                .join(format!("{INPROCESS_DIR_PREFIX}{minute}_{}", Ulid::new()));
+            match fs::create_dir(&unique) {
+                Ok(()) => return Ok(unique),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            }
         }
     }
 
@@ -891,7 +1292,6 @@ impl Stream {
         batch: &RecordBatch,
         time_partition_field: &str,
     ) -> Result<RecordBatch, StagingError> {
-        use arrow::compute::{SortColumn, kernels::sort::SortOptions, lexsort_to_indices, take};
         let schema = batch.schema();
         let Some(name_idx) = schema.index_of("metric_name").ok() else {
             return Ok(batch.clone());
@@ -902,28 +1302,25 @@ impl Stream {
         if batch.num_rows() < 2 {
             return Ok(batch.clone());
         }
-
-        let sort_cols = vec![
-            SortColumn {
-                values: batch.column(name_idx).clone(),
-                options: Some(SortOptions {
-                    descending: false,
-                    nulls_first: false,
-                }),
+        let arrays = [
+            batch.column(name_idx).clone(),
+            batch.column(time_idx).clone(),
+        ];
+        let sort_options = [
+            SortOptions {
+                descending: false,
+                nulls_first: false,
             },
-            SortColumn {
-                values: batch.column(time_idx).clone(),
-                options: Some(SortOptions {
-                    descending: true,
-                    nulls_first: false,
-                }),
+            SortOptions {
+                descending: true,
+                nulls_first: false,
             },
         ];
-        let indices = lexsort_to_indices(&sort_cols, None)?;
+        let indices = lexsort_to_indices_rows(&arrays, &sort_options)?;
         let columns: Vec<ArrayRef> = batch
             .columns()
-            .iter()
-            .map(|c| take(c.as_ref(), &indices, None))
+            .par_iter()
+            .map(|column| take(column.as_ref(), &indices, None))
             .collect::<Result<_, _>>()?;
         Ok(RecordBatch::try_new(schema, columns)?)
     }
@@ -933,37 +1330,350 @@ impl Stream {
         schema: Arc<Schema>,
         buffer: Vec<RecordBatch>,
         time_partition_field: String,
+        arrow_read_decode_duration: Duration,
+        record_batches: usize,
     ) -> Result<PreparedMetricRowGroup, StagingError> {
+        let concat_started = Instant::now();
         let combined = arrow::compute::concat_batches(&schema, &buffer)?;
-        let batch = Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
+        let concat_duration = concat_started.elapsed();
 
-        Ok(PreparedMetricRowGroup { batch })
+        let sort_started = Instant::now();
+        let batch = Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
+        let sort_duration = sort_started.elapsed();
+
+        Ok(PreparedMetricRowGroup {
+            batch,
+            arrow_read_decode_duration,
+            concat_duration,
+            sort_duration,
+            record_batches,
+        })
     }
 
     fn spawn_metric_row_group_prepare(
         schema: Arc<Schema>,
         buffer: Vec<RecordBatch>,
         time_partition_field: String,
+        arrow_read_decode_duration: Duration,
+        record_batches: usize,
     ) -> std::sync::mpsc::Receiver<Result<PreparedMetricRowGroup, StagingError>> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        INGESTION_THREADPOOL.spawn(move || {
-            let _ = tx.send(Self::prepare_metric_row_group(
+        METRIC_PARQUET_THREADPOOL.spawn(move || {
+            let result = Self::prepare_metric_row_group(
                 schema,
                 buffer,
                 time_partition_field,
-            ));
+                arrow_read_decode_duration,
+                record_batches,
+            );
+            let _ = tx.send(result);
         });
         rx
     }
 
-    fn receive_prepared_metric_row_group(
-        rx: std::sync::mpsc::Receiver<Result<PreparedMetricRowGroup, StagingError>>,
-    ) -> Result<PreparedMetricRowGroup, StagingError> {
-        rx.recv().map_err(|err| {
-            StagingError::ObjectStorage(std::io::Error::other(format!(
-                "Metric row-group preparation worker failed: {err}"
-            )))
-        })?
+    fn forward_prepared_metric_row_group(
+        pending: &mut VecDeque<
+            std::sync::mpsc::Receiver<Result<PreparedMetricRowGroup, StagingError>>,
+        >,
+        output: &std::sync::mpsc::SyncSender<MetricRowGroupPipelineMessage>,
+    ) -> bool {
+        let Some(prepared) = pending.pop_front() else {
+            return true;
+        };
+        let prepared = match prepared.recv() {
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(err)) => {
+                let _ = output.send(MetricRowGroupPipelineMessage::Failed(err));
+                return false;
+            }
+            Err(err) => {
+                let err = StagingError::ObjectStorage(std::io::Error::other(format!(
+                    "Metric row-group preparation worker failed: {err}"
+                )));
+                let _ = output.send(MetricRowGroupPipelineMessage::Failed(err));
+                return false;
+            }
+        };
+        output
+            .send(MetricRowGroupPipelineMessage::Prepared(prepared))
+            .is_ok()
+    }
+
+    fn spawn_metric_row_group_pipeline(
+        record_reader: ConversionRecordReader,
+        schema: Arc<Schema>,
+        time_partition: Option<String>,
+        time_partition_field: String,
+        target_rows: usize,
+    ) -> std::sync::mpsc::Receiver<MetricRowGroupPipelineMessage> {
+        // Metric batches are decoded by independent per-file reader lanes and
+        // reassembled in source order. Concat and sort are also dispatched
+        // independently and forwarded in order.
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        INGESTION_THREADPOOL.spawn(move || {
+            let buffer_capacity = record_reader.reader_count();
+            let mut buffer = Vec::with_capacity(buffer_capacity);
+            let mut buffered_rows = 0;
+            let mut buffered_read_decode_duration = Duration::ZERO;
+            let mut buffered_record_batches = 0;
+            let mut pending_preparations =
+                VecDeque::with_capacity(*METRIC_ROW_GROUP_PREP_IN_FLIGHT);
+            let mut merged_iter = record_reader.merged_iter(schema.clone(), time_partition);
+
+            loop {
+                let read_started = Instant::now();
+                let next_record = merged_iter.next();
+                let read_decode_duration = read_started.elapsed();
+                let Some(record) = next_record else {
+                    break;
+                };
+                let record = match record {
+                    Ok(record) => record,
+                    Err(err) => {
+                        let _ = tx.send(MetricRowGroupPipelineMessage::Failed(err.into()));
+                        return;
+                    }
+                };
+                let record_rows = record.num_rows();
+
+                buffered_record_batches += 1;
+                let mut record_offset = 0;
+                let mut remaining_read_decode_duration = read_decode_duration;
+                while record_offset < record_rows {
+                    let rows = (target_rows - buffered_rows).min(record_rows - record_offset);
+                    buffer.push(record.slice(record_offset, rows));
+                    buffered_rows += rows;
+                    record_offset += rows;
+
+                    let slice_read_decode_duration = if record_offset == record_rows {
+                        remaining_read_decode_duration
+                    } else {
+                        let duration =
+                            read_decode_duration.mul_f64(rows as f64 / record_rows as f64);
+                        remaining_read_decode_duration = remaining_read_decode_duration
+                            .checked_sub(duration)
+                            .unwrap_or_default();
+                        duration
+                    };
+                    buffered_read_decode_duration += slice_read_decode_duration;
+
+                    if buffered_rows == target_rows {
+                        let row_group_buffer =
+                            std::mem::replace(&mut buffer, Vec::with_capacity(buffer_capacity));
+                        let row_group_read_decode_duration =
+                            std::mem::take(&mut buffered_read_decode_duration);
+                        let row_group_record_batches = std::mem::take(&mut buffered_record_batches);
+                        let prepared = Self::spawn_metric_row_group_prepare(
+                            schema.clone(),
+                            row_group_buffer,
+                            time_partition_field.clone(),
+                            row_group_read_decode_duration,
+                            row_group_record_batches,
+                        );
+                        pending_preparations.push_back(prepared);
+                        if pending_preparations.len() >= *METRIC_ROW_GROUP_PREP_IN_FLIGHT
+                            && !Self::forward_prepared_metric_row_group(
+                                &mut pending_preparations,
+                                &tx,
+                            )
+                        {
+                            return;
+                        }
+                        buffered_rows = 0;
+                    }
+                }
+            }
+            // Release Arrow readers before signaling completion so successful
+            // conversion can safely remove source files on every platform.
+            drop(merged_iter);
+
+            if !buffer.is_empty() {
+                let prepared = Self::spawn_metric_row_group_prepare(
+                    schema,
+                    buffer,
+                    time_partition_field,
+                    buffered_read_decode_duration,
+                    buffered_record_batches,
+                );
+                pending_preparations.push_back(prepared);
+            }
+            while !pending_preparations.is_empty() {
+                if !Self::forward_prepared_metric_row_group(&mut pending_preparations, &tx) {
+                    return;
+                }
+            }
+            let _ = tx.send(MetricRowGroupPipelineMessage::Complete);
+        });
+        rx
+    }
+
+    fn encode_metric_row_group(
+        row_group_factory: &ArrowRowGroupWriterFactory,
+        column_paths: &[String],
+        batch: RecordBatch,
+        row_group_index: usize,
+    ) -> Result<EncodedMetricRowGroup, StagingError> {
+        let rows = batch.num_rows();
+        let setup_started = Instant::now();
+        let column_writers = row_group_factory.create_column_writers(row_group_index)?;
+        let mut leaves = Vec::with_capacity(column_writers.len());
+        for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+            leaves.extend(compute_leaves(field.as_ref(), column)?);
+        }
+
+        if column_writers.len() != leaves.len() {
+            return Err(ParquetError::General(format!(
+                "Parquet column writer count {} does not match Arrow leaf count {}",
+                column_writers.len(),
+                leaves.len()
+            ))
+            .into());
+        }
+        if column_writers.len() != column_paths.len() {
+            return Err(ParquetError::General(format!(
+                "Parquet column writer count {} does not match column path count {}",
+                column_writers.len(),
+                column_paths.len()
+            ))
+            .into());
+        }
+        let setup_duration = setup_started.elapsed();
+
+        let writer_leaves = column_writers
+            .into_iter()
+            .zip(leaves)
+            .zip(column_paths.iter().cloned())
+            .collect::<Vec<_>>();
+        let encode_started = Instant::now();
+        let chunks: Result<Vec<_>, ParquetError> = writer_leaves
+            .into_par_iter()
+            .with_min_len(*PARQUET_COLUMNS_PER_RAYON_TASK)
+            .map(|((mut column_writer, leaf), path)| {
+                let column_started = Instant::now();
+                column_writer.write(&leaf)?;
+                let chunk = column_writer.close()?;
+                let timing = MetricColumnEncodeTiming {
+                    path,
+                    duration: column_started.elapsed(),
+                    bytes_written: chunk.close().bytes_written,
+                };
+                Ok((chunk, timing))
+            })
+            .collect();
+
+        Ok(EncodedMetricRowGroup {
+            row_group_index,
+            rows,
+            chunks: chunks?,
+            setup_duration,
+            encode_duration: encode_started.elapsed(),
+        })
+    }
+
+    fn spawn_metric_row_group_encode(
+        row_group_factory: Arc<ArrowRowGroupWriterFactory>,
+        column_paths: Arc<Vec<String>>,
+        batch: RecordBatch,
+        row_group_index: usize,
+    ) -> std::sync::mpsc::Receiver<Result<EncodedMetricRowGroup, StagingError>> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        METRIC_PARQUET_THREADPOOL.spawn(move || {
+            let result = Self::encode_metric_row_group(
+                &row_group_factory,
+                &column_paths,
+                batch,
+                row_group_index,
+            );
+            let _ = tx.send(result);
+        });
+        rx
+    }
+
+    fn append_encoded_metric_row_group<W: Write + Send>(
+        writer: &mut SerializedFileWriter<W>,
+        encoded: EncodedMetricRowGroup,
+    ) -> Result<MetricParquetWriteTimings, StagingError> {
+        let expected_row_group_index = writer.flushed_row_groups().len();
+        if encoded.row_group_index != expected_row_group_index {
+            return Err(ParquetError::General(format!(
+                "Encoded Parquet row group {} cannot be appended at position {}",
+                encoded.row_group_index, expected_row_group_index
+            ))
+            .into());
+        }
+
+        let append_started = Instant::now();
+        let mut row_group_writer = writer.next_row_group()?;
+        let mut column_encode_timings = Vec::with_capacity(encoded.chunks.len());
+        for (chunk, column_timing) in encoded.chunks {
+            chunk.append_to_row_group(&mut row_group_writer)?;
+            column_encode_timings.push(column_timing);
+        }
+        row_group_writer.close()?;
+
+        Ok(MetricParquetWriteTimings {
+            setup_duration: encoded.setup_duration,
+            encode_duration: encoded.encode_duration,
+            append_duration: append_started.elapsed(),
+            row_groups: 1,
+            column_encode_timings,
+        })
+    }
+
+    fn write_encoded_metric_row_group<W: Write + Send>(
+        stream_name: &str,
+        part_path: &Path,
+        writer: &mut SerializedFileWriter<W>,
+        encoded: EncodedMetricRowGroup,
+        preparation: MetricRowGroupPreparationTimings,
+        timings: &mut MetricParquetPhaseTimings,
+    ) -> Result<(), StagingError> {
+        let first_row_group = encoded.row_group_index;
+        let prepared_rows = encoded.rows;
+        timings.record_batches += preparation.record_batches;
+        timings.rows += prepared_rows;
+        timings.arrow_read_decode_duration += preparation.arrow_read_decode_duration;
+        timings.prepare_wait_duration += preparation.prepare_wait_duration;
+        timings.concat_duration += preparation.concat_duration;
+        timings.sort_duration += preparation.sort_duration;
+
+        let write_timings = Self::append_encoded_metric_row_group(writer, encoded)?;
+        timings.parquet_setup_duration += write_timings.setup_duration;
+        timings.parquet_encode_duration += write_timings.encode_duration;
+        timings.parquet_append_duration += write_timings.append_duration;
+        timings.row_groups += write_timings.row_groups;
+        let slowest_columns = write_timings
+            .column_encode_timings
+            .iter()
+            .sorted_by_key(|timing| std::cmp::Reverse(timing.duration))
+            .take(10)
+            .map(|timing| {
+                format!(
+                    "{}:{:.3}ms:{}B",
+                    timing.path,
+                    timing.duration.as_secs_f64() * 1000.0,
+                    timing.bytes_written
+                )
+            })
+            .join(",");
+        trace!(
+            stream_name,
+            parquet_path = %part_path.display(),
+            first_row_group,
+            row_groups = write_timings.row_groups,
+            rows = prepared_rows,
+            arrow_read_decode_ms = preparation.arrow_read_decode_duration.as_secs_f64() * 1000.0,
+            concat_ms = preparation.concat_duration.as_secs_f64() * 1000.0,
+            sort_ms = preparation.sort_duration.as_secs_f64() * 1000.0,
+            prepare_wait_ms = preparation.prepare_wait_duration.as_secs_f64() * 1000.0,
+            parquet_setup_ms = write_timings.setup_duration.as_secs_f64() * 1000.0,
+            parquet_encode_ms = write_timings.encode_duration.as_secs_f64() * 1000.0,
+            parquet_append_ms = write_timings.append_duration.as_secs_f64() * 1000.0,
+            encoded_columns = write_timings.column_encode_timings.len(),
+            slowest_columns,
+            "Metric Arrow-to-Parquet row-group phase timings"
+        );
+        Ok(())
     }
 
     fn reset_staging_metrics(&self, tenant_id: &Option<String>) {
@@ -1089,9 +1799,22 @@ impl Stream {
             // Startup groups are ordered oldest-first and remain sequential so
             // recovery memory stays bounded.
             ArrowGroupExecution::Sequential => staging_files.into_iter().map(convert).collect(),
-            // Periodic sync restores normal Rayon conversion across all ready
-            // minute/partition groups in its processing directory.
-            ArrowGroupExecution::Parallel => staging_files.into_par_iter().map(convert).collect(),
+            // A periodic processing directory can contain many overdue minute
+            // groups. Convert only two at a time so a single stream cannot
+            // flood the shared Rayon pool with column-encoding work.
+            ArrowGroupExecution::Parallel => {
+                let mut results = Vec::with_capacity(staging_files.len());
+                for group_batch in staging_files.chunks(MAX_PERIODIC_PARQUET_GROUPS_PER_STREAM) {
+                    results.extend(
+                        group_batch
+                            .to_vec()
+                            .into_par_iter()
+                            .map(convert)
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                results
+            }
         };
 
         for (parquet_path, result) in results {
@@ -1149,10 +1872,13 @@ impl Stream {
         custom_partition: Option<&String>,
         tenant_id: &Option<String>,
     ) -> Result<Option<Schema>, StagingError> {
-        let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
-        self.remove_invalid_arrow_files(&record_reader.invalid_files, tenant_id);
-        let readable_arrow_files = record_reader.readable_files.clone();
-        if record_reader.readers.is_empty() {
+        // Metrics sort every output row group explicitly, so reading their IPC
+        // streams forward avoids reverse seeks and a full-column row reversal.
+        let record_reader =
+            ConversionRecordReader::for_stream(&arrow_files, self.is_otel_metrics());
+        self.remove_invalid_arrow_files(record_reader.invalid_files(), tenant_id);
+        let readable_arrow_files = record_reader.readable_files().to_vec();
+        if record_reader.reader_count() == 0 {
             return Ok(None);
         }
 
@@ -1211,7 +1937,7 @@ impl Stream {
     fn write_parquet_part_file(
         &self,
         part_path: &Path,
-        record_reader: MergedReverseRecordReader,
+        record_reader: ConversionRecordReader,
         schema: &Arc<Schema>,
         props: &WriterProperties,
         time_partition: Option<&String>,
@@ -1227,8 +1953,6 @@ impl Stream {
             .truncate(true)
             .open(part_path)
             .map_err(|_| StagingError::Create)?;
-        let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
-
         // does pruning help with query?
         let sort_for_metric_pruning = self.is_otel_metrics();
         let time_partition_field = time_partition.map_or_else(
@@ -1237,66 +1961,141 @@ impl Stream {
         );
 
         if sort_for_metric_pruning {
-            // Buffer batches up to the row-group target, then
-            // concat + sort + write as a single contiguous batch. The
-            // ArrowWriter splits the sorted batch into row groups at the
-            // same boundary, so the row order survives intact and
-            // per-page (metric_name min, max) stats narrow to the slice
-            // each page actually carries.
+            let conversion_started = Instant::now();
+            let source_arrow_files = record_reader.readable_files().len();
+            let source_arrow_bytes = record_reader
+                .readable_files()
+                .iter()
+                .filter_map(|path| path.metadata().ok().map(|metadata| metadata.len()))
+                .sum::<u64>();
+            let mut timings = MetricParquetPhaseTimings::default();
+            let arrow_writer =
+                ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
+            let (mut writer, row_group_factory) = arrow_writer.into_serialized_writer()?;
+            let row_group_factory = Arc::new(row_group_factory);
+            let column_paths = Arc::new(
+                writer
+                    .schema_descr()
+                    .columns()
+                    .iter()
+                    .map(|column| column.path().string())
+                    .collect::<Vec<_>>(),
+            );
             let target = self.options.row_group_size;
-            let buffer_capacity = record_reader.readers.len();
-            let mut pending_row_groups = VecDeque::with_capacity(*METRIC_ROW_GROUP_PREP_IN_FLIGHT);
-            let mut buffer: Vec<RecordBatch> = Vec::with_capacity(buffer_capacity);
-            let mut buffered_rows: usize = 0;
-            let mut merged_iter =
-                record_reader.merged_iter(schema.clone(), time_partition.cloned());
-            loop {
-                let Some(record) = merged_iter.next() else {
-                    break;
-                };
-                let record = record?;
-                let record_rows = record.num_rows();
-                buffered_rows += record_rows;
-                buffer.push(record);
-                if buffered_rows >= target {
-                    if pending_row_groups.len() >= *METRIC_ROW_GROUP_PREP_IN_FLIGHT
-                        && let Some(rx) = pending_row_groups.pop_front()
-                    {
-                        let prepared = Self::receive_prepared_metric_row_group(rx)?;
-                        writer.write(&prepared.batch)?;
-                    }
-                    let row_group_buffer =
-                        std::mem::replace(&mut buffer, Vec::with_capacity(buffer_capacity));
-                    let next_row_group = Self::spawn_metric_row_group_prepare(
-                        schema.clone(),
-                        row_group_buffer,
-                        time_partition_field.clone(),
-                    );
-                    pending_row_groups.push_back(next_row_group);
-                    buffer.clear();
-                    buffered_rows = 0;
-                }
+            if target == 0 {
+                return Err(ParquetError::General(
+                    "Parquet row-group target must be greater than zero".to_string(),
+                )
+                .into());
             }
-            if !buffer.is_empty() {
-                if pending_row_groups.len() >= *METRIC_ROW_GROUP_PREP_IN_FLIGHT
-                    && let Some(rx) = pending_row_groups.pop_front()
+
+            // Producer reads, decodes, concatenates, and sorts the next exact
+            // row group while this thread encodes the current row group. The
+            // bounded channel limits prepared batches retained in memory.
+            let prepared_row_groups = Self::spawn_metric_row_group_pipeline(
+                record_reader,
+                schema.clone(),
+                time_partition.cloned(),
+                time_partition_field,
+                target,
+            );
+            let mut preparation_complete = false;
+            let mut next_row_group_index = writer.flushed_row_groups().len();
+            let mut pending_encodings = VecDeque::with_capacity(*METRIC_ROW_GROUP_ENCODE_IN_FLIGHT);
+            while !preparation_complete || !pending_encodings.is_empty() {
+                if !preparation_complete
+                    && pending_encodings.len() < *METRIC_ROW_GROUP_ENCODE_IN_FLIGHT
                 {
-                    let prepared = Self::receive_prepared_metric_row_group(rx)?;
-                    writer.write(&prepared.batch)?;
+                    let wait_started = Instant::now();
+                    let message = prepared_row_groups.recv().map_err(|err| {
+                        StagingError::ObjectStorage(std::io::Error::other(format!(
+                            "Metric row-group pipeline worker failed: {err}"
+                        )))
+                    })?;
+                    let prepare_wait_duration = wait_started.elapsed();
+                    match message {
+                        MetricRowGroupPipelineMessage::Prepared(prepared) => {
+                            if prepared.batch.num_rows() > target {
+                                return Err(ParquetError::General(format!(
+                                    "Prepared metric row group has {} rows, exceeding target {target}",
+                                    prepared.batch.num_rows()
+                                ))
+                                .into());
+                            }
+                            let preparation = MetricRowGroupPreparationTimings {
+                                arrow_read_decode_duration: prepared.arrow_read_decode_duration,
+                                concat_duration: prepared.concat_duration,
+                                sort_duration: prepared.sort_duration,
+                                prepare_wait_duration,
+                                record_batches: prepared.record_batches,
+                            };
+                            let encode = Self::spawn_metric_row_group_encode(
+                                Arc::clone(&row_group_factory),
+                                Arc::clone(&column_paths),
+                                prepared.batch,
+                                next_row_group_index,
+                            );
+                            pending_encodings.push_back((encode, preparation));
+                            next_row_group_index += 1;
+                            continue;
+                        }
+                        MetricRowGroupPipelineMessage::Failed(err) => return Err(err),
+                        MetricRowGroupPipelineMessage::Complete => preparation_complete = true,
+                    }
                 }
-                let next_row_group = Self::spawn_metric_row_group_prepare(
-                    schema.clone(),
-                    buffer,
-                    time_partition_field.clone(),
-                );
-                pending_row_groups.push_back(next_row_group);
+
+                if let Some((encoded, preparation)) = pending_encodings.pop_front() {
+                    let encoded = encoded.recv().map_err(|err| {
+                        StagingError::ObjectStorage(std::io::Error::other(format!(
+                            "Metric row-group encoding worker failed: {err}"
+                        )))
+                    })??;
+                    Self::write_encoded_metric_row_group(
+                        &self.stream_name,
+                        part_path,
+                        &mut writer,
+                        encoded,
+                        preparation,
+                        &mut timings,
+                    )?;
+                }
             }
-            while let Some(rx) = pending_row_groups.pop_front() {
-                let prepared = Self::receive_prepared_metric_row_group(rx)?;
-                writer.write(&prepared.batch)?;
-            }
+            let close_started = Instant::now();
             writer.close()?;
+            timings.parquet_close_duration = close_started.elapsed();
+            let total_duration = conversion_started.elapsed();
+            let output_bytes = part_file
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
+            info!(
+                stream_name = %self.stream_name,
+                parquet_path = %part_path.display(),
+                source_arrow_files,
+                source_arrow_bytes,
+                output_bytes,
+                record_batches = timings.record_batches,
+                rows = timings.rows,
+                row_groups = timings.row_groups,
+                arrow_readers_per_file = *METRIC_ARROW_READERS_PER_FILE,
+                arrow_readers_in_flight = *METRIC_ARROW_READERS_IN_FLIGHT,
+                row_group_prepare_in_flight = *METRIC_ROW_GROUP_PREP_IN_FLIGHT,
+                row_group_encode_in_flight = *METRIC_ROW_GROUP_ENCODE_IN_FLIGHT,
+                columns_per_rayon_task = *PARQUET_COLUMNS_PER_RAYON_TASK,
+                total_ms = total_duration.as_secs_f64() * 1000.0,
+                arrow_read_decode_ms = timings.arrow_read_decode_duration.as_secs_f64() * 1000.0,
+                concat_ms = timings.concat_duration.as_secs_f64() * 1000.0,
+                sort_ms = timings.sort_duration.as_secs_f64() * 1000.0,
+                prepare_wait_ms = timings.prepare_wait_duration.as_secs_f64() * 1000.0,
+                parquet_setup_ms = timings.parquet_setup_duration.as_secs_f64() * 1000.0,
+                parquet_encode_ms = timings.parquet_encode_duration.as_secs_f64() * 1000.0,
+                parquet_append_ms = timings.parquet_append_duration.as_secs_f64() * 1000.0,
+                parquet_close_ms = timings.parquet_close_duration.as_secs_f64() * 1000.0,
+                "Metric Arrow-to-Parquet phase timings"
+            );
         } else {
+            let mut writer =
+                ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
             for record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
                 writer.write(&record?)?;
             }
@@ -2107,17 +2906,310 @@ impl Streams {
     }
 }
 
+fn lexsort_to_indices_rows(
+    arrays: &[ArrayRef],
+    sort_options: &[SortOptions],
+) -> Result<UInt32Array, ArrowError> {
+    if arrays.len() != sort_options.len() {
+        return Err(ArrowError::InvalidArgumentError(format!(
+            "Expected one sort option per array, got {} arrays and {} options",
+            arrays.len(),
+            sort_options.len()
+        )));
+    }
+
+    let fields = arrays
+        .iter()
+        .zip(sort_options)
+        .map(|(array, options)| SortField::new_with_options(array.data_type().clone(), *options))
+        .collect();
+    let converter = RowConverter::new(fields)?;
+    let rows = converter.convert_columns(arrays)?;
+    if rows.num_rows() > u32::MAX as usize {
+        return Err(ArrowError::ComputeError(format!(
+            "Cannot represent {} sort indices as UInt32",
+            rows.num_rows()
+        )));
+    }
+
+    let mut indices = (0..rows.num_rows()).collect::<Vec<_>>();
+    indices.par_sort_unstable_by(|a, b| rows.row(*a).cmp(&rows.row(*b)));
+    Ok(UInt32Array::from_iter_values(
+        indices.into_iter().map(|index| index as u32),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{io::Write, sync::Barrier, thread::spawn, time::Duration};
 
     use arrow_array::{Int32Array, StringArray, TimestampMillisecondArray};
+    use arrow_ipc::writer::StreamWriter as ArrowStreamWriter;
     use arrow_schema::{DataType, Field, TimeUnit};
     use chrono::{NaiveDate, TimeDelta, Utc};
     use temp_dir::TempDir;
     use tokio::time::sleep;
 
     use super::*;
+
+    #[test]
+    fn parallel_metric_writer_creates_valid_ordered_row_groups() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("parallel-metrics.parquet");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("value", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["a", "a", "b", "b", "c"])),
+                Arc::new(TimestampMillisecondArray::from(vec![5, 4, 3, 2, 1])),
+                Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])),
+            ],
+        )
+        .unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(2))
+            .build();
+        let mut file = File::create(&path).unwrap();
+        let arrow_writer = ArrowWriter::try_new(&mut file, schema, Some(props)).unwrap();
+        let (mut writer, row_group_factory) = arrow_writer.into_serialized_writer().unwrap();
+        let row_group_factory = Arc::new(row_group_factory);
+        let column_paths = Arc::new(
+            writer
+                .schema_descr()
+                .columns()
+                .iter()
+                .map(|column| column.path().string())
+                .collect::<Vec<_>>(),
+        );
+        let mut encodings = [(0, 2), (2, 2), (4, 1)]
+            .into_iter()
+            .enumerate()
+            .map(|(row_group_index, (offset, length))| {
+                Stream::spawn_metric_row_group_encode(
+                    Arc::clone(&row_group_factory),
+                    Arc::clone(&column_paths),
+                    batch.slice(offset, length),
+                    row_group_index,
+                )
+            })
+            .collect::<VecDeque<_>>();
+        let mut encoded_columns = 0;
+        while let Some(encoding) = encodings.pop_front() {
+            let encoded = encoding.recv().unwrap().unwrap();
+            let timings = Stream::append_encoded_metric_row_group(&mut writer, encoded).unwrap();
+            encoded_columns += timings.column_encode_timings.len();
+        }
+        assert_eq!(encoded_columns, 9);
+        writer.close().unwrap();
+        drop(file);
+
+        let reader = SerializedFileReader::new(File::open(path).unwrap()).unwrap();
+        assert_eq!(reader.num_row_groups(), 3);
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 5);
+        assert_eq!(reader.get_row_group(0).unwrap().metadata().num_rows(), 2);
+        assert_eq!(reader.get_row_group(1).unwrap().metadata().num_rows(), 2);
+        assert_eq!(reader.get_row_group(2).unwrap().metadata().num_rows(), 1);
+    }
+
+    #[test]
+    fn metric_conversion_carries_row_group_remainders_forward() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Arc::new(Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            row_group_size: 5,
+            ..Default::default()
+        });
+        let mut metadata = LogStreamMetadata::default();
+        metadata.log_source = vec![LogSourceEntry::new(LogSource::OtelMetrics, HashSet::new())];
+        let staging = Stream::new(options, "metric_stream", metadata, None, &None);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("value", DataType::Int32, false),
+        ]));
+        let event_time = Utc::now()
+            .checked_sub_signed(TimeDelta::minutes(2))
+            .unwrap()
+            .naive_utc();
+
+        for batch_number in 0..3 {
+            let row_start = batch_number * 6;
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["metric"; 6])),
+                    Arc::new(TimestampMillisecondArray::from_iter_values(
+                        row_start..row_start + 6,
+                    )),
+                    Arc::new(Int32Array::from_iter_values(
+                        row_start as i32..row_start as i32 + 6,
+                    )),
+                ],
+            )
+            .unwrap();
+            staging
+                .push(
+                    "metric-schema",
+                    &batch,
+                    event_time,
+                    &HashMap::new(),
+                    StreamType::UserDefined,
+                )
+                .unwrap();
+        }
+        staging.flush(true).unwrap();
+
+        let arrow_files = staging.arrow_files();
+        assert_eq!(arrow_files.len(), 1);
+        let ordered_batches = MetricForwardRecordIterator::new(
+            MergedForwardRecordReader::try_new(&arrow_files),
+            schema.clone(),
+        )
+        .map(|batch| {
+            batch
+                .unwrap()
+                .column_by_name("value")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0)
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(ordered_batches, vec![0, 6, 12]);
+
+        let record_reader =
+            ConversionRecordReader::Forward(MergedForwardRecordReader::try_new(&arrow_files));
+        let merged_schema = Arc::new(record_reader.merged_schema());
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(5))
+            .build();
+        let parquet_path = temp_dir.path().join("metric.parquet.part");
+        assert!(
+            staging
+                .write_parquet_part_file(
+                    &parquet_path,
+                    record_reader,
+                    &merged_schema,
+                    &props,
+                    None,
+                )
+                .unwrap()
+        );
+
+        let reader = SerializedFileReader::new(File::open(parquet_path).unwrap()).unwrap();
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 18);
+        assert_eq!(reader.num_row_groups(), 4);
+        let row_group_rows = (0..reader.num_row_groups())
+            .map(|index| reader.get_row_group(index).unwrap().metadata().num_rows())
+            .collect::<Vec<_>>();
+        assert_eq!(row_group_rows, vec![5, 5, 5, 3]);
+    }
+
+    #[test]
+    fn metric_forward_reader_decodes_small_files_concurrently_in_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Int32,
+            false,
+        )]));
+        let arrow_files = (0..6)
+            .map(|value| {
+                let path = temp_dir.path().join(format!("{value}.data.arrows"));
+                let mut writer =
+                    ArrowStreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+                writer
+                    .write(
+                        &RecordBatch::try_new(
+                            schema.clone(),
+                            vec![Arc::new(Int32Array::from(vec![value]))],
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                writer.finish().unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+
+        let mut reader = MetricForwardRecordIterator::new(
+            MergedForwardRecordReader::try_new(&arrow_files),
+            schema,
+        );
+        reader.fill_reader_budget();
+        assert_eq!(
+            reader.active_files.len(),
+            (*METRIC_ARROW_READERS_IN_FLIGHT).min(arrow_files.len())
+        );
+        let values = reader
+            .map(|batch| {
+                batch
+                    .unwrap()
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .value(0)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn metric_sort_matches_parquet_sorting_metadata() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("metric_name", DataType::Utf8, true),
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            ),
+            Field::new("row_id", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![
+                    Some("b"),
+                    Some("a"),
+                    Some("a"),
+                    None,
+                    Some("b"),
+                ])),
+                Arc::new(TimestampMillisecondArray::from(vec![
+                    Some(1),
+                    Some(2),
+                    Some(3),
+                    Some(5),
+                    None,
+                ])),
+                Arc::new(Int32Array::from(vec![0, 1, 2, 3, 4])),
+            ],
+        )
+        .unwrap();
+
+        let sorted = Stream::sort_batch_for_metric_pruning(&batch, DEFAULT_TIMESTAMP_KEY).unwrap();
+        let row_ids = sorted
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+
+        assert_eq!(row_ids.values(), &[2, 1, 0, 4, 3]);
+    }
 
     #[test]
     fn test_staging_new_with_valid_stream() {

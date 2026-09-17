@@ -1273,24 +1273,31 @@ async fn calculate_stats_for_uploaded_files(
 }
 
 async fn cleanup_uploaded_staged_files(uploaded_files: Vec<UploadedParquetFile>) {
-    // successfully uploaded files, remove from DashMap
-    for uploaded_parquet_file in uploaded_files.iter() {
-        ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&uploaded_parquet_file.file_path);
-    }
+    uploaded_files
+        .into_par_iter()
+        .for_each(|uploaded_parquet_file| {
+            let path = uploaded_parquet_file.file_path;
+            match remove_file(&path) {
+                Ok(()) => {
+                    ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&path);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&path);
+                }
+                Err(err) => {
+                    // Keep the claim until stale-entry cleanup so another sync
+                    // cannot upload the still-present file immediately.
+                    warn!("Failed to remove staged file {}: {err}", path.display());
+                    ACTIVE_OBJECT_STORE_SYNC_FILES.insert(path, Instant::now());
+                }
+            }
+        });
 
-    // Use monotonic time to ensure the 5-minute eviction window(cleanup) is immune to system clock adjustments.
+    // Use monotonic time so cleanup is immune to system clock adjustments.
     let now = Instant::now();
     ACTIVE_OBJECT_STORE_SYNC_FILES.retain(|_, tracked_instant| {
         now.duration_since(*tracked_instant) < Duration::from_secs(300)
     });
-
-    uploaded_files
-        .into_par_iter()
-        .for_each(|uploaded_parquet_file| {
-            if let Err(e) = remove_file(&uploaded_parquet_file.file_path) {
-                warn!("Failed to remove staged file: {e}");
-            }
-        });
 }
 
 /// Processes schema files
