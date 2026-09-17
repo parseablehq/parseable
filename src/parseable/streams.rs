@@ -2020,14 +2020,32 @@ impl Streams {
         plans
     }
 
-    /// TODO: validate possibility of stream continuing to exist despite being deleted
     pub fn delete(&self, stream_name: &str, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let mut guard = self.write().expect(LOCK_EXPECT);
         if let Some(tenant_streams) = guard.get_mut(tenant_id) {
             tenant_streams.remove(stream_name);
         }
-        // self.write().expect(LOCK_EXPECT).remove(stream_name);
+    }
+
+    /// Removes a stream's entry only if it's still flagged `deleting`.
+    /// A background deletion job finalizes by name, not by holding a
+    /// reference to the specific `Stream` instance it started deleting --
+    /// so without this check, a client that recreates the same name while
+    /// the job's finalization is still in flight (e.g. right after a
+    /// concurrent self-heal cleared a stale flag and inserted a fresh
+    /// entry) would have that brand-new entry silently evicted instead of
+    /// the stale one the job actually meant to clean up.
+    pub fn delete_if_still_deleting(&self, stream_name: &str, tenant_id: &Option<String>) {
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let mut guard = self.write().expect(LOCK_EXPECT);
+        if let Some(tenant_streams) = guard.get_mut(tenant_id)
+            && tenant_streams
+                .get(stream_name)
+                .is_some_and(|stream| stream.is_deleting())
+        {
+            tenant_streams.remove(stream_name);
+        }
     }
 
     pub fn contains(&self, stream_name: &str, tenant_id: &Option<String>) -> bool {

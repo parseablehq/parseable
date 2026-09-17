@@ -111,7 +111,7 @@ pub async fn delete(
     // ingestion for this stream with a clear "being deleted" error.
     Ok((
         format!("log stream {stream_name} deletion started"),
-        StatusCode::OK,
+        StatusCode::ACCEPTED,
     ))
 }
 

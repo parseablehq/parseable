@@ -1387,7 +1387,9 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
                         "background deletion of {stream_name} finished but failed to clear its tombstone: {e}"
                     );
                 }
-                PARSEABLE.streams.delete(stream_name, tenant_id);
+                PARSEABLE
+                    .streams
+                    .delete_if_still_deleting(stream_name, tenant_id);
                 if let Err(e) = stats::delete_stats(stream_name, "json", tenant_id) {
                     warn!("failed to clear stats for deleted stream {stream_name}: {e:?}");
                 }
@@ -1411,11 +1413,17 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
         for stream_name in PARSEABLE.streams.list(&tenant_id) {
             if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id) {
                 if stream.is_deleting() {
-                    // Fast path (the DELETE handler's own `for_each_live_node`
-                    // push) already reaches most nodes immediately. This is
-                    // the fallback for one that missed it, e.g. a node that
-                    // was down or partitioned at the time: bounded to at most
-                    // one sync interval instead of running forever.
+                    // This handles a stream this node already knows is
+                    // deleting -- either it received the DELETE handler's
+                    // `for_each_live_node` push directly, or it's the owning
+                    // node itself resuming its own in-flight job after a
+                    // restart. A node that missed the fan-out push entirely
+                    // (e.g. it was down or transiently unreachable at that
+                    // exact moment) never gets is_deleting()=true set in the
+                    // first place, so it never reaches this branch at all --
+                    // that case is instead caught by the tombstone-directory
+                    // scan below, which doesn't depend on the flag already
+                    // being set locally.
                     let object_store = object_store.clone();
                     let tenant_id = tenant_id.clone();
                     let stream_name = stream_name.clone();
@@ -1450,7 +1458,9 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
                                     // so a stream recreated under the same
                                     // name doesn't inherit a stuck
                                     // deleting=true state.
-                                    PARSEABLE.streams.delete(&stream_name, &tenant_id);
+                                    PARSEABLE
+                                        .streams
+                                        .delete_if_still_deleting(&stream_name, &tenant_id);
                                 }
                                 Ok(false) => {
                                     // On the owning node, an absent tombstone
@@ -1502,32 +1512,54 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
             );
         }
 
-        // Reconcile tombstones left behind by a deletion whose bulk delete
-        // succeeded but whose final tombstone-clear call failed (e.g. a
-        // transient network error). That stream is already gone from both
-        // this node's memory and from storage by the time that happens, so
-        // the resident-stream loop above never sees it again -- only a scan
-        // of the tombstone directory itself can find it. Same
-        // is_deletion_owner restriction as above: only a node that can
-        // actually run the physical delete should retry it.
-        if PARSEABLE.options.mode != Mode::Ingest {
+        // Reconcile tombstones that the per-stream loop above can't reach on
+        // its own, since it only acts on a stream whose local is_deleting()
+        // is already true:
+        //  - A resident stream that's still flagged false because this node
+        //    never ran mark_deleting() on it at all -- e.g. an ingestor that
+        //    missed the DELETE handler's `for_each_live_node` fan-out push
+        //    (a transient liveness-check failure at the wrong instant is
+        //    enough), so it kept accepting ingestion into an already-deleted
+        //    stream indefinitely. Flagging it here is just an in-memory
+        //    update, so this runs on every node type, not only the owner.
+        //  - A stream already gone from this node's memory entirely because
+        //    its owning deletion job already finished, but whose final
+        //    tombstone-clear call failed (e.g. a transient network error) --
+        //    only the owner should retry the physical delete for this case.
+        // A single tombstone-directory LIST finds every candidate at once,
+        // rather than a HEAD per resident stream every interval.
+        {
             let object_store = object_store.clone();
             let tenant_id = tenant_id.clone();
+            let is_deletion_owner = PARSEABLE.options.mode != Mode::Ingest;
             joinset.spawn_on(
                 async move {
                     match list_tombstoned_streams(object_store.as_ref(), &tenant_id).await {
                         Ok(stream_names) => {
                             for stream_name in stream_names {
-                                // Still resident: already handled by the
-                                // per-stream loop above, don't double-spawn.
-                                if PARSEABLE.streams.contains(&stream_name, &tenant_id) {
-                                    continue;
+                                match PARSEABLE.get_stream(&stream_name, &tenant_id) {
+                                    Ok(stream) if !stream.is_deleting() => {
+                                        stream.mark_deleting();
+                                    }
+                                    // Already flagged: the per-stream loop
+                                    // above already owns reconciling this
+                                    // one, nothing more to do here.
+                                    Ok(_) => {}
+                                    Err(_) if is_deletion_owner => {
+                                        // delete_stream against an
+                                        // already-empty prefix is a cheap
+                                        // no-op, so this only ever repeats
+                                        // the tombstone clear until it
+                                        // succeeds -- safe to retry every
+                                        // interval.
+                                        spawn_stream_deletion(stream_name, tenant_id.clone());
+                                    }
+                                    // Not resident on a non-owner (e.g. an
+                                    // ingestor that never loaded this stream
+                                    // in the first place) -- nothing to
+                                    // reconcile.
+                                    Err(_) => {}
                                 }
-                                // delete_stream against an already-empty
-                                // prefix is a cheap no-op, so this only ever
-                                // repeats the tombstone clear until it
-                                // succeeds -- safe to retry every interval.
-                                spawn_stream_deletion(stream_name, tenant_id.clone());
                             }
                         }
                         Err(e) => error!(

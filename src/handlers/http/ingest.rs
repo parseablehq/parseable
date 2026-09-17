@@ -256,6 +256,16 @@ pub async fn setup_otel_stream(
     let mut time_partition = None;
     // Validate stream compatibility
     if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id) {
+        // Unlike plain JSON ingest() and post_event(), this path doesn't go
+        // through validate_stream_for_ingestion, so it needs its own check:
+        // a stream flagged deleting must reject writes rather than staging
+        // data that will never be uploaded (sync_all_streams skips a
+        // deleting stream's staged files) nor cleaned up (the delete
+        // handler's own staging cleanup already ran before this write
+        // recreated the directory).
+        if stream.is_deleting() {
+            return Err(PostError::StreamBeingDeleted(stream_name.clone()));
+        }
         match log_source {
             LogSource::OtelLogs => {
                 // For logs, reject if stream is metrics or traces

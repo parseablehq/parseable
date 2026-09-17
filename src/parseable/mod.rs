@@ -668,6 +668,22 @@ impl Parseable {
             return Ok(true);
         }
 
+        // create_stream_and_schema_from_storage (or its Mode::All skip above)
+        // can't tell this caller "false because a deletion is in progress"
+        // apart from "false because the name is genuinely free" -- both
+        // return/short-circuit to Ok(false)/skipped. Check the durable
+        // tombstone directly so an implicit create-on-ingest can't
+        // resurrect a stream whose background deletion is still running.
+        if is_tombstoned(
+            self.storage.get_object_store().as_ref(),
+            stream_name,
+            tenant_id,
+        )
+        .await?
+        {
+            return Err(PostError::StreamBeingDeleted(stream_name.to_string()));
+        }
+
         self.create_stream(
             stream_name.to_string(),
             "",

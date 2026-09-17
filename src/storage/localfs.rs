@@ -905,6 +905,13 @@ async fn dir_with_stream(
             // whole listing over a stream that's in the middle of being
             // deleted.
             Ok(None)
+        } else if !path.exists() {
+            // The whole directory -- including its tombstone -- can vanish
+            // between this listing's `read_dir` snapshot and the checks
+            // above, e.g. a small/fast stream's background deletion runs to
+            // completion in that exact window. Nothing here is actually
+            // corrupt; there's simply nothing left to report.
+            Ok(None)
         } else {
             let err: Box<dyn std::error::Error + Send + Sync + 'static> =
                 format!("found {}", entry.path().display()).into();
@@ -1016,5 +1023,95 @@ mod list_streams_tombstone_tests {
         std::fs::create_dir_all(dir.path().join("not-a-stream")).unwrap();
 
         assert!(storage.list_streams().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn corrupt_directory_still_errors_alongside_a_tombstoned_one() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        // A per-directory check keyed on that directory's own tombstone
+        // path must still catch a genuinely corrupt directory even when a
+        // legitimately tombstoned stream exists elsewhere in the same
+        // listing -- an implementation that treated "any tombstone exists
+        // anywhere" as license to skip every missing-stream.json directory
+        // would incorrectly let this one through too.
+        storage
+            .put_object(
+                &stream_json_path_for_test("deleting-stream"),
+                to_bytes(&()),
+                &None,
+            )
+            .await
+            .unwrap();
+        storage
+            .delete_object(&stream_json_path_for_test("deleting-stream"), &None)
+            .await
+            .unwrap();
+        storage
+            .put_object(
+                &tombstone_path("deleting-stream", &None),
+                to_bytes(&()),
+                &None,
+            )
+            .await
+            .unwrap();
+        std::fs::create_dir_all(dir.path().join("not-a-stream")).unwrap();
+
+        assert!(storage.list_streams().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn dir_that_finished_deleting_between_snapshot_and_check_is_skipped() {
+        use futures::stream::StreamExt;
+        use tokio_stream::wrappers::ReadDirStream;
+
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("deleting-stream")).unwrap();
+
+        // Snapshot the directory listing (as list_streams does) while
+        // "deleting-stream" still exists, capturing its DirEntry.
+        let read_dir = tokio::fs::read_dir(dir.path()).await.unwrap();
+        let mut entries = ReadDirStream::new(read_dir);
+        let entry = entries.next().await.unwrap().unwrap();
+        assert_eq!(entry.file_name(), "deleting-stream");
+
+        // Simulate the whole deletion (directory + tombstone) completing
+        // after the snapshot was taken but before dir_with_stream's own
+        // stream.json/tombstone checks run against it.
+        std::fs::remove_dir_all(dir.path().join("deleting-stream")).unwrap();
+
+        let result = super::dir_with_stream(entry, &[], dir.path()).await;
+        assert_eq!(result.unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod delete_stream_idempotency_tests {
+    use temp_dir::TempDir;
+
+    use super::{LocalFS, ObjectStorage};
+
+    #[tokio::test]
+    async fn deleting_an_existing_stream_directory_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+        std::fs::create_dir_all(dir.path().join("mystream")).unwrap();
+
+        assert!(storage.delete_stream("mystream", &None).await.is_ok());
+        assert!(!dir.path().join("mystream").exists());
+    }
+
+    #[tokio::test]
+    async fn retrying_delete_on_an_already_removed_prefix_is_a_no_op_success() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        // Never created "mystream" at all -- this is what a resumed
+        // deletion sees if the process crashed after `remove_dir_all`
+        // already finished but before the tombstone was cleared. Matches
+        // S3/Azure/GCS, whose prefix delete is already a no-op success
+        // against an empty/nonexistent prefix.
+        assert!(storage.delete_stream("mystream", &None).await.is_ok());
     }
 }

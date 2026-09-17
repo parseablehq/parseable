@@ -51,7 +51,9 @@ use crate::{
     stats,
     storage::{
         ObjectStoreFormat, StreamType,
-        object_storage::{spawn_stream_deletion, stream_json_path, to_bytes, tombstone_path},
+        object_storage::{
+            is_tombstoned, spawn_stream_deletion, stream_json_path, to_bytes, tombstone_path,
+        },
     },
     utils::get_tenant_id_from_request,
 };
@@ -88,6 +90,25 @@ pub async fn delete(
                 .await
                 .unwrap_or(false)
         {
+            // create_stream_and_schema_from_storage returns false both for
+            // "genuinely doesn't exist" and "exists but is tombstoned" --
+            // check the tombstone directly so a retried DELETE against a
+            // replica that hasn't resumed this stream yet reports the
+            // deletion as already accepted instead of a plain 404
+            // indistinguishable from the stream never having existed.
+            if is_tombstoned(
+                PARSEABLE.storage.get_object_store().as_ref(),
+                &stream_name,
+                &tenant_id,
+            )
+            .await
+            .unwrap_or(false)
+            {
+                return Ok((
+                    format!("log stream {stream_name} deletion already in progress"),
+                    StatusCode::ACCEPTED,
+                ));
+            }
             return Err(StreamNotFound(stream_name.clone()).into());
         }
 
@@ -138,9 +159,14 @@ pub async fn delete(
 
     // Best-effort: the tombstone is already durable and the stream is
     // already flagged, so a fan-out failure must not turn an
-    // already-accepted deletion into an error response -- an ingestor that
-    // misses this push self-heals via sync_all_streams within one sync
-    // interval regardless.
+    // already-accepted deletion into an error response. An ingestor that
+    // misses this push doesn't self-heal on its own next sync tick (its
+    // local is_deleting() stays false, which is exactly what the resident-
+    // stream self-heal check keys off) -- recovery instead comes from
+    // sync_all_streams' separate tombstone-directory scan, which lists
+    // tombstones directly rather than depending on the flag already being
+    // set locally, at the cost of taking up to one sync interval rather
+    // than being immediate.
     let fanout_stream_name = stream_name.clone();
     if let Err(e) = cluster::for_each_live_node(&tenant_id, move |node| {
         let url = format!(
