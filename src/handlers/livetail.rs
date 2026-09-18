@@ -128,7 +128,7 @@ impl FlightService for FlightServiceImpl {
 
         let adapter_schema = schema.clone();
         let rx = rx.map(move |x| match x {
-            Message::Record(t) => Ok(utils::arrow::adapt_batch(&adapter_schema, &t)),
+            Message::Record(t) => Ok(utils::arrow::adapt_batch(adapter_schema.clone(), &t)),
             Message::Skipped(_) => {
                 warn!("livetail channel capacity is full.");
                 Ok(RecordBatch::new_empty(adapter_schema.clone()))

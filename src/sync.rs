@@ -24,9 +24,9 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::runtime::Runtime;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
@@ -35,41 +35,36 @@ use tracing::{Instrument, error, info, info_span, trace, warn};
 pub static FLUSH_AND_CONVERT_RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
 
-static LOCAL_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
-static REMOTE_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+const MAX_PERIODIC_LOCAL_SYNC_CYCLES_VAR: &str = "MAX_PERIODIC_LOCAL_SYNC_CYCLES";
+static MAX_PERIODIC_LOCAL_SYNC_CYCLES: Lazy<usize> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(MAX_PERIODIC_LOCAL_SYNC_CYCLES_VAR)
+        && let Ok(var) = var.parse::<u32>()
+        && var > 0
+    {
+        var as usize
+    } else {
+        2
+    }
+});
+static LOCAL_SYNC_SLOTS: Lazy<Arc<Semaphore>> =
+    Lazy::new(|| Arc::new(Semaphore::new(*MAX_PERIODIC_LOCAL_SYNC_CYCLES)));
+static OBJECT_STORE_SYNC_SLOT: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(1)));
 
 pub static ACTIVE_OBJECT_STORE_SYNC_FILES: Lazy<DashMap<PathBuf, std::time::Instant>> =
     Lazy::new(DashMap::new);
-/// RAII guard that clears a sync-running flag on drop, so a panic inside the
-/// sync body cannot leave the flag stuck at `true` and wedge future ticks.
-struct SyncRunningGuard(&'static AtomicBool);
-
-impl Drop for SyncRunningGuard {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+async fn wait_for_local_sync_permits() -> OwnedSemaphorePermit {
+    let max_cycles = *MAX_PERIODIC_LOCAL_SYNC_CYCLES;
+    if LOCAL_SYNC_SLOTS.available_permits() < max_cycles {
+        warn!("Waiting for existing local_sync cycles before shutdown sync");
     }
-}
-
-async fn wait_for_local_sync_guard() -> SyncRunningGuard {
-    let mut warned = false;
-    loop {
-        if LOCAL_SYNC_RUNNING
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            return SyncRunningGuard(&LOCAL_SYNC_RUNNING);
-        }
-
-        if !warned {
-            warn!("Waiting for existing local_sync cycle before shutdown sync");
-            warned = true;
-        }
-        sleep(Duration::from_millis(250)).await;
-    }
+    Arc::clone(&LOCAL_SYNC_SLOTS)
+        .acquire_many_owned(max_cycles as u32)
+        .await
+        .expect("Local sync semaphore should remain open")
 }
 
 pub async fn shutdown_local_sync_flush_and_convert() {
-    let _guard = wait_for_local_sync_guard().await;
+    let _permits = wait_for_local_sync_permits().await;
     let mut local_sync_joinset = JoinSet::new();
 
     PARSEABLE
@@ -185,11 +180,10 @@ pub fn object_store_sync() -> (
             loop {
                 select! {
                     _ = sync_interval.tick() => {
-                        if REMOTE_SYNC_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                        let Ok(_permit) = Arc::clone(&OBJECT_STORE_SYNC_SLOT).try_acquire_owned() else {
                             warn!("Previous object_store_sync cycle still running, skipping this tick");
                             continue;
-                        }
-                        let _guard = SyncRunningGuard(&REMOTE_SYNC_RUNNING);
+                        };
                         async {
                             trace!("Syncing Parquets to Object Store... ");
 
@@ -255,31 +249,25 @@ pub fn local_sync() -> (
 
         let result = tokio::spawn(async move {
             let mut sync_interval = interval_at(next_minute(), LOCAL_SYNC_INTERVAL);
+            let mut active_cycles = JoinSet::new();
 
             loop {
                 select! {
                     _ = sync_interval.tick() => {
-                        if LOCAL_SYNC_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-                            warn!("Previous local_sync cycle still running, skipping this tick");
-                            continue;
+                        match Arc::clone(&LOCAL_SYNC_SLOTS).try_acquire_owned() {
+                            Ok(permit) => {
+                                active_cycles.spawn(run_periodic_local_sync_cycle(permit));
+                            }
+                            Err(_) => warn!(
+                                "Maximum of {} local_sync cycles already running, skipping this tick",
+                                *MAX_PERIODIC_LOCAL_SYNC_CYCLES
+                            ),
                         }
-                        let _guard = SyncRunningGuard(&LOCAL_SYNC_RUNNING);
-                        // Monitor the duration of flush_and_convert execution
-                        async {
-                            monitor_task_duration(
-                                "local_sync_flush_and_convert",
-                                Duration::from_secs(PARSEABLE.options.local_sync_threshold),
-                                || async {
-                                    let mut joinset = JoinSet::new();
-                                    PARSEABLE.streams.flush_and_convert(&mut joinset, false, false);
-
-                                    // Wait for all spawned tasks to complete
-                                    while let Some(res) = joinset.join_next().await {
-                                        log_join_result(res, "flush and convert");
-                                    }
-                                }
-                            ).await;
-                        }.instrument(info_span!("local_sync_cycle")).await;
+                    },
+                    completed = active_cycles.join_next(), if !active_cycles.is_empty() => {
+                        if let Some(Err(err)) = completed {
+                            error!("Panic in local_sync cycle: {err:?}");
+                        }
                     },
                     res = &mut inbox_rx => {
                         match res {
@@ -290,6 +278,12 @@ pub fn local_sync() -> (
                             }
                         }
                     }
+                }
+            }
+
+            while let Some(result) = active_cycles.join_next().await {
+                if let Err(err) = result {
+                    error!("Panic in local_sync cycle during shutdown: {err:?}");
                 }
             }
         });
@@ -310,6 +304,29 @@ pub fn local_sync() -> (
     });
 
     (handle, outbox_rx, inbox_tx)
+}
+
+async fn run_periodic_local_sync_cycle(_permit: OwnedSemaphorePermit) {
+    // Monitor the duration of flush_and_convert execution.
+    async {
+        monitor_task_duration(
+            "local_sync_flush_and_convert",
+            Duration::from_secs(PARSEABLE.options.local_sync_threshold),
+            || async {
+                let mut joinset = JoinSet::new();
+                PARSEABLE
+                    .streams
+                    .flush_and_convert(&mut joinset, false, false);
+
+                while let Some(res) = joinset.join_next().await {
+                    log_join_result(res, "flush and convert");
+                }
+            },
+        )
+        .await;
+    }
+    .instrument(info_span!("local_sync_cycle"))
+    .await;
 }
 
 /// Runs startup local and object-store sync.
@@ -357,6 +374,13 @@ async fn sync_start_inner(
     .instrument(info_span!("local_sync_startup"))
     .await;
 
+    if OBJECT_STORE_SYNC_SLOT.available_permits() == 0 {
+        warn!("Waiting for periodic object_store_sync before startup object-store sync");
+    }
+    let _object_store_sync_permit = Arc::clone(&OBJECT_STORE_SYNC_SLOT)
+        .acquire_owned()
+        .await
+        .expect("Object-store sync semaphore should remain open");
     async {
         // Monitor object store sync duration at startup
         monitor_task_duration(

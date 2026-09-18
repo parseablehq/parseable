@@ -41,13 +41,13 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use dashmap::mapref::entry::Entry;
+use dashmap::{DashSet, mapref::entry::Entry};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use itertools::Itertools;
 use object_store::ListResult;
 use object_store::ObjectMeta;
 use object_store::buffered::BufReader;
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use rayon::prelude::*;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
@@ -64,6 +64,34 @@ use std::time::Instant;
 use tokio::task::JoinSet;
 use tracing::{Instrument, error, info, info_span, warn};
 use ulid::Ulid;
+
+/// Staged Parquet files that were uploaded successfully but could not be
+/// removed locally. These paths remain excluded from upload selection until a
+/// later cleanup attempt removes the local file.
+static UPLOADED_STAGED_FILES_PENDING_CLEANUP: Lazy<DashSet<PathBuf>> = Lazy::new(DashSet::new);
+
+/// Claims a staged Parquet for upload unless its remote upload has already
+/// succeeded and only local deletion remains pending.
+fn claim_staged_file_for_upload(path: PathBuf) -> Option<PathBuf> {
+    if UPLOADED_STAGED_FILES_PENDING_CLEANUP.contains(&path) {
+        return None;
+    }
+
+    match ACTIVE_OBJECT_STORE_SYNC_FILES.entry(path.clone()) {
+        Entry::Vacant(entry) => {
+            entry.insert(Instant::now());
+            // Close the race where deletion fails after the first pending
+            // check but before this active claim is acquired.
+            if UPLOADED_STAGED_FILES_PENDING_CLEANUP.contains(&path) {
+                ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&path);
+                None
+            } else {
+                Some(path)
+            }
+        }
+        Entry::Occupied(_) => None,
+    }
+}
 
 use super::{
     ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, ObjectStorageError, ObjectStoreFormat,
@@ -1088,6 +1116,8 @@ async fn process_parquet_files(
     stream_name: &str,
     tenant_id: Option<String>,
 ) -> Result<Vec<UploadedParquetFile>, ObjectStorageError> {
+    retry_pending_staged_file_cleanup();
+
     let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
     let mut join_set = JoinSet::new();
     let object_store = PARSEABLE.storage().get_object_store();
@@ -1097,15 +1127,7 @@ async fn process_parquet_files(
         .stream
         .parquet_files()
         .into_par_iter()
-        .filter_map(
-            |path| match ACTIVE_OBJECT_STORE_SYNC_FILES.entry(path.clone()) {
-                Entry::Vacant(entry) => {
-                    entry.insert(Instant::now());
-                    Some(path)
-                }
-                Entry::Occupied(_) => None,
-            },
-        )
+        .filter_map(claim_staged_file_for_upload)
         .collect();
 
     let mut total_size: u64 = 0;
@@ -1272,25 +1294,53 @@ async fn calculate_stats_for_uploaded_files(
     }
 }
 
-async fn cleanup_uploaded_staged_files(uploaded_files: Vec<UploadedParquetFile>) {
-    // successfully uploaded files, remove from DashMap
-    for uploaded_parquet_file in uploaded_files.iter() {
-        ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&uploaded_parquet_file.file_path);
+/// Removes a file after a successful upload. A failed deletion moves the path
+/// from the expiring active-upload claims into the non-expiring cleanup-pending
+/// set, keeping it out of subsequent upload selections.
+fn remove_uploaded_staged_file(path: PathBuf) {
+    match remove_file(&path) {
+        Ok(()) => {
+            UPLOADED_STAGED_FILES_PENDING_CLEANUP.remove(&path);
+            ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&path);
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            UPLOADED_STAGED_FILES_PENDING_CLEANUP.remove(&path);
+            ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&path);
+        }
+        Err(err) => {
+            // Insert into the non-expiring set before releasing the active
+            // claim, so upload selection never sees this path as unclaimed.
+            UPLOADED_STAGED_FILES_PENDING_CLEANUP.insert(path.clone());
+            ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&path);
+            warn!(
+                "Failed to remove uploaded staged file {}; retaining it for deletion retry: {err}",
+                path.display()
+            );
+        }
     }
+}
 
-    // Use monotonic time to ensure the 5-minute eviction window(cleanup) is immune to system clock adjustments.
+/// Retries local deletion for files whose remote upload already succeeded.
+fn retry_pending_staged_file_cleanup() {
+    UPLOADED_STAGED_FILES_PENDING_CLEANUP
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .for_each(remove_uploaded_staged_file);
+}
+
+async fn cleanup_uploaded_staged_files(uploaded_files: Vec<UploadedParquetFile>) {
+    uploaded_files
+        .into_par_iter()
+        .map(|uploaded_parquet_file| uploaded_parquet_file.file_path)
+        .for_each(remove_uploaded_staged_file);
+
+    // Use monotonic time so cleanup is immune to system clock adjustments.
     let now = Instant::now();
     ACTIVE_OBJECT_STORE_SYNC_FILES.retain(|_, tracked_instant| {
         now.duration_since(*tracked_instant) < Duration::from_secs(300)
     });
-
-    uploaded_files
-        .into_par_iter()
-        .for_each(|uploaded_parquet_file| {
-            if let Err(e) = remove_file(&uploaded_parquet_file.file_path) {
-                warn!("Failed to remove staged file: {e}");
-            }
-        });
 }
 
 /// Processes schema files
@@ -1639,6 +1689,39 @@ pub fn own_manifest_file_name() -> String {
 #[inline]
 pub fn manifest_segment_matches(manifest_path_str: &str, file_name: &str) -> bool {
     manifest_path_str.rsplit('/').next() == Some(file_name)
+}
+
+#[cfg(test)]
+mod staged_file_cleanup_tests {
+    use super::{
+        UPLOADED_STAGED_FILES_PENDING_CLEANUP, claim_staged_file_for_upload,
+        remove_uploaded_staged_file, retry_pending_staged_file_cleanup,
+    };
+    use crate::sync::ACTIVE_OBJECT_STORE_SYNC_FILES;
+    use std::{fs, time::Instant};
+    use temp_dir::TempDir;
+
+    #[test]
+    fn deletion_failure_keeps_uploaded_file_out_of_upload_selection() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("uploaded.parquet");
+
+        // A directory cannot be removed with remove_file, providing a
+        // cross-platform deletion failure without changing permissions.
+        fs::create_dir_all(&path).unwrap();
+        ACTIVE_OBJECT_STORE_SYNC_FILES.insert(path.clone(), Instant::now());
+
+        remove_uploaded_staged_file(path.clone());
+
+        assert!(UPLOADED_STAGED_FILES_PENDING_CLEANUP.contains(&path));
+        assert!(!ACTIVE_OBJECT_STORE_SYNC_FILES.contains_key(&path));
+        assert!(claim_staged_file_for_upload(path.clone()).is_none());
+
+        // Once deletion becomes possible, the retry clears the pending entry.
+        fs::remove_dir(&path).unwrap();
+        retry_pending_staged_file_cleanup();
+        assert!(!UPLOADED_STAGED_FILES_PENDING_CLEANUP.contains(&path));
+    }
 }
 
 #[cfg(test)]
