@@ -83,6 +83,7 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
+      - MAX_PERIODIC_LOCAL_SYNC_CYCLES=1
       - RUST_LOG=warn
     networks:
       - parseable-internal
