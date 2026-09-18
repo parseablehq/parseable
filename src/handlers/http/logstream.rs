@@ -28,7 +28,12 @@ use crate::rbac::Users;
 use crate::rbac::role::Action;
 use crate::stats::{Stats, event_labels_date, storage_size_labels_date};
 use crate::storage::retention::Retention;
-use crate::storage::{ObjectStoreFormat, StreamInfo, StreamType};
+use crate::storage::{
+    ObjectStoreFormat, StreamInfo, StreamType,
+    object_storage::{
+        is_tombstoned, spawn_stream_deletion, stream_json_path, to_bytes, tombstone_path,
+    },
+};
 use crate::tenants::TenantNotFound;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::get_tenant_id_from_request;
@@ -47,7 +52,15 @@ use itertools::Itertools;
 use serde_json::{Value, json};
 use std::fs;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{Instrument, warn};
+
+// Shared between put_stream and delete: without it, a concurrent create/
+// update could read is_deleting()=false right before delete() flips it and
+// writes the tombstone, then go on to write fresh stream data that the
+// background deletion job -- already committed to running by that point --
+// would sweep up from underneath it.
+pub static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub async fn delete(
     req: HttpRequest,
@@ -56,41 +69,118 @@ pub async fn delete(
     let stream_name = logstream.into_inner();
     // Error out if stream doesn't exist in memory, or in the case of query node, in storage as well
     let tenant_id = get_tenant_id_from_request(&req);
-    if !PARSEABLE
-        .check_or_load_stream(&stream_name, &tenant_id)
-        .await
-    {
-        return Err(StreamNotFound(stream_name).into());
-    }
+
+    // Fetched once, up front: every step below this point is either
+    // infallible or best-effort, so nothing after this line can bail out
+    // with "stream not found" partway through an already-durably-started
+    // deletion.
+    let stream = {
+        // Scoped to just this check-through-tombstone-write window:
+        // everything after is already guarded by is_deleting()/
+        // is_tombstoned() checks on the read/write paths.
+        let _guard = CREATE_STREAM_LOCK.lock().await;
+
+        if !PARSEABLE
+            .check_or_load_stream(&stream_name, &tenant_id)
+            .await
+        {
+            // check_or_load_stream returning false is also what a retried
+            // DELETE sees once the background job has evicted this name
+            // from memory but hasn't cleared its tombstone yet (see
+            // spawn_stream_deletion's cleanup order) -- check the tombstone
+            // directly so that narrow window reports "already in progress"
+            // instead of a misleading "not found".
+            if is_tombstoned(
+                PARSEABLE.storage.get_object_store().as_ref(),
+                &stream_name,
+                &tenant_id,
+            )
+            .await?
+            {
+                return Ok((
+                    format!("log stream {stream_name} deletion already in progress"),
+                    StatusCode::ACCEPTED,
+                ));
+            }
+            return Err(StreamNotFound(stream_name).into());
+        }
+
+        let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+
+        // Flip the in-memory guard before any `.await` point: check_or_load_stream's
+        // resident-stream fast path doesn't itself consult is_tombstoned, so a
+        // concurrent request on this node could otherwise slip through in the
+        // window between the tombstone becoming durable and this flag being set.
+        stream.mark_deleting();
+
+        let objectstore = PARSEABLE.storage.get_object_store();
+
+        // Durable marker first: if the process crashes anywhere after this
+        // point, restart-recovery resumes the deletion instead of silently
+        // leaving the stream half-deleted with no record of it.
+        if let Err(e) = objectstore
+            .put_object(
+                &tombstone_path(&stream_name, &tenant_id),
+                to_bytes(&()),
+                &tenant_id,
+            )
+            .await
+        {
+            // Nothing durable happened -- undo the in-memory flag so the stream
+            // isn't left permanently blocked by a transient write failure.
+            stream.clear_deleting();
+            return Err(e.into());
+        }
+
+        stream
+    };
 
     let objectstore = PARSEABLE.storage.get_object_store();
 
-    // Delete from storage
-    objectstore.delete_stream(&stream_name, &tenant_id).await?;
+    // Best-effort: makes the stream vanish from listings almost
+    // immediately. Not fatal if it fails -- is_deleting()/is_tombstoned()
+    // checks already block reads and writes regardless of whether this file
+    // is gone yet.
+    if let Err(e) = objectstore
+        .delete_object(&stream_json_path(&stream_name, &tenant_id), &tenant_id)
+        .await
+    {
+        warn!(
+            "failed to eagerly delete stream.json for {stream_name}, will be removed with the rest of the prefix: {e}"
+        );
+    }
+
     // Delete from staging
-    let stream_dir = PARSEABLE.get_or_create_stream(&stream_name, &tenant_id);
-    if let Err(err) = fs::remove_dir_all(&stream_dir.data_path) {
+    if let Err(err) = fs::remove_dir_all(&stream.data_path) {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,
-            stream_dir.data_path.to_string_lossy()
+            stream.data_path.to_string_lossy()
         )
     }
 
+    // Best-effort: the tombstone is already durable and the stream is
+    // already flagged, so a hot-tier cleanup failure must not turn an
+    // already-accepted deletion into an error response.
     if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
         && hot_tier_manager.check_stream_hot_tier_exists(&stream_name, &tenant_id)
-    {
-        hot_tier_manager
+        && let Err(e) = hot_tier_manager
             .delete_hot_tier(&stream_name, &tenant_id)
-            .await?;
+            .await
+    {
+        warn!("failed to delete hot tier for stream {stream_name}: {e}");
     }
 
-    // Delete from memory
-    PARSEABLE.streams.delete(&stream_name, &tenant_id);
-    stats::delete_stats(&stream_name, "json", &tenant_id)
-        .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
+    // Scheduled only once every other cleanup step above has run, so the
+    // background job (which clears the tombstone on completion) can't race
+    // ahead of them and let a stream recreated under this name get swept up
+    // by leftover local/hot-tier cleanup that's still in flight.
+    spawn_stream_deletion(stream_name.clone(), tenant_id.clone());
 
-    Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
+    Ok((
+        format!("log stream {stream_name} deletion started"),
+        StatusCode::ACCEPTED,
+    ))
 }
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
@@ -209,6 +299,7 @@ pub async fn put_stream(
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
 
+    let _guard = CREATE_STREAM_LOCK.lock().await;
     PARSEABLE
         .create_update_stream(req.headers(), &body, &stream_name, &tenant_id)
         .await?;
@@ -232,10 +323,12 @@ pub async fn get_retention(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    let retention = PARSEABLE
-        .get_stream(&stream_name, &tenant_id)?
-        .get_retention()
-        .unwrap_or_default();
+    let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+    if stream.is_deleting() {
+        return Err(StreamNotFound(stream_name.clone()).into());
+    }
+
+    let retention = stream.get_retention().unwrap_or_default();
     Ok((web::Json(retention), StatusCode::OK))
 }
 
@@ -256,15 +349,18 @@ pub async fn put_retention(
         return Err(StreamNotFound(stream_name).into());
     }
 
+    let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+    if stream.is_deleting() {
+        return Err(StreamNotFound(stream_name).into());
+    }
+
     PARSEABLE
         .storage
         .get_object_store()
         .put_retention(&stream_name, &retention, &tenant_id)
         .await?;
 
-    PARSEABLE
-        .get_stream(&stream_name, &tenant_id)?
-        .set_retention(retention);
+    stream.set_retention(retention);
 
     Ok((
         format!("set retention configuration for log stream {stream_name}"),
@@ -456,6 +552,10 @@ pub async fn put_stream_hot_tier(
 
     let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
 
+    if stream.is_deleting() {
+        return Err(StreamNotFound(stream_name).into());
+    }
+
     if stream.get_stream_type() == StreamType::Internal {
         return Err(StreamError::Custom {
             msg: "Hot tier can not be updated for internal stream".to_string(),
@@ -529,6 +629,13 @@ pub async fn get_stream_hot_tier(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
+    if PARSEABLE
+        .get_stream(&stream_name, &tenant_id)
+        .is_ok_and(|stream| stream.is_deleting())
+    {
+        return Err(StreamNotFound(stream_name.clone()).into());
+    }
+
     let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() else {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     };
@@ -564,11 +671,13 @@ pub async fn delete_stream_hot_tier(
         return Err(StreamNotFound(stream_name).into());
     }
 
-    if PARSEABLE
-        .get_stream(&stream_name, &tenant_id)?
-        .get_stream_type()
-        == StreamType::Internal
-    {
+    let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+
+    if stream.is_deleting() {
+        return Err(StreamNotFound(stream_name).into());
+    }
+
+    if stream.get_stream_type() == StreamType::Internal {
         return Err(StreamError::Custom {
             msg: "Hot tier can not be deleted for internal stream".to_string(),
             status: StatusCode::BAD_REQUEST,

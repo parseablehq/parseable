@@ -1632,6 +1632,17 @@ impl Stream {
         self.metadata.write().expect(LOCK_EXPECT).deleting = true;
     }
 
+    /// Undoes a `mark_deleting()` call, in one of two cases: the tombstone
+    /// write that would have made it durable just failed, or the caller has
+    /// independently confirmed (via `is_tombstoned()`) that the tombstone is
+    /// already gone and this flag is just a stale leftover on a node that
+    /// doesn't run the background deletion job itself. Unlike
+    /// `mark_deleting()`, this is not part of the monotonic contract, and
+    /// must never be called while the tombstone still exists in storage.
+    pub fn clear_deleting(&self) {
+        self.metadata.write().expect(LOCK_EXPECT).deleting = false;
+    }
+
     pub fn is_deleting(&self) -> bool {
         self.metadata.read().expect(LOCK_EXPECT).deleting
     }
@@ -2009,14 +2020,32 @@ impl Streams {
         plans
     }
 
-    /// TODO: validate possibility of stream continuing to exist despite being deleted
     pub fn delete(&self, stream_name: &str, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let mut guard = self.write().expect(LOCK_EXPECT);
         if let Some(tenant_streams) = guard.get_mut(tenant_id) {
             tenant_streams.remove(stream_name);
         }
-        // self.write().expect(LOCK_EXPECT).remove(stream_name);
+    }
+
+    /// Removes a stream's entry only if it's still flagged `deleting`.
+    /// A background deletion job finalizes by name, not by holding a
+    /// reference to the specific `Stream` instance it started deleting --
+    /// so without this check, a client that recreates the same name while
+    /// the job's finalization is still in flight (e.g. right after a
+    /// concurrent self-heal cleared a stale flag and inserted a fresh
+    /// entry) would have that brand-new entry silently evicted instead of
+    /// the stale one the job actually meant to clean up.
+    pub fn delete_if_still_deleting(&self, stream_name: &str, tenant_id: &Option<String>) {
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let mut guard = self.write().expect(LOCK_EXPECT);
+        if let Some(tenant_streams) = guard.get_mut(tenant_id)
+            && tenant_streams
+                .get(stream_name)
+                .is_some_and(|stream| stream.is_deleting())
+        {
+            tenant_streams.remove(stream_name);
+        }
     }
 
     pub fn contains(&self, stream_name: &str, tenant_id: &Option<String>) -> bool {
@@ -2152,6 +2181,75 @@ mod tests {
         assert!(!stream.is_deleting());
         stream.mark_deleting();
         assert!(stream.is_deleting());
+    }
+
+    #[test]
+    fn test_clear_deleting_resets_is_deleting() {
+        let options = Arc::new(Options::default());
+        let stream = Stream::new(
+            options,
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+
+        stream.mark_deleting();
+        assert!(stream.is_deleting());
+        stream.clear_deleting();
+        assert!(!stream.is_deleting());
+    }
+
+    fn insert_stream(streams: &Streams, stream_name: &str, deleting: bool) {
+        let options = Arc::new(Options::default());
+        let stream = Stream::new(
+            options,
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        if deleting {
+            stream.mark_deleting();
+        }
+        streams
+            .write()
+            .expect(LOCK_EXPECT)
+            .entry(DEFAULT_TENANT.to_string())
+            .or_default()
+            .insert(stream_name.to_string(), stream);
+    }
+
+    #[test]
+    fn delete_if_still_deleting_removes_a_stream_still_flagged_deleting() {
+        let streams = Streams::default();
+        insert_stream(&streams, "doomed", true);
+
+        streams.delete_if_still_deleting("doomed", &None);
+
+        assert!(!streams.contains("doomed", &None));
+    }
+
+    #[test]
+    fn delete_if_still_deleting_leaves_a_recreated_stream_untouched() {
+        let streams = Streams::default();
+        // Simulates a background deletion job finalizing by name after a
+        // concurrent self-heal already cleared the stale flag and inserted
+        // a fresh, non-deleting entry under the same name.
+        insert_stream(&streams, "recreated", false);
+
+        streams.delete_if_still_deleting("recreated", &None);
+
+        assert!(streams.contains("recreated", &None));
+    }
+
+    #[test]
+    fn delete_if_still_deleting_is_a_no_op_for_an_absent_stream() {
+        let streams = Streams::default();
+
+        streams.delete_if_still_deleting("never-existed", &None);
+
+        assert!(!streams.contains("never-existed", &None));
     }
 
     #[test]

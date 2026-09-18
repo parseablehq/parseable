@@ -45,12 +45,16 @@ use crate::{
                 utils::{IngestionStats, QueriedStats, StorageStats, merge_queried_stats},
             },
             logstream::error::StreamError,
-            modal::{NodeMetadata, NodeType},
         },
     },
     parseable::{PARSEABLE, StreamNotFound},
     stats,
-    storage::{ObjectStoreFormat, StreamType},
+    storage::{
+        ObjectStoreFormat, StreamType,
+        object_storage::{
+            is_tombstoned, spawn_stream_deletion, stream_json_path, to_bytes, tombstone_path,
+        },
+    },
     utils::get_tenant_id_from_request,
 };
 const STATS_DATE_QUERY_PARAM: &str = "date";
@@ -61,64 +65,151 @@ pub async fn delete(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    // if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
-    if !PARSEABLE.streams.contains(&stream_name, &tenant_id)
-        && !PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name, &tenant_id)
+
+    // Fetched once, up front: every step below this point is either
+    // infallible or best-effort, so nothing after this line can bail out
+    // with "stream not found" partway through an already-durably-started
+    // deletion.
+    let stream = {
+        // Shared with put_stream: without it, a concurrent create/update on
+        // this node could read is_deleting()=false right before this
+        // handler flips it and writes the tombstone, then go on to write
+        // fresh stream data that the background deletion job -- already
+        // committed to running by that point -- would sweep up from
+        // underneath it. Scoped to just this check-through-tombstone-write
+        // window: everything after is already guarded by is_deleting()/
+        // is_tombstoned() checks on the read/write paths.
+        let _guard = CREATE_STREAM_LOCK.lock().await;
+
+        // if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
+        if !PARSEABLE.streams.contains(&stream_name, &tenant_id)
+            && !PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name, &tenant_id)
+                .await
+                .unwrap_or(false)
+        {
+            // create_stream_and_schema_from_storage returns false both for
+            // "genuinely doesn't exist" and "exists but is tombstoned" --
+            // check the tombstone directly so a retried DELETE against a
+            // replica that hasn't resumed this stream yet reports the
+            // deletion as already accepted instead of a plain 404
+            // indistinguishable from the stream never having existed. Real
+            // storage errors propagate instead of being folded into "not
+            // tombstoned", which would otherwise misreport them as 404.
+            if is_tombstoned(
+                PARSEABLE.storage.get_object_store().as_ref(),
+                &stream_name,
+                &tenant_id,
+            )
+            .await?
+            {
+                return Ok((
+                    format!("log stream {stream_name} deletion already in progress"),
+                    StatusCode::ACCEPTED,
+                ));
+            }
+            return Err(StreamNotFound(stream_name.clone()).into());
+        }
+
+        let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+
+        // Flip the in-memory guard before any `.await` point: check_or_load_stream's
+        // resident-stream fast path doesn't itself consult is_tombstoned, so a
+        // concurrent request on this node could otherwise slip through in the
+        // window between the tombstone becoming durable and this flag being set.
+        stream.mark_deleting();
+
+        let objectstore = PARSEABLE.storage.get_object_store();
+
+        // Durable marker first: if the process crashes anywhere after this
+        // point, restart-recovery resumes the deletion instead of silently
+        // leaving the stream half-deleted with no record of it.
+        if let Err(e) = objectstore
+            .put_object(
+                &tombstone_path(&stream_name, &tenant_id),
+                to_bytes(&()),
+                &tenant_id,
+            )
             .await
-            .unwrap_or(false)
-    {
-        return Err(StreamNotFound(stream_name.clone()).into());
-    }
+        {
+            // Nothing durable happened -- undo the in-memory flag so the stream
+            // isn't left permanently blocked by a transient write failure.
+            stream.clear_deleting();
+            return Err(e.into());
+        }
+
+        stream
+    };
 
     let objectstore = PARSEABLE.storage.get_object_store();
-    // Delete from storage
-    objectstore.delete_stream(&stream_name, &tenant_id).await?;
-    let stream_dir = PARSEABLE.get_or_create_stream(&stream_name, &tenant_id);
-    if let Err(err) = fs::remove_dir_all(&stream_dir.data_path) {
+
+    // Best-effort: makes the stream vanish from listings almost
+    // immediately, without touching every listing endpoint individually.
+    // Not fatal if it fails -- is_deleting()/is_tombstoned() checks already
+    // block reads and writes regardless of whether this file is gone yet.
+    if let Err(e) = objectstore
+        .delete_object(&stream_json_path(&stream_name, &tenant_id), &tenant_id)
+        .await
+    {
+        warn!(
+            "failed to eagerly delete stream.json for {stream_name}, will be removed with the rest of the prefix: {e}"
+        );
+    }
+
+    // Best-effort: the tombstone is already durable and the stream is
+    // already flagged, so a fan-out failure must not turn an
+    // already-accepted deletion into an error response. An ingestor that
+    // misses this push doesn't self-heal on its own next sync tick (its
+    // local is_deleting() stays false, which is exactly what the resident-
+    // stream self-heal check keys off) -- recovery instead comes from
+    // sync_all_streams' separate tombstone-directory scan, which lists
+    // tombstones directly rather than depending on the flag already being
+    // set locally, at the cost of taking up to one sync interval rather
+    // than being immediate.
+    let fanout_stream_name = stream_name.clone();
+    if let Err(e) = cluster::for_each_live_node(&tenant_id, move |node| {
+        let url = format!(
+            "{}{}/logstream/{}/sync",
+            node.domain_name,
+            base_path_without_preceding_slash(),
+            fanout_stream_name
+        );
+        async move { cluster::send_stream_delete_request(&url, node).await }
+    })
+    .await
+    {
+        warn!("failed to notify all ingestors of deletion of {stream_name}: {e}");
+    }
+
+    if let Err(err) = fs::remove_dir_all(&stream.data_path) {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,
-            stream_dir.data_path.to_string_lossy()
+            stream.data_path.to_string_lossy()
         )
     }
 
     if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
         && hot_tier_manager.check_stream_hot_tier_exists(&stream_name, &tenant_id)
-    {
-        hot_tier_manager
+        && let Err(e) = hot_tier_manager
             .delete_hot_tier(&stream_name, &tenant_id)
-            .await?;
-    }
-
-    let ingestor_metadata: Vec<NodeMetadata> =
-        cluster::get_node_info(NodeType::Ingestor, &tenant_id)
             .await
-            .map_err(|err| {
-                error!("Fatal: failed to get ingestor info: {:?}", err);
-                err
-            })?;
-
-    for ingestor in ingestor_metadata {
-        let url = format!(
-            "{}{}/logstream/{}/sync",
-            ingestor.domain_name,
-            base_path_without_preceding_slash(),
-            stream_name
-        );
-
-        // delete the stream
-        cluster::send_stream_delete_request(&url, ingestor.clone()).await?;
+    {
+        warn!("failed to delete hot tier for stream {stream_name}: {e}");
     }
 
-    // Delete from memory
-    PARSEABLE.streams.delete(&stream_name, &tenant_id);
-    stats::delete_stats(&stream_name, "json", &tenant_id)
-        .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
+    // Scheduled only once every other cleanup step above has run, so the
+    // background job (which clears the tombstone on completion) can't race
+    // ahead of them and let a stream recreated under this name get swept up
+    // by leftover fan-out/local/hot-tier cleanup that's still in flight.
+    spawn_stream_deletion(stream_name.clone(), tenant_id.clone());
 
-    Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
+    Ok((
+        format!("log stream {stream_name} deletion started"),
+        StatusCode::ACCEPTED,
+    ))
 }
 
 pub async fn put_stream(
@@ -182,6 +273,13 @@ pub async fn get_stats(
             .create_stream_and_schema_from_storage(&stream_name, &tenant_id)
             .await
             .unwrap_or(false)
+    {
+        return Err(StreamNotFound(stream_name.clone()).into());
+    }
+
+    if PARSEABLE
+        .get_stream(&stream_name, &tenant_id)
+        .is_ok_and(|stream| stream.is_deleting())
     {
         return Err(StreamNotFound(stream_name.clone()).into());
     }

@@ -30,6 +30,7 @@ use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STO
 use crate::option::Mode;
 use crate::parseable::DEFAULT_TENANT;
 use crate::parseable::{LogStream, PARSEABLE, Stream};
+use crate::stats;
 use crate::stats::FullStats;
 use crate::storage::SETTINGS_ROOT_DIRECTORY;
 use crate::storage::TARGETS_ROOT_DIRECTORY;
@@ -41,13 +42,14 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use itertools::Itertools;
 use object_store::ListResult;
 use object_store::ObjectMeta;
 use object_store::buffered::BufReader;
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use rayon::prelude::*;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
@@ -1333,6 +1335,237 @@ fn stream_relative_path(
     }
 }
 
+/// Dedupes concurrent background deletion jobs for the same (tenant, stream)
+/// so a repeat DELETE request, or a restart-triggered resume racing a job
+/// already spawned before the restart, can't run `delete_stream` twice
+/// concurrently against the same prefix. Mirrors `ACTIVE_OBJECT_STORE_SYNC_FILES`
+/// in `sync.rs`. Deliberately has no time-based expiry (unlike that sibling
+/// map): a large stream's real delete can legitimately run for many minutes,
+/// and an expiry short enough to be useful would risk starting a duplicate
+/// job while the original is still healthily in progress. See
+/// `StreamDeletionGuard` for how an entry is still guaranteed to be cleared.
+pub static ACTIVE_STREAM_DELETIONS: Lazy<DashMap<(Option<String>, String), Instant>> =
+    Lazy::new(DashMap::new);
+
+/// RAII guard that removes a stream's entry from `ACTIVE_STREAM_DELETIONS` on
+/// drop, including on an unexpected panic inside the deletion task -- so a
+/// single bad run can't wedge all future retries for that stream by leaving
+/// its dedup entry stuck forever.
+struct StreamDeletionGuard(Option<(Option<String>, String)>);
+
+impl Drop for StreamDeletionGuard {
+    fn drop(&mut self) {
+        if let Some(key) = self.0.take() {
+            ACTIVE_STREAM_DELETIONS.remove(&key);
+        }
+    }
+}
+
+/// Deletes a stream's data in the background and clears its tombstone once
+/// done, so the synchronous DELETE handler can respond before a TB-scale
+/// prefix delete completes. Safe to call more than once for the same
+/// stream: a job already in flight is skipped rather than duplicated.
+pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
+    let key = (tenant_id, stream_name);
+    match ACTIVE_STREAM_DELETIONS.entry(key.clone()) {
+        Entry::Occupied(_) => return,
+        Entry::Vacant(entry) => {
+            entry.insert(Instant::now());
+        }
+    }
+    tokio::spawn(async move {
+        let _guard = StreamDeletionGuard(Some(key.clone()));
+        let (tenant_id, stream_name) = &key;
+        let storage = PARSEABLE.storage.get_object_store();
+        match storage.delete_stream(stream_name, tenant_id).await {
+            Ok(()) => {
+                // Clear the map entry and stats *before* the tombstone, not
+                // after: while the tombstone is still present, any
+                // concurrent create/update for this name is rejected with
+                // 409 by reject_if_stream_deleting's own tombstone check, so
+                // nothing can have recreated this name yet. Clearing the
+                // tombstone first would open a window where a legitimate
+                // recreate succeeds before this cleanup runs -- harmless for
+                // the map entry itself (delete_if_still_deleting only
+                // touches an entry still flagged deleting), but
+                // stats::delete_stats has no such per-entry guard and would
+                // zero out the freshly recreated stream's stats instead.
+                PARSEABLE
+                    .streams
+                    .delete_if_still_deleting(stream_name, tenant_id);
+                if let Err(e) = stats::delete_stats(stream_name, "json", tenant_id) {
+                    warn!("failed to clear stats for deleted stream {stream_name}: {e:?}");
+                }
+                if let Err(e) = storage
+                    .delete_object(&tombstone_path(stream_name, tenant_id), tenant_id)
+                    .await
+                {
+                    warn!(
+                        "background deletion of {stream_name} finished but failed to clear its tombstone: {e}"
+                    );
+                }
+            }
+            Err(e) => error!(
+                "background deletion failed for {stream_name}: {e}. tombstone left in place, retried on next restart or repeat DELETE"
+            ),
+        }
+    });
+}
+
+// Extracted out of sync_all_streams to keep its own cyclomatic complexity
+// down -- this owns just the "this node already knows the stream is
+// deleting" branch. It received the DELETE handler's `for_each_live_node`
+// push directly, or it's the owning node itself resuming its own in-flight
+// job after a restart. A node that missed the fan-out push entirely (e.g. it
+// was down or transiently unreachable at that exact moment) never gets
+// is_deleting()=true set in the first place, so it never reaches this
+// function at all -- that case is instead caught by
+// spawn_tombstone_directory_reconciliation, which doesn't depend on the flag
+// already being set locally.
+fn spawn_deleting_stream_reconciliation(
+    joinset: &mut JoinSet<Result<(), ObjectStorageError>>,
+    handle: &tokio::runtime::Handle,
+    object_store: Arc<dyn ObjectStorage>,
+    tenant_id: Option<String>,
+    stream_name: String,
+) {
+    // Only a node type that can actually receive a client's original DELETE
+    // request (query/standalone) ever resumes the physical delete here. An
+    // ingestor only ever gets is_deleting()=true via the delete handler's
+    // own fan-out push, which never starts a job on the ingestor itself --
+    // letting it also spawn one here would mean every ingestor independently
+    // runs a redundant, uncoordinated bulk delete against the same prefix
+    // for the entire (possibly long) duration of every deletion, not just
+    // the rare case of a genuinely missed notification.
+    let is_deletion_owner = PARSEABLE.options.mode != Mode::Ingest;
+    joinset.spawn_on(
+        async move {
+            match is_tombstoned(object_store.as_ref(), &stream_name, &tenant_id).await {
+                Ok(true) => {
+                    if is_deletion_owner {
+                        spawn_stream_deletion(stream_name, tenant_id);
+                    }
+                }
+                Ok(false) if !is_deletion_owner => {
+                    // Deletion already finished elsewhere and the tombstone
+                    // is gone, but this node's resident entry was never
+                    // dropped -- e.g. an ingestor, which doesn't run the
+                    // background deletion job itself. Reap it so a stream
+                    // recreated under the same name doesn't inherit a stuck
+                    // deleting=true state.
+                    PARSEABLE
+                        .streams
+                        .delete_if_still_deleting(&stream_name, &tenant_id);
+                }
+                Ok(false) => {
+                    // On the owning node, an absent tombstone can also just
+                    // mean this delete hasn't written it yet (mark_deleting()
+                    // runs first, with the tombstone write still in flight).
+                    // Reaping here would race that window and let a
+                    // concurrent reload resurrect the stream mid-deletion --
+                    // the owner's own spawn_stream_deletion job removes this
+                    // entry once the actual delete (and tombstone clear)
+                    // completes.
+                }
+                Err(e) => error!("failed to check tombstone status for {stream_name}: {e}"),
+            }
+            Ok(())
+        },
+        handle,
+    );
+}
+
+// Extracted out of sync_all_streams to keep its own cyclomatic complexity
+// down -- this reconciles tombstones that the per-stream loop can't reach on
+// its own, since it only acts on a stream whose local is_deleting() is
+// already true:
+//  - A resident stream that's still flagged false because this node never
+//    ran mark_deleting() on it at all -- e.g. an ingestor that missed the
+//    DELETE handler's `for_each_live_node` fan-out push (a transient
+//    liveness-check failure at the wrong instant is enough), so it kept
+//    accepting ingestion into an already-deleted stream indefinitely.
+//    Flagging it here is just an in-memory update, so this runs on every
+//    node type, not only the owner.
+//  - A stream already gone from this node's memory entirely because its
+//    owning deletion job already finished, but whose final tombstone-clear
+//    call failed (e.g. a transient network error) -- only the owner should
+//    retry the physical delete for this case.
+// A single tombstone-directory LIST finds every candidate at once, rather
+// than a HEAD per resident stream every interval.
+fn spawn_tombstone_directory_reconciliation(
+    joinset: &mut JoinSet<Result<(), ObjectStorageError>>,
+    handle: &tokio::runtime::Handle,
+    object_store: Arc<dyn ObjectStorage>,
+    tenant_id: Option<String>,
+) {
+    let is_deletion_owner = PARSEABLE.options.mode != Mode::Ingest;
+    joinset.spawn_on(
+        async move {
+            match list_tombstoned_streams(object_store.as_ref(), &tenant_id).await {
+                Ok(stream_names) => {
+                    for stream_name in stream_names {
+                        reconcile_one_tombstoned_stream(
+                            object_store.as_ref(),
+                            &tenant_id,
+                            stream_name,
+                            is_deletion_owner,
+                        )
+                        .await;
+                    }
+                }
+                Err(e) => error!(
+                    "failed to list tombstoned streams while syncing tenant {tenant_id:?}: {e}"
+                ),
+            }
+            Ok(())
+        },
+        handle,
+    );
+}
+
+async fn reconcile_one_tombstoned_stream(
+    object_store: &dyn ObjectStorage,
+    tenant_id: &Option<String>,
+    stream_name: String,
+    is_deletion_owner: bool,
+) {
+    match PARSEABLE.get_stream(&stream_name, tenant_id) {
+        Ok(stream) if !stream.is_deleting() => {
+            // list_tombstoned_streams is a snapshot -- by the time we get
+            // here, the original deletion this name was tombstoned for could
+            // have already finished and the name been legitimately recreated
+            // (its tombstone gone, so the recreate wasn't even blocked).
+            // Re-check this one name live, right before acting, so a fresh
+            // stream can't be flagged deleting based on stale snapshot data
+            // with no tombstone left to ever clear it again.
+            match is_tombstoned(object_store, &stream_name, tenant_id).await {
+                Ok(true) => stream.mark_deleting(),
+                Ok(false) => {}
+                // A real error here (as opposed to "no tombstone") is not
+                // evidence the tombstone is gone -- folding it into Ok(false)
+                // would leave a still-tombstoned stream unflagged and
+                // accepting writes. Leave it be and retry on the next sync
+                // interval instead.
+                Err(e) => warn!(
+                    "failed to re-check tombstone for {stream_name} during reconciliation, retrying next sync interval: {e}"
+                ),
+            }
+        }
+        // Already flagged: the per-stream loop above already owns
+        // reconciling this one, nothing more to do here.
+        Ok(_) => {}
+        Err(_) if is_deletion_owner => {
+            // delete_stream against an already-empty prefix is a cheap
+            // no-op, so this only ever repeats the tombstone clear until it
+            // succeeds -- safe to retry every interval.
+            spawn_stream_deletion(stream_name, tenant_id.clone());
+        }
+        // Not resident on a non-owner (e.g. an ingestor that never loaded
+        // this stream in the first place) -- nothing to reconcile.
+        Err(_) => {}
+    }
+}
+
 pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
     let object_store = PARSEABLE.storage().get_object_store();
     let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
@@ -1343,11 +1576,20 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
     let handle = FLUSH_AND_CONVERT_RUNTIME.handle();
     for tenant_id in tenants {
         for stream_name in PARSEABLE.streams.list(&tenant_id) {
-            if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id)
-                && stream.parquet_files().is_empty()
-                && stream.schema_files().is_empty()
-            {
-                continue;
+            if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id) {
+                if stream.is_deleting() {
+                    spawn_deleting_stream_reconciliation(
+                        joinset,
+                        handle,
+                        object_store.clone(),
+                        tenant_id.clone(),
+                        stream_name.clone(),
+                    );
+                    continue;
+                }
+                if stream.parquet_files().is_empty() && stream.schema_files().is_empty() {
+                    continue;
+                }
             }
             let object_store = object_store.clone();
             let id = tenant_id.clone();
@@ -1372,6 +1614,13 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
                 handle,
             );
         }
+
+        spawn_tombstone_directory_reconciliation(
+            joinset,
+            handle,
+            object_store.clone(),
+            tenant_id.clone(),
+        );
     }
 }
 
@@ -1720,6 +1969,48 @@ mod tombstone_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod stream_deletion_dedup_tests {
+    use super::ACTIVE_STREAM_DELETIONS;
+
+    // `spawn_stream_deletion` itself isn't unit-testable here: it reads
+    // PARSEABLE.storage/PARSEABLE.streams, and the global PARSEABLE static
+    // isn't initialized under `cargo test`. This instead exercises the same
+    // map the real function uses. The real function's actual dedup guard is
+    // an atomic `entry()` check-and-insert; a plain contains_key-then-insert
+    // here is fine since these tests are single-threaded and only need to
+    // assert the map's observable state, not re-prove atomicity.
+    #[test]
+    fn duplicate_key_is_recognized_as_already_running() {
+        let key = (Some("tenant-a".to_string()), "stream-a".to_string());
+        ACTIVE_STREAM_DELETIONS.remove(&key);
+
+        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&key));
+        ACTIVE_STREAM_DELETIONS.insert(key.clone(), std::time::Instant::now());
+        assert!(ACTIVE_STREAM_DELETIONS.contains_key(&key));
+        // A second caller sees the job as already in flight and would skip
+        // re-inserting -- this is the exact check spawn_stream_deletion
+        // makes before spawning its background task.
+        assert!(ACTIVE_STREAM_DELETIONS.contains_key(&key));
+
+        ACTIVE_STREAM_DELETIONS.remove(&key);
+        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&key));
+    }
+
+    #[test]
+    fn same_stream_name_different_tenant_is_a_distinct_key() {
+        let key_a = (Some("tenant-a".to_string()), "shared-name".to_string());
+        let key_b = (Some("tenant-b".to_string()), "shared-name".to_string());
+        ACTIVE_STREAM_DELETIONS.remove(&key_a);
+        ACTIVE_STREAM_DELETIONS.remove(&key_b);
+
+        ACTIVE_STREAM_DELETIONS.insert(key_a.clone(), std::time::Instant::now());
+        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&key_b));
+
+        ACTIVE_STREAM_DELETIONS.remove(&key_a);
     }
 }
 
