@@ -821,18 +821,32 @@ impl Parseable {
         // could recreate the name while the background deletion job is
         // still sweeping its prefix, and that job would delete the freshly
         // created data too.
-        if !stream_in_memory_dont_update
-            && is_tombstoned(
+        if !stream_in_memory_dont_update {
+            if is_tombstoned(
                 self.storage.get_object_store().as_ref(),
                 stream_name,
                 tenant_id,
             )
             .await?
-        {
-            return Err(StreamError::Custom {
-                msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
-                status: StatusCode::CONFLICT,
-            });
+            {
+                return Err(StreamError::Custom {
+                    msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
+                    status: StatusCode::CONFLICT,
+                });
+            }
+
+            // Self-heal a stale is_deleting flag on this path too (e.g. an
+            // ingestor's resident copy, flagged by the delete handler's
+            // fan-out push, whose tombstone has since cleared without
+            // sync_all_streams having noticed yet) -- otherwise this update
+            // succeeds but ingestion keeps being rejected here for up to
+            // another sync interval regardless.
+            if let Ok(stream) = self.get_stream(stream_name, tenant_id)
+                && stream.is_deleting()
+            {
+                stream.clear_deleting();
+                self.streams.delete(stream_name, tenant_id);
+            }
         }
 
         Ok(stream_in_memory_dont_update)

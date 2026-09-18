@@ -2184,6 +2184,75 @@ mod tests {
     }
 
     #[test]
+    fn test_clear_deleting_resets_is_deleting() {
+        let options = Arc::new(Options::default());
+        let stream = Stream::new(
+            options,
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+
+        stream.mark_deleting();
+        assert!(stream.is_deleting());
+        stream.clear_deleting();
+        assert!(!stream.is_deleting());
+    }
+
+    fn insert_stream(streams: &Streams, stream_name: &str, deleting: bool) {
+        let options = Arc::new(Options::default());
+        let stream = Stream::new(
+            options,
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        if deleting {
+            stream.mark_deleting();
+        }
+        streams
+            .write()
+            .expect(LOCK_EXPECT)
+            .entry(DEFAULT_TENANT.to_string())
+            .or_default()
+            .insert(stream_name.to_string(), stream);
+    }
+
+    #[test]
+    fn delete_if_still_deleting_removes_a_stream_still_flagged_deleting() {
+        let streams = Streams::default();
+        insert_stream(&streams, "doomed", true);
+
+        streams.delete_if_still_deleting("doomed", &None);
+
+        assert!(!streams.contains("doomed", &None));
+    }
+
+    #[test]
+    fn delete_if_still_deleting_leaves_a_recreated_stream_untouched() {
+        let streams = Streams::default();
+        // Simulates a background deletion job finalizing by name after a
+        // concurrent self-heal already cleared the stale flag and inserted
+        // a fresh, non-deleting entry under the same name.
+        insert_stream(&streams, "recreated", false);
+
+        streams.delete_if_still_deleting("recreated", &None);
+
+        assert!(streams.contains("recreated", &None));
+    }
+
+    #[test]
+    fn delete_if_still_deleting_is_a_no_op_for_an_absent_stream() {
+        let streams = Streams::default();
+
+        streams.delete_if_still_deleting("never-existed", &None);
+
+        assert!(!streams.contains("never-existed", &None));
+    }
+
+    #[test]
     fn test_staging_with_special_characters() {
         let stream_name = "test_stream_!@#$%^&*()";
 

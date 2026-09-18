@@ -30,7 +30,9 @@ use crate::stats::{Stats, event_labels_date, storage_size_labels_date};
 use crate::storage::retention::Retention;
 use crate::storage::{
     ObjectStoreFormat, StreamInfo, StreamType,
-    object_storage::{spawn_stream_deletion, stream_json_path, to_bytes, tombstone_path},
+    object_storage::{
+        is_tombstoned, spawn_stream_deletion, stream_json_path, to_bytes, tombstone_path,
+    },
 };
 use crate::tenants::TenantNotFound;
 use crate::utils::actix::extract_session_key_from_req;
@@ -82,6 +84,24 @@ pub async fn delete(
             .check_or_load_stream(&stream_name, &tenant_id)
             .await
         {
+            // check_or_load_stream returning false is also what a retried
+            // DELETE sees once the background job has evicted this name
+            // from memory but hasn't cleared its tombstone yet (see
+            // spawn_stream_deletion's cleanup order) -- check the tombstone
+            // directly so that narrow window reports "already in progress"
+            // instead of a misleading "not found".
+            if is_tombstoned(
+                PARSEABLE.storage.get_object_store().as_ref(),
+                &stream_name,
+                &tenant_id,
+            )
+            .await?
+            {
+                return Ok((
+                    format!("log stream {stream_name} deletion already in progress"),
+                    StatusCode::ACCEPTED,
+                ));
+            }
             return Err(StreamNotFound(stream_name).into());
         }
 
