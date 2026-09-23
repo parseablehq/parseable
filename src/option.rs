@@ -194,10 +194,15 @@ pub mod validation {
         }
     }
     pub fn validate_dataset_fields_allowed_limit(s: &str) -> Result<usize, String> {
-        if let Ok(size) = s.parse::<usize>() {
+        if let Ok(size) = s.parse::<usize>()
+            && size > 0
+        {
             Ok(size)
         } else {
-            Err("Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be given as integer value".to_string())
+            Err(
+                "Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be a positive integer"
+                    .to_string(),
+            )
         }
     }
 
