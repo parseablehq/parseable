@@ -93,6 +93,13 @@ pub struct Report {
     metrics: HashMap<String, Value>,
 }
 
+pub struct ClusterNodeCounts {
+    pub active_ingestors: u64,
+    pub inactive_ingestors: u64,
+    pub active_queriers: u64,
+    pub inactive_queriers: u64,
+}
+
 impl Report {
     pub async fn new() -> anyhow::Result<Self> {
         let mut upt: f64 = 0.0;
@@ -114,8 +121,7 @@ impl Report {
         let ingestor_metrics = fetch_ingestors_metrics().await?;
         let mut active_indexers = 0;
         let mut inactive_indexers = 0;
-        let mut active_queriers = 0;
-        let mut inactive_queriers = 0;
+        let (active_queriers, inactive_queriers) = fetch_querier_metrics().await?;
 
         // check liveness of indexers
         // get the count of active and inactive indexers
@@ -129,17 +135,6 @@ impl Report {
             }
         }
 
-        // check liveness of queriers
-        // get the count of active and inactive queriers
-        let query_infos: Vec<NodeMetadata> =
-            cluster::get_node_info(NodeType::Querier, &None).await?;
-        for query in query_infos {
-            if check_liveness(&query.domain_name).await {
-                active_queriers += 1;
-            } else {
-                inactive_queriers += 1;
-            }
-        }
         Ok(Self {
             deployment_id: storage::StorageMetadata::global().deployment_id,
             uptime: upt,
@@ -181,6 +176,34 @@ impl Report {
             .send()
             .await;
     }
+}
+
+pub async fn fetch_cluster_node_counts() -> anyhow::Result<ClusterNodeCounts> {
+    let ingestor_metrics = fetch_ingestors_metrics().await?;
+    let (active_queriers, inactive_queriers) = fetch_querier_metrics().await?;
+
+    Ok(ClusterNodeCounts {
+        active_ingestors: ingestor_metrics.0,
+        inactive_ingestors: ingestor_metrics.1,
+        active_queriers,
+        inactive_queriers,
+    })
+}
+
+async fn fetch_querier_metrics() -> anyhow::Result<(u64, u64)> {
+    let mut active_queriers = 0;
+    let mut inactive_queriers = 0;
+    let query_infos: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Querier, &None).await?;
+
+    for query in query_infos {
+        if check_liveness(&query.domain_name).await {
+            active_queriers += 1;
+        } else {
+            inactive_queriers += 1;
+        }
+    }
+
+    Ok((active_queriers, inactive_queriers))
 }
 
 /// build the node metrics for the node ingestor endpoint
