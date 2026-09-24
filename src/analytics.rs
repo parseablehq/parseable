@@ -121,7 +121,7 @@ impl Report {
         let ingestor_metrics = fetch_ingestors_metrics().await?;
         let mut active_indexers = 0;
         let mut inactive_indexers = 0;
-        let (active_queriers, inactive_queriers) = fetch_querier_metrics().await?;
+        let (active_queriers, inactive_queriers) = fetch_node_counts(NodeType::Querier).await?;
 
         // check liveness of indexers
         // get the count of active and inactive indexers
@@ -179,31 +179,31 @@ impl Report {
 }
 
 pub async fn fetch_cluster_node_counts() -> anyhow::Result<ClusterNodeCounts> {
-    let ingestor_metrics = fetch_ingestors_metrics().await?;
-    let (active_queriers, inactive_queriers) = fetch_querier_metrics().await?;
+    let (active_ingestors, inactive_ingestors) = fetch_node_counts(NodeType::Ingestor).await?;
+    let (active_queriers, inactive_queriers) = fetch_node_counts(NodeType::Querier).await?;
 
     Ok(ClusterNodeCounts {
-        active_ingestors: ingestor_metrics.0,
-        inactive_ingestors: ingestor_metrics.1,
+        active_ingestors,
+        inactive_ingestors,
         active_queriers,
         inactive_queriers,
     })
 }
 
-async fn fetch_querier_metrics() -> anyhow::Result<(u64, u64)> {
-    let mut active_queriers = 0;
-    let mut inactive_queriers = 0;
-    let query_infos: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Querier, &None).await?;
+async fn fetch_node_counts(node_type: NodeType) -> anyhow::Result<(u64, u64)> {
+    let mut active_nodes = 0;
+    let mut inactive_nodes = 0;
+    let node_infos: Vec<NodeMetadata> = cluster::get_node_info(node_type, &None).await?;
 
-    for query in query_infos {
-        if check_liveness(&query.domain_name).await {
-            active_queriers += 1;
+    for node in node_infos {
+        if check_liveness(&node.domain_name).await {
+            active_nodes += 1;
         } else {
-            inactive_queriers += 1;
+            inactive_nodes += 1;
         }
     }
 
-    Ok((active_queriers, inactive_queriers))
+    Ok((active_nodes, inactive_nodes))
 }
 
 /// build the node metrics for the node ingestor endpoint
