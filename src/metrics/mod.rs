@@ -276,6 +276,9 @@ pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64, 
     }
     let (average_cpu_usage, average_memory_bytes) =
         PROCESS_METRICS_ACCUMULATOR.record(cpu_usage_percent, memory_bytes);
+    PROCESS_METRICS_ACCUMULATOR
+        .total_memory
+        .set(total_mem as f64);
     PROCESS_CPU_USAGE_PERCENT_AVG.set(average_cpu_usage);
     PROCESS_MEMORY_BYTES_AVG.set(average_memory_bytes);
     PROCESS_MEMORY_LIMIT_BYTES.set(PROCESS_METRICS_ACCUMULATOR.get_total_mem());
