@@ -201,6 +201,18 @@ pub static PROCESS_MEMORY_BYTES_AVG: Lazy<Gauge> = Lazy::new(|| {
     )
     .expect("metric can be created")
 });
+
+pub static PROCESS_MEMORY_LIMIT_BYTES: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_memory_limit_bytes",
+            "Cgroup memory limit in bytes, or total system memory when cgroup limits are unavailable",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
 pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64, u64)> = OnceLock::new();
 pub struct ProcessMetricsAccumulator {
     cpu_usage_avg: AtomicF64,
@@ -266,6 +278,7 @@ pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64, 
         PROCESS_METRICS_ACCUMULATOR.record(cpu_usage_percent, memory_bytes);
     PROCESS_CPU_USAGE_PERCENT_AVG.set(average_cpu_usage);
     PROCESS_MEMORY_BYTES_AVG.set(average_memory_bytes);
+    PROCESS_MEMORY_LIMIT_BYTES.set(PROCESS_METRICS_ACCUMULATOR.get_total_mem());
 }
 
 #[cfg(test)]
@@ -790,6 +803,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_MEMORY_BYTES_AVG.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_MEMORY_LIMIT_BYTES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
