@@ -205,6 +205,9 @@ pub fn record_disk_metrics(storage: &str, path: &Path) {
         DISK_TOTAL_BYTES
             .with_label_values(&[storage])
             .set(disk.total_space as f64);
+    } else {
+        let _ = DISK_USED_BYTES.remove_label_values(&[storage]);
+        let _ = DISK_TOTAL_BYTES.remove_label_values(&[storage]);
     }
 }
 

@@ -21,13 +21,14 @@ use std::path::Path;
 use sysinfo::Disks;
 
 #[derive(Clone, Copy)]
-pub(crate) struct DiskUtil {
-    pub(crate) total_space: u64,
-    pub(crate) available_space: u64,
-    pub(crate) used_space: u64,
+pub struct DiskUtil {
+    pub total_space: u64,
+    pub available_space: u64,
+    pub used_space: u64,
 }
 
-pub(crate) fn disk_usage_for_path(path: &Path) -> Option<DiskUtil> {
+pub fn disk_usage_for_path(path: &Path) -> Option<DiskUtil> {
+    let path = path.canonicalize().ok()?;
     let mut disks = Disks::new_with_refreshed_list();
     // Prefer the most specific mount point containing the requested path.
     disks.sort_by_key(|disk| disk.mount_point().as_os_str().len());
