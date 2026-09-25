@@ -41,6 +41,7 @@ use crate::{
             modal::{NodeMetadata, NodeType},
         },
     },
+    metrics::{ACTIVE_INGESTORS, ACTIVE_QUERIERS, INACTIVE_INGESTORS, INACTIVE_QUERIERS},
     option::Mode,
     parseable::PARSEABLE,
     stats::{self, Stats},
@@ -181,6 +182,11 @@ impl Report {
 pub async fn fetch_cluster_node_counts() -> anyhow::Result<ClusterNodeCounts> {
     let (active_ingestors, inactive_ingestors) = fetch_node_counts(NodeType::Ingestor).await?;
     let (active_queriers, inactive_queriers) = fetch_node_counts(NodeType::Querier).await?;
+
+    ACTIVE_INGESTORS.set(i64::try_from(active_ingestors).unwrap_or(i64::MAX));
+    INACTIVE_INGESTORS.set(i64::try_from(inactive_ingestors).unwrap_or(i64::MAX));
+    ACTIVE_QUERIERS.set(i64::try_from(active_queriers).unwrap_or(i64::MAX));
+    INACTIVE_QUERIERS.set(i64::try_from(inactive_queriers).unwrap_or(i64::MAX));
 
     Ok(ClusterNodeCounts {
         active_ingestors,
