@@ -227,8 +227,7 @@ pub static INACTIVE_INGESTORS: Lazy<IntGauge> = Lazy::new(|| {
 
 pub static ACTIVE_QUERIERS: Lazy<IntGauge> = Lazy::new(|| {
     IntGauge::with_opts(
-        Opts::new("active_queriers", "Number of active querier nodes")
-            .namespace(METRICS_NAMESPACE),
+        Opts::new("active_queriers", "Number of active querier nodes").namespace(METRICS_NAMESPACE),
     )
     .expect("metric can be created")
 });

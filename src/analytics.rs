@@ -94,13 +94,6 @@ pub struct Report {
     metrics: HashMap<String, Value>,
 }
 
-pub struct ClusterNodeCounts {
-    pub active_ingestors: u64,
-    pub inactive_ingestors: u64,
-    pub active_queriers: u64,
-    pub inactive_queriers: u64,
-}
-
 impl Report {
     pub async fn new() -> anyhow::Result<Self> {
         let mut upt: f64 = 0.0;
@@ -179,7 +172,7 @@ impl Report {
     }
 }
 
-pub async fn fetch_cluster_node_counts() -> anyhow::Result<ClusterNodeCounts> {
+pub async fn fetch_cluster_node_counts() -> anyhow::Result<()> {
     let (active_ingestors, inactive_ingestors) = fetch_node_counts(NodeType::Ingestor).await?;
     let (active_queriers, inactive_queriers) = fetch_node_counts(NodeType::Querier).await?;
 
@@ -188,12 +181,7 @@ pub async fn fetch_cluster_node_counts() -> anyhow::Result<ClusterNodeCounts> {
     ACTIVE_QUERIERS.set(i64::try_from(active_queriers).unwrap_or(i64::MAX));
     INACTIVE_QUERIERS.set(i64::try_from(inactive_queriers).unwrap_or(i64::MAX));
 
-    Ok(ClusterNodeCounts {
-        active_ingestors,
-        inactive_ingestors,
-        active_queriers,
-        inactive_queriers,
-    })
+    Ok(())
 }
 
 async fn fetch_node_counts(node_type: NodeType) -> anyhow::Result<(u64, u64)> {
