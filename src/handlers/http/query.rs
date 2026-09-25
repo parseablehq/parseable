@@ -46,7 +46,7 @@ use tokio::task::JoinSet;
 use tracing::{error, warn};
 
 use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
-use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date};
+use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date, record_query_metrics};
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound};
 use crate::query::error::ExecuteError;
 use crate::query::resolve_stream_names;
@@ -158,6 +158,8 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let mut session_state = QUERY_SESSION.get_ctx().state();
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
+    let query_range_seconds =
+        (time_range.end - time_range.start).num_milliseconds() as f64 / 1_000.0;
     let tables = resolve_stream_names(&query_request.query)?;
     // check or load streams in memory
     create_streams_for_distributed(tables.clone(), &get_tenant_id_from_request(&req)).await?;
@@ -190,13 +192,29 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         let table = tables
             .first()
             .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
-        return handle_count_query(&query_request, table, column_name, time, &tenant_id).await;
+        return handle_count_query(
+            &query_request,
+            table,
+            column_name,
+            time,
+            query_range_seconds,
+            &tenant_id,
+        )
+        .await;
     }
 
     // if the query request has streaming = false (default)
     // we use datafusion's `execute` method to get the records
     if !query_request.streaming {
-        return handle_non_streaming_query(query, tables, &query_request, time, &tenant_id).await;
+        return handle_non_streaming_query(
+            query,
+            tables,
+            &query_request,
+            time,
+            query_range_seconds,
+            &tenant_id,
+        )
+        .await;
     }
 
     // if the query request has streaming = true
@@ -223,6 +241,7 @@ async fn handle_count_query(
     table_name: &str,
     column_name: &str,
     time: Instant,
+    query_range_seconds: f64,
     tenant_id: &Option<String>,
 ) -> Result<HttpResponse, QueryError> {
     let counts_req = CountsRequest {
@@ -249,6 +268,7 @@ async fn handle_count_query(
     QUERY_EXECUTE_TIME
         .with_label_values(&[table_name, tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)])
         .observe(time);
+    record_query_metrics(time, query_range_seconds);
 
     Ok(HttpResponse::Ok()
         .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
@@ -274,6 +294,7 @@ async fn handle_non_streaming_query(
     table_name: Vec<String>,
     query_request: &Query,
     time: Instant,
+    query_range_seconds: f64,
     tenant_id: &Option<String>,
 ) -> Result<HttpResponse, QueryError> {
     let first_table_name = table_name[0].clone();
@@ -295,6 +316,7 @@ async fn handle_non_streaming_query(
             tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
         ])
         .observe(time);
+    record_query_metrics(time, query_range_seconds);
     let response = QueryResponse {
         records,
         fields,

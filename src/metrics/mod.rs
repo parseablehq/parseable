@@ -17,7 +17,10 @@
  */
 
 pub mod prom_utils;
-use std::{path::Path, sync::OnceLock};
+use std::{
+    path::Path,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::{
     handlers::{TelemetryType, http::metrics_path},
@@ -29,7 +32,8 @@ use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
 use once_cell::sync::Lazy;
 use prometheus::{
-    Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
+    Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
+    Registry,
     core::{Atomic, AtomicF64},
 };
 
@@ -42,6 +46,122 @@ const SYNC_TASK_DURATION_BUCKETS: &[f64] = &[
 const QUERY_EXECUTE_TIME_BUCKETS: &[f64] = &[
     0.1, 0.2, 0.5, 1.0, 5.0, 15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 150.0, 180.0,
 ];
+
+#[derive(Debug, Default, PartialEq)]
+struct QueryMetricsSnapshot {
+    completed_query_count: u64,
+    slowest_query_duration_seconds: f64,
+    slowest_query_range_seconds: f64,
+}
+
+#[derive(Default)]
+struct QueryMetricsAccumulator {
+    window: Mutex<QueryMetricsSnapshot>,
+}
+
+impl QueryMetricsAccumulator {
+    fn record(&self, duration_seconds: f64, query_range_seconds: f64) {
+        let mut window = self
+            .window
+            .lock()
+            .expect("query metrics window lock should not be poisoned");
+
+        window.completed_query_count += 1;
+        if duration_seconds > window.slowest_query_duration_seconds {
+            window.slowest_query_duration_seconds = duration_seconds;
+            window.slowest_query_range_seconds = query_range_seconds;
+        }
+    }
+
+    fn take_and_reset(&self) -> QueryMetricsSnapshot {
+        let mut window = self
+            .window
+            .lock()
+            .expect("query metrics window lock should not be poisoned");
+        std::mem::take(&mut *window)
+    }
+}
+
+static QUERY_METRICS_ACCUMULATOR: Lazy<QueryMetricsAccumulator> =
+    Lazy::new(QueryMetricsAccumulator::default);
+
+pub fn record_query_metrics(duration_seconds: f64, query_range_seconds: f64) {
+    QUERY_METRICS_ACCUMULATOR.record(duration_seconds, query_range_seconds);
+}
+
+pub fn refresh_query_metrics() {
+    let snapshot = QUERY_METRICS_ACCUMULATOR.take_and_reset();
+
+    QUERY_COMPLETED_COUNT.set(i64::try_from(snapshot.completed_query_count).unwrap_or(i64::MAX));
+    SLOWEST_QUERY_DURATION_SECONDS.set(snapshot.slowest_query_duration_seconds);
+    SLOWEST_QUERY_RANGE_SECONDS.set(snapshot.slowest_query_range_seconds);
+}
+
+#[cfg(test)]
+mod query_metrics_tests {
+    use super::{
+        METRICS_NAMESPACE, METRICS_REGISTRY, QUERY_COMPLETED_COUNT, QueryMetricsAccumulator,
+        QueryMetricsSnapshot, SLOWEST_QUERY_DURATION_SECONDS, SLOWEST_QUERY_RANGE_SECONDS,
+        record_query_metrics, refresh_query_metrics,
+    };
+
+    #[test]
+    fn tracks_slowest_query_and_resets_after_snapshot() {
+        let accumulator = QueryMetricsAccumulator::default();
+
+        accumulator.record(20.0, 600.0);
+        accumulator.record(70.0, 7_200.0);
+        accumulator.record(65.0, 300.0);
+
+        assert_eq!(
+            accumulator.take_and_reset(),
+            QueryMetricsSnapshot {
+                completed_query_count: 3,
+                slowest_query_duration_seconds: 70.0,
+                slowest_query_range_seconds: 7_200.0,
+            }
+        );
+        assert_eq!(
+            accumulator.take_and_reset(),
+            QueryMetricsSnapshot::default()
+        );
+    }
+
+    #[test]
+    fn registers_query_window_metrics() {
+        let metric_names: Vec<_> = METRICS_REGISTRY
+            .gather()
+            .iter()
+            .map(|family| family.get_name().to_string())
+            .collect();
+
+        for name in [
+            "query_completed_count",
+            "slowest_query_duration_seconds",
+            "slowest_query_range_seconds",
+        ] {
+            let metric_name = format!("{METRICS_NAMESPACE}_{name}");
+            assert!(metric_names.contains(&metric_name));
+        }
+    }
+
+    #[test]
+    fn refreshes_gauges_and_clears_previous_window() {
+        record_query_metrics(20.0, 600.0);
+        record_query_metrics(70.0, 7_200.0);
+        refresh_query_metrics();
+
+        assert_eq!(QUERY_COMPLETED_COUNT.get(), 2);
+        assert_eq!(SLOWEST_QUERY_DURATION_SECONDS.get(), 70.0);
+        assert_eq!(SLOWEST_QUERY_RANGE_SECONDS.get(), 7_200.0);
+
+        refresh_query_metrics();
+
+        assert_eq!(QUERY_COMPLETED_COUNT.get(), 0);
+        assert_eq!(SLOWEST_QUERY_DURATION_SECONDS.get(), 0.0);
+        assert_eq!(SLOWEST_QUERY_RANGE_SECONDS.get(), 0.0);
+    }
+}
 
 pub static METRICS_REGISTRY: Lazy<Registry> = Lazy::new(|| {
     let registry = Registry::new();
@@ -334,6 +454,39 @@ pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
             .namespace(METRICS_NAMESPACE)
             .buckets(QUERY_EXECUTE_TIME_BUCKETS.to_vec()),
         &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static QUERY_COMPLETED_COUNT: Lazy<IntGauge> = Lazy::new(|| {
+    IntGauge::with_opts(
+        Opts::new(
+            "query_completed_count",
+            "Queries completed in the latest query metrics interval",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
+pub static SLOWEST_QUERY_DURATION_SECONDS: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "slowest_query_duration_seconds",
+            "Duration of the slowest query completed in the latest query metrics interval",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
+pub static SLOWEST_QUERY_RANGE_SECONDS: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "slowest_query_range_seconds",
+            "Requested time range of the slowest query completed in the latest query metrics interval",
+        )
+        .namespace(METRICS_NAMESPACE),
     )
     .expect("metric can be created")
 });
@@ -873,6 +1026,15 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(QUERY_COMPLETED_COUNT.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(SLOWEST_QUERY_DURATION_SECONDS.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(SLOWEST_QUERY_RANGE_SECONDS.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(CONVERSION_TASK_DURATION.clone()))
