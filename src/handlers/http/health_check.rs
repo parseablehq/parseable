@@ -32,6 +32,7 @@ use once_cell::sync::Lazy;
 use tokio::{sync::Mutex, task::JoinSet};
 use tracing::{error, info};
 
+use crate::option::Mode;
 use crate::sync::shutdown_local_sync_flush_and_convert;
 use crate::utils::get_tenant_id_from_request;
 use crate::{parseable::PARSEABLE, storage::object_storage::sync_all_streams};
@@ -65,11 +66,13 @@ pub async fn shutdown() {
     //sleep for 5 secs to allow any ongoing requests to finish
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    // Perform sync operations
-    perform_sync_operations().await;
+    // Only ingestion-capable nodes own local data that needs flushing.
+    if matches!(PARSEABLE.options.mode, Mode::Ingest | Mode::All) {
+        perform_sync_operations().await;
 
-    // This is to ensure that all stats data is synced before the server shuts down
-    perform_sync_operations().await;
+        // This is to ensure that all stats data is synced before the server shuts down
+        perform_sync_operations().await;
+    }
 }
 
 async fn set_shutdown_flag() {

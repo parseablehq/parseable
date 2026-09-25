@@ -35,6 +35,14 @@ use prometheus::{
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
+const SYNC_TASK_DURATION_BUCKETS: &[f64] = &[
+    15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 150.0, 180.0, 300.0, 600.0,
+];
+
+const QUERY_EXECUTE_TIME_BUCKETS: &[f64] = &[
+    0.1, 0.2, 0.5, 1.0, 5.0, 15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 150.0, 180.0,
+];
+
 pub static METRICS_REGISTRY: Lazy<Registry> = Lazy::new(|| {
     let registry = Registry::new();
     custom_metrics(&registry);
@@ -322,8 +330,36 @@ mod process_metrics_tests {
 
 pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
-        HistogramOpts::new("query_execute_time", "Query execute time").namespace(METRICS_NAMESPACE),
+        HistogramOpts::new("query_execute_time", "Query execute time")
+            .namespace(METRICS_NAMESPACE)
+            .buckets(QUERY_EXECUTE_TIME_BUCKETS.to_vec()),
         &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static CONVERSION_TASK_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new(
+            "conversion_task_duration",
+            "Local conversion task duration in seconds",
+        )
+        .namespace(METRICS_NAMESPACE)
+        .buckets(SYNC_TASK_DURATION_BUCKETS.to_vec()),
+        &["phase"],
+    )
+    .expect("metric can be created")
+});
+
+pub static OBJECT_STORE_SYNC_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new(
+            "object_store_sync_duration",
+            "Object store sync duration in seconds",
+        )
+        .namespace(METRICS_NAMESPACE)
+        .buckets(SYNC_TASK_DURATION_BUCKETS.to_vec()),
+        &["phase"],
     )
     .expect("metric can be created")
 });
@@ -837,6 +873,12 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(CONVERSION_TASK_DURATION.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(OBJECT_STORE_SYNC_DURATION.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_CACHE_HIT.clone()))
