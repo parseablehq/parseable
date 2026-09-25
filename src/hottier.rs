@@ -40,7 +40,10 @@ use crate::{
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::{ObjectStorageError, field_stats::DATASET_STATS_STREAM_NAME},
     tenants::TENANT_METADATA,
-    utils::human_size::bytes_to_human_size,
+    utils::{
+        disk::{DiskUtil, disk_usage_for_path},
+        human_size::bytes_to_human_size,
+    },
     validator::error::HotTierValidationError,
 };
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
@@ -50,7 +53,6 @@ use object_store::{ObjectStoreExt, local::LocalFileSystem};
 use parquet::errors::ParquetError;
 use relative_path::RelativePathBuf;
 use std::time::Duration;
-use sysinfo::Disks;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{Instrument, error, info};
@@ -1605,23 +1607,6 @@ impl HotTierManager {
     }
 }
 
-fn disk_usage_for_path(hot_tier_path: &Path) -> Option<DiskUtil> {
-    let mut disks = Disks::new_with_refreshed_list();
-    // Order the disk partitions by decreasing length of mount path.
-    disks.sort_by_key(|disk| disk.mount_point().as_os_str().len());
-    disks.reverse();
-
-    disks.iter().find_map(|disk| {
-        hot_tier_path
-            .starts_with(disk.mount_point())
-            .then(|| DiskUtil {
-                total_space: disk.total_space(),
-                available_space: disk.available_space(),
-                used_space: disk.total_space() - disk.available_space(),
-            })
-    })
-}
-
 #[derive(Clone)]
 struct DiskBudget {
     state: Arc<AsyncMutex<Option<DiskBudgetState>>>,
@@ -1732,13 +1717,6 @@ impl ReclaimBudget {
     fn record_eviction(&mut self, bytes: u64) {
         self.evicted = self.evicted.saturating_add(bytes);
     }
-}
-
-#[derive(Clone, Copy)]
-struct DiskUtil {
-    total_space: u64,
-    available_space: u64,
-    used_space: u64,
 }
 
 #[derive(Debug, thiserror::Error)]

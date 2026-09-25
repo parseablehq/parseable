@@ -33,7 +33,7 @@ use tokio::{
 use tracing::{info, trace, warn};
 
 use crate::analytics::{SYS_INFO, refresh_sys_info};
-use crate::metrics::record_process_metrics_sample;
+use crate::metrics::{record_disk_metrics, record_process_metrics_sample};
 use crate::parseable::PARSEABLE;
 
 const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
@@ -59,6 +59,17 @@ async fn sample_process_metrics() {
     if let Some((cpu_usage, memory_bytes, total_mem)) = process_metrics {
         record_process_metrics_sample(cpu_usage, memory_bytes, total_mem);
     }
+
+    let staging_path = PARSEABLE.options.staging_dir().clone();
+    let hot_tier_path = PARSEABLE.hot_tier_dir().clone();
+    tokio::task::spawn_blocking(move || {
+        record_disk_metrics("staging", &staging_path);
+        if let Some(hot_tier_path) = hot_tier_path {
+            record_disk_metrics("hottier", &hot_tier_path);
+        }
+    })
+    .await
+    .unwrap();
 }
 
 /// Spawn a background task to monitor system resources

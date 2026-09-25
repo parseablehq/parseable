@@ -17,18 +17,19 @@
  */
 
 pub mod prom_utils;
-use std::sync::OnceLock;
+use std::{path::Path, sync::OnceLock};
 
 use crate::{
     handlers::{TelemetryType, http::metrics_path},
     stats::FullStats,
+    utils::disk::disk_usage_for_path,
 };
 use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
 use once_cell::sync::Lazy;
 use prometheus::{
-    Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
+    Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
     core::{Atomic, AtomicF64},
 };
 
@@ -187,6 +188,33 @@ pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
     )
     .expect("metric can be created")
 });
+
+pub static DISK_USED_BYTES: Lazy<GaugeVec> = Lazy::new(|| {
+    GaugeVec::new(
+        Opts::new("disk_used_bytes", "Used disk space in bytes").namespace(METRICS_NAMESPACE),
+        &["disk_type"],
+    )
+    .expect("metric can be created")
+});
+
+pub static DISK_TOTAL_BYTES: Lazy<GaugeVec> = Lazy::new(|| {
+    GaugeVec::new(
+        Opts::new("disk_total_bytes", "Total disk space in bytes").namespace(METRICS_NAMESPACE),
+        &["disk_type"],
+    )
+    .expect("metric can be created")
+});
+
+pub fn record_disk_metrics(disk_type: &str, path: &Path) {
+    if let Some(disk) = disk_usage_for_path(path) {
+        DISK_USED_BYTES
+            .with_label_values(&[disk_type])
+            .set(disk.used_space as f64);
+        DISK_TOTAL_BYTES
+            .with_label_values(&[disk_type])
+            .set(disk.total_space as f64);
+    }
+}
 
 pub static PROCESS_CPU_USAGE_PERCENT_AVG: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
@@ -827,6 +855,12 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(STAGING_FILES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(DISK_USED_BYTES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(DISK_TOTAL_BYTES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
