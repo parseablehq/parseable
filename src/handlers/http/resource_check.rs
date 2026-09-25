@@ -65,7 +65,7 @@ async fn sample_process_metrics() {
     tokio::task::spawn_blocking(move || {
         record_disk_metrics("staging", &staging_path);
         if let Some(hot_tier_path) = hot_tier_path {
-            record_disk_metrics("hot_tier", &hot_tier_path);
+            record_disk_metrics("hottier", &hot_tier_path);
         }
     })
     .await

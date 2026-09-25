@@ -184,7 +184,7 @@ pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
 pub static DISK_USED_BYTES: Lazy<GaugeVec> = Lazy::new(|| {
     GaugeVec::new(
         Opts::new("disk_used_bytes", "Used disk space in bytes").namespace(METRICS_NAMESPACE),
-        &["storage"],
+        &["disk_type"],
     )
     .expect("metric can be created")
 });
@@ -192,18 +192,18 @@ pub static DISK_USED_BYTES: Lazy<GaugeVec> = Lazy::new(|| {
 pub static DISK_TOTAL_BYTES: Lazy<GaugeVec> = Lazy::new(|| {
     GaugeVec::new(
         Opts::new("disk_total_bytes", "Total disk space in bytes").namespace(METRICS_NAMESPACE),
-        &["storage"],
+        &["disk_type"],
     )
     .expect("metric can be created")
 });
 
-pub fn record_disk_metrics(storage: &str, path: &Path) {
+pub fn record_disk_metrics(disk_type: &str, path: &Path) {
     if let Some(disk) = disk_usage_for_path(path) {
         DISK_USED_BYTES
-            .with_label_values(&[storage])
+            .with_label_values(&[disk_type])
             .set(disk.used_space as f64);
         DISK_TOTAL_BYTES
-            .with_label_values(&[storage])
+            .with_label_values(&[disk_type])
             .set(disk.total_space as f64);
     }
 }
