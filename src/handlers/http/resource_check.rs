@@ -33,9 +33,7 @@ use tokio::{
 use tracing::{info, trace, warn};
 
 use crate::analytics::{SYS_INFO, refresh_sys_info};
-use crate::metrics::{
-    DISK_TOTAL_BYTES, DISK_USED_BYTES, record_disk_metrics, record_process_metrics_sample,
-};
+use crate::metrics::{record_disk_metrics, record_process_metrics_sample};
 use crate::parseable::PARSEABLE;
 
 const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
@@ -68,9 +66,6 @@ async fn sample_process_metrics() {
         record_disk_metrics("staging", &staging_path);
         if let Some(hot_tier_path) = hot_tier_path {
             record_disk_metrics("hot_tier", &hot_tier_path);
-        } else {
-            DISK_USED_BYTES.with_label_values(&["hot_tier"]).set(0.0);
-            DISK_TOTAL_BYTES.with_label_values(&["hot_tier"]).set(0.0);
         }
     })
     .await
