@@ -300,6 +300,30 @@ pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static CONVERSION_TASK_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new(
+            "conversion_task_duration",
+            "Local conversion task duration in seconds",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["phase"],
+    )
+    .expect("metric can be created")
+});
+
+pub static OBJECT_STORE_SYNC_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new(
+            "object_store_sync_duration",
+            "Object store sync duration in seconds",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["phase"],
+    )
+    .expect("metric can be created")
+});
+
 pub static QUERY_CACHE_HIT: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new("QUERY_CACHE_HIT", "Full Cache hit").namespace(METRICS_NAMESPACE),
@@ -803,6 +827,12 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(CONVERSION_TASK_DURATION.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(OBJECT_STORE_SYNC_DURATION.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_CACHE_HIT.clone()))

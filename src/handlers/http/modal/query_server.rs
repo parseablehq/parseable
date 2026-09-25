@@ -17,7 +17,6 @@
  */
 
 use std::sync::Arc;
-use std::thread;
 
 use crate::handlers::airplane;
 use crate::handlers::http::cluster;
@@ -33,7 +32,7 @@ use crate::hottier::HotTierManager;
 use crate::hottier::HotTierMessage;
 use crate::hottier::hottier_runtime;
 use crate::rbac::role::Action;
-use crate::{analytics, migration, storage, sync};
+use crate::{analytics, migration, storage};
 use actix_web::web::{ServiceConfig, resource};
 use actix_web::{Scope, web};
 use actix_web_prometheus::PrometheusMetrics;
@@ -159,18 +158,10 @@ impl ParseableServer for QueryServer {
             htm.start_all_tasks().await;
         };
 
-        // Run sync on a background thread
-        let (cancel_tx, cancel_rx) = oneshot::channel();
-        thread::spawn(|| sync::handler(cancel_rx));
-
         tokio::spawn(airplane::server());
 
-        let result = self
-            .start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
-            .await?;
-        // Cancel sync jobs
-        cancel_tx.send(()).expect("Cancellation should not fail");
-        Ok(result)
+        self.start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
+            .await
     }
 }
 
