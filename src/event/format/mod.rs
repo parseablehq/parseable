@@ -24,6 +24,7 @@ use std::{
 };
 
 use anyhow::{Error as AnyError, anyhow};
+use arrow::compute::kernels::cast_utils::string_to_datetime;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
@@ -57,6 +58,15 @@ static TIME_FIELD_NAME_PARTS: [&str; 11] = [
     "ts",
     "dt",
 ];
+
+/// Returns whether Arrow's JSON timestamp decoder can parse this value.
+///
+/// Timestamp inference must use the same parser as decoding. Chrono accepts
+/// formats such as RFC 2822 that Arrow rejects, which otherwise produces a
+/// schema Arrow cannot use to decode the original JSON value.
+fn is_arrow_timestamp(value: &str) -> bool {
+    string_to_datetime(&Utc, value).is_ok()
+}
 
 type EventSchema = Vec<Arc<Field>>;
 
@@ -388,7 +398,8 @@ pub fn override_data_type(
                             .any(|part| field_name.to_lowercase().contains(part))
                         && field.data_type() == &DataType::Utf8
                         && (DateTime::parse_from_rfc3339(s).is_ok()
-                            || DateTime::parse_from_rfc2822(s).is_ok()) =>
+                            || DateTime::parse_from_rfc2822(s).is_ok())
+                        && is_arrow_timestamp(s) =>
                 {
                     Field::new(
                         field_name,
@@ -456,12 +467,13 @@ fn value_compatible_with_type(
             // Timestamps can accept strings that parse as datetime or numbers
             match value {
                 Value::String(s) => {
-                    chrono::DateTime::parse_from_rfc3339(s).is_ok()
+                    (chrono::DateTime::parse_from_rfc3339(s).is_ok()
                         || chrono::DateTime::parse_from_rfc2822(s).is_ok()
                         || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").is_ok()
                         || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").is_ok()
                         || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f").is_ok()
-                        || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").is_ok()
+                        || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").is_ok())
+                        && is_arrow_timestamp(s)
                 }
                 // Arrow JSON decoder with coerce_primitive(false) cannot decode
                 // a JSON number into a Timestamp field — it expects a string.
@@ -942,6 +954,31 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_schema_conflicts_rfc2822_timestamp() {
+        let mut existing_schema: HashMap<String, Arc<Field>> = HashMap::new();
+        existing_schema.insert(
+            "date".to_string(),
+            Arc::new(Field::new(
+                "date",
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            )),
+        );
+
+        let inferred_schema = Schema::new(vec![Field::new("date", DataType::Utf8, true)]);
+        let values = vec![json!({"date": "Tue, 22 Sep 2026 08:04:47 GMT"})];
+
+        let conflicts = detect_schema_conflicts(
+            &inferred_schema,
+            &existing_schema,
+            &values,
+            SchemaVersion::V1,
+        );
+
+        assert_eq!(conflicts.get("date"), Some(&"date_utf8".to_string()));
+    }
+
+    #[test]
     fn test_detect_schema_conflicts_number_to_utf8() {
         // Existing schema has request_body as Utf8
         let mut existing_schema: HashMap<String, Arc<Field>> = HashMap::new();
@@ -1059,6 +1096,16 @@ mod tests {
         let updated = override_data_type(inferred, log, SchemaVersion::V1, false);
 
         // With infer_timestamp=false, time-named string fields stay Utf8.
+        assert_eq!(updated.field(0).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn override_data_type_keeps_rfc2822_as_utf8() {
+        let inferred = Arc::new(Schema::new(vec![Field::new("date", DataType::Utf8, true)]));
+        let log = json!({"date": "Tue, 22 Sep 2026 08:04:47 GMT"});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, true);
+
         assert_eq!(updated.field(0).data_type(), &DataType::Utf8);
     }
 
