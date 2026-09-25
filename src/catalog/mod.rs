@@ -31,7 +31,7 @@ use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
     handlers::{
         self,
-        http::{base_path_without_preceding_slash, cluster::for_each_live_node},
+        http::{base_path_without_preceding_slash, cluster::for_each_live_node, modal::NodeType},
     },
     metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE},
     option::Mode,
@@ -538,6 +538,10 @@ pub async fn remove_manifest_from_snapshot(
             let stream_name = stream_name_clone.clone();
             let dates = dates_clone.clone();
             async move {
+                if ingestor.node_type != NodeType::Ingestor {
+                    return Ok::<(), ObjectStorageError>(());
+                }
+
                 let url = format!(
                     "{}{}/logstream/{}/retention/cleanup",
                     ingestor.domain_name,
