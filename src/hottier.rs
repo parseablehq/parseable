@@ -145,6 +145,13 @@ where
             );
             (file, false)
         }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            tracing::debug!(
+                path = ?hot_tier_path,
+                "hot tier file not cached; using object storage"
+            );
+            (file, false)
+        }
         Err(error) => {
             tracing::error!("hot tier file metadata check failed for {hot_tier_path:?} - {error}");
             (file, false)

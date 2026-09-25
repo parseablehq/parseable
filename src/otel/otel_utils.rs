@@ -20,7 +20,64 @@ use chrono::DateTime;
 use opentelemetry_proto::tonic::common::v1::{
     AnyValue, ArrayValue, KeyValue, KeyValueList, any_value::Value as OtelValue,
 };
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
+
+/// Deserializes an OTLP/JSON payload and optionally retries after restoring
+/// omitted empty `values` fields in `ArrayValue` and `KeyValueList` messages.
+pub fn deserialize_otel_json<T>(
+    mut json: Value,
+    normalise_on_failure: bool,
+) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    if !normalise_on_failure {
+        return serde_json::from_value(json);
+    }
+
+    match T::deserialize(&json) {
+        Ok(value) => Ok(value),
+        Err(original_error) => {
+            if !normalise_missing_otel_collection_values(&mut json) {
+                return Err(original_error);
+            }
+
+            serde_json::from_value(json)
+        }
+    }
+}
+
+fn normalise_missing_otel_collection_values(value: &mut Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut changed = false;
+
+            for collection_key in ["arrayValue", "kvlistValue"] {
+                if let Some(Value::Object(collection)) = map.get_mut(collection_key)
+                    && !collection.contains_key("values")
+                {
+                    collection.insert("values".to_string(), Value::Array(Vec::new()));
+                    changed = true;
+                }
+            }
+
+            for child in map.values_mut() {
+                changed |= normalise_missing_otel_collection_values(child);
+            }
+
+            changed
+        }
+        Value::Array(values) => {
+            let mut changed = false;
+            for child in values {
+                changed |= normalise_missing_otel_collection_values(child);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
 
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
 pub fn collect_json_from_value(key: &str, value: OtelValue) -> Map<String, Value> {
@@ -216,6 +273,7 @@ pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opentelemetry_proto::tonic::logs::v1::LogsData;
 
     #[test]
     fn zero_epoch_uses_current_utc_time() {
@@ -236,5 +294,59 @@ mod tests {
             convert_epoch_nano_to_timestamp(1_000_000_000),
             "1970-01-01T00:00:01.000000000Z"
         );
+    }
+
+    fn logs_with_omitted_empty_collection_values() -> Value {
+        serde_json::json!({
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "attributes": [
+                            {
+                                "key": "input",
+                                "value": { "kvlistValue": {} }
+                            },
+                            {
+                                "key": "tags",
+                                "value": { "arrayValue": {} }
+                            }
+                        ]
+                    }]
+                }]
+            }]
+        })
+    }
+
+    #[test]
+    fn otel_payload_normalisation_is_disabled_by_default() {
+        let error =
+            deserialize_otel_json::<LogsData>(logs_with_omitted_empty_collection_values(), false)
+                .unwrap_err();
+
+        assert!(error.to_string().contains("missing field"));
+        assert!(error.to_string().contains("values"));
+    }
+
+    #[test]
+    fn otel_payload_normalisation_retries_failed_deserialization() {
+        let logs =
+            deserialize_otel_json::<LogsData>(logs_with_omitted_empty_collection_values(), true)
+                .unwrap();
+
+        let attributes = &logs.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        assert!(matches!(
+            attributes[0]
+                .value
+                .as_ref()
+                .and_then(|value| value.value.as_ref()),
+            Some(OtelValue::KvlistValue(KeyValueList { values })) if values.is_empty()
+        ));
+        assert!(matches!(
+            attributes[1]
+                .value
+                .as_ref()
+                .and_then(|value| value.value.as_ref()),
+            Some(OtelValue::ArrayValue(ArrayValue { values })) if values.is_empty()
+        ));
     }
 }
