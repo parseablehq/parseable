@@ -46,7 +46,9 @@ use tokio::task::JoinSet;
 use tracing::{error, warn};
 
 use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
-use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date, record_query_metrics};
+use crate::metrics::{
+    QUERY_EXECUTE_TIME, QueryType, increment_query_calls_by_date, record_query_metrics,
+};
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound};
 use crate::query::error::ExecuteError;
 use crate::query::resolve_stream_names;
@@ -268,7 +270,7 @@ async fn handle_count_query(
     QUERY_EXECUTE_TIME
         .with_label_values(&[table_name, tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)])
         .observe(time);
-    record_query_metrics(time, query_range_seconds);
+    record_query_metrics(time, query_range_seconds, QueryType::Sql);
 
     Ok(HttpResponse::Ok()
         .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
@@ -316,7 +318,7 @@ async fn handle_non_streaming_query(
             tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
         ])
         .observe(time);
-    record_query_metrics(time, query_range_seconds);
+    record_query_metrics(time, query_range_seconds, QueryType::Sql);
     let response = QueryResponse {
         records,
         fields,
