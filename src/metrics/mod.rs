@@ -46,14 +46,14 @@ const QUERY_EXECUTE_TIME_BUCKETS: &[f64] = &[
     0.1, 0.2, 0.5, 1.0, 5.0, 15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 150.0, 180.0,
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum QueryType {
     Sql,
     Promql,
 }
 
 impl QueryType {
-    fn as_label(self) -> &'static str {
+    fn as_label(&self) -> &'static str {
         match self {
             Self::Sql => "SQL",
             Self::Promql => "PromQL",
