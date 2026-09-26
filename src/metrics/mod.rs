@@ -17,7 +17,10 @@
  */
 
 pub mod prom_utils;
-use std::{path::Path, sync::OnceLock};
+use std::{
+    path::Path,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::{
     handlers::{TelemetryType, http::metrics_path},
@@ -42,6 +45,141 @@ const SYNC_TASK_DURATION_BUCKETS: &[f64] = &[
 const QUERY_EXECUTE_TIME_BUCKETS: &[f64] = &[
     0.1, 0.2, 0.5, 1.0, 5.0, 15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 150.0, 180.0,
 ];
+
+#[derive(Debug, PartialEq)]
+pub enum QueryType {
+    Sql,
+    Promql,
+}
+
+impl QueryType {
+    fn as_label(&self) -> &'static str {
+        match self {
+            Self::Sql => "SQL",
+            Self::Promql => "PromQL",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct QueryMetricsSnapshot {
+    duration_seconds: f64,
+    time_range_seconds: f64,
+    query_type: QueryType,
+}
+
+#[derive(Default)]
+struct QueryMetricsAccumulator {
+    slowest_query: Mutex<Option<QueryMetricsSnapshot>>,
+}
+
+impl QueryMetricsAccumulator {
+    fn record(&self, duration_seconds: f64, time_range_seconds: f64, query_type: QueryType) {
+        let mut slowest_query = self
+            .slowest_query
+            .lock()
+            .expect("query metrics window lock should not be poisoned");
+
+        if slowest_query
+            .as_ref()
+            .is_none_or(|query| duration_seconds > query.duration_seconds)
+        {
+            *slowest_query = Some(QueryMetricsSnapshot {
+                duration_seconds,
+                time_range_seconds,
+                query_type,
+            });
+        }
+    }
+
+    fn take_and_reset(&self) -> Option<QueryMetricsSnapshot> {
+        let mut slowest_query = self
+            .slowest_query
+            .lock()
+            .expect("query metrics window lock should not be poisoned");
+        slowest_query.take()
+    }
+}
+
+static QUERY_METRICS_ACCUMULATOR: Lazy<QueryMetricsAccumulator> =
+    Lazy::new(QueryMetricsAccumulator::default);
+
+pub fn record_query_metrics(duration_seconds: f64, time_range_seconds: f64, query_type: QueryType) {
+    QUERY_METRICS_ACCUMULATOR.record(duration_seconds, time_range_seconds, query_type);
+}
+
+pub fn refresh_query_metrics() {
+    let snapshot = QUERY_METRICS_ACCUMULATOR.take_and_reset();
+    SLOWEST_QUERY_DURATION_SECONDS.reset();
+
+    if let Some(snapshot) = snapshot {
+        SLOWEST_QUERY_DURATION_SECONDS
+            .with_label_values(&[
+                &snapshot.time_range_seconds.to_string(),
+                snapshot.query_type.as_label(),
+            ])
+            .set(snapshot.duration_seconds);
+    }
+}
+
+#[cfg(test)]
+mod query_metrics_tests {
+    use prometheus::core::Collector;
+
+    use super::{
+        METRICS_NAMESPACE, METRICS_REGISTRY, QueryMetricsAccumulator, QueryMetricsSnapshot,
+        QueryType, SLOWEST_QUERY_DURATION_SECONDS, record_query_metrics, refresh_query_metrics,
+    };
+
+    #[test]
+    fn tracks_slowest_query_and_resets_after_snapshot() {
+        let accumulator = QueryMetricsAccumulator::default();
+
+        accumulator.record(20.0, 600.0, QueryType::Sql);
+        accumulator.record(70.0, 7_200.0, QueryType::Promql);
+        accumulator.record(65.0, 300.0, QueryType::Sql);
+
+        assert_eq!(
+            accumulator.take_and_reset(),
+            Some(QueryMetricsSnapshot {
+                duration_seconds: 70.0,
+                time_range_seconds: 7_200.0,
+                query_type: QueryType::Promql,
+            })
+        );
+        assert_eq!(accumulator.take_and_reset(), None);
+    }
+
+    #[test]
+    fn refreshes_gauges_and_clears_previous_window() {
+        record_query_metrics(20.0, 600.0, QueryType::Sql);
+        record_query_metrics(70.0, 7_200.0, QueryType::Promql);
+        refresh_query_metrics();
+
+        assert_eq!(
+            SLOWEST_QUERY_DURATION_SECONDS
+                .with_label_values(&["7200", "PromQL"])
+                .get(),
+            70.0
+        );
+        let metric_name = format!("{METRICS_NAMESPACE}_slowest_query_duration_seconds");
+        assert!(
+            METRICS_REGISTRY
+                .gather()
+                .iter()
+                .any(|family| family.get_name() == metric_name)
+        );
+
+        refresh_query_metrics();
+
+        assert!(
+            SLOWEST_QUERY_DURATION_SECONDS
+                .collect()
+                .iter()
+                .all(|family| family.get_metric().is_empty())
+        );
+    }
+}
 
 pub static METRICS_REGISTRY: Lazy<Registry> = Lazy::new(|| {
     let registry = Registry::new();
@@ -334,6 +472,18 @@ pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
             .namespace(METRICS_NAMESPACE)
             .buckets(QUERY_EXECUTE_TIME_BUCKETS.to_vec()),
         &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static SLOWEST_QUERY_DURATION_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
+    GaugeVec::new(
+        Opts::new(
+            "slowest_query_duration_seconds",
+            "Duration of the slowest query completed in the latest query metrics interval",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["time_range_seconds", "query_type"],
     )
     .expect("metric can be created")
 });
@@ -873,6 +1023,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(SLOWEST_QUERY_DURATION_SECONDS.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(CONVERSION_TASK_DURATION.clone()))
