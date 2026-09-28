@@ -120,7 +120,7 @@ struct StandardTableProvider {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct HotTierStreamKey {
+pub struct HotTierStreamKey {
     pub tenant_id: Option<String>,
     pub stream: String,
 }

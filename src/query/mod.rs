@@ -34,7 +34,8 @@ use datafusion::execution::{
 };
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
-    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ScalarUDF, ToStringifiedPlan,
+    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ScalarUDF, TableSource,
+    ToStringifiedPlan,
 };
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -64,7 +65,9 @@ use tracing::Instrument;
 use self::error::ExecuteError;
 pub use self::stream_schema_provider::PartialTimeFilter;
 use self::stream_schema_provider::{
-    GlobalSchemaProvider, HotTierStreamKey, guarded_hot_tier_table_source, hot_tier_stream_key,
+    GlobalSchemaProvider, HotTierStreamKey,
+    guarded_hot_tier_table_source as default_guarded_hot_tier_table_source,
+    hot_tier_stream_key as default_hot_tier_stream_key,
 };
 use crate::alerts::alert_structs::Conditions;
 use crate::alerts::alerts_utils::get_filter_string;
@@ -117,6 +120,31 @@ pub trait ParseableSchemaProvider: Send + Sync {
         storage: Option<Arc<dyn ObjectStorage>>,
         tenant_id: &Option<String>,
     ) -> Box<dyn SchemaProvider>;
+
+    fn hot_tier_stream_key(&self, _source: &Arc<dyn TableSource>) -> Option<HotTierStreamKey> {
+        None
+    }
+
+    fn guarded_hot_tier_table_source(
+        &self,
+        _source: &Arc<dyn TableSource>,
+    ) -> Option<Arc<dyn TableSource>> {
+        None
+    }
+}
+
+fn hot_tier_stream_key(source: &Arc<dyn TableSource>) -> Option<HotTierStreamKey> {
+    SCHEMA_PROVIDER
+        .get()
+        .and_then(|provider| provider.hot_tier_stream_key(source))
+        .or_else(|| default_hot_tier_stream_key(source))
+}
+
+fn guarded_hot_tier_table_source(source: &Arc<dyn TableSource>) -> Option<Arc<dyn TableSource>> {
+    SCHEMA_PROVIDER
+        .get()
+        .and_then(|provider| provider.guarded_hot_tier_table_source(source))
+        .or_else(|| default_guarded_hot_tier_table_source(source))
 }
 
 fn get_schema_provider(tenant_id: &Option<String>) -> Box<dyn SchemaProvider> {
