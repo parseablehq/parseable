@@ -82,6 +82,7 @@ pub async fn shutdown_local_sync_flush_and_convert() {
 
 use crate::alerts::alert_enums::AlertTask;
 use crate::alerts::alerts_utils;
+use crate::metrics::{CONVERSION_TASK_DURATION, OBJECT_STORE_SYNC_DURATION};
 use crate::parseable::PARSEABLE;
 use crate::storage::object_storage::sync_all_streams;
 use crate::{LOCAL_SYNC_INTERVAL, STORAGE_UPLOAD_INTERVAL};
@@ -98,7 +99,13 @@ fn next_minute() -> Instant {
     Instant::now() + time_till.to_std().expect("Valid duration")
 }
 
-pub async fn monitor_task_duration<F, Fut, T>(task_name: &str, threshold: Duration, f: F) -> T
+pub async fn monitor_task_duration<F, Fut, T>(
+    task_name: &str,
+    threshold: Duration,
+    duration_metric: &prometheus::HistogramVec,
+    phase: &str,
+    f: F,
+) -> T
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = T> + Send,
@@ -117,10 +124,14 @@ where
                 warned_once = true;
             },
             res = &mut future => {
+                let elapsed = start_time.elapsed();
+                duration_metric
+                    .with_label_values(&[phase])
+                    .observe(elapsed.as_secs_f64());
                 if warned_once {
                     warn!(
                         "Task '{task_name}' took longer than expected: {:?} (threshold: {threshold:?})",
-                        start_time.elapsed()
+                        elapsed
                     );
                 }
                 break res.expect("Task handle shouldn't error");
@@ -191,6 +202,8 @@ pub fn object_store_sync() -> (
                             monitor_task_duration(
                                 "object_store_sync_all_streams",
                                 Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
+                                &OBJECT_STORE_SYNC_DURATION,
+                                "periodic",
                                 || async {
                                     let mut joinset = JoinSet::new();
                                     sync_all_streams(&mut joinset);
@@ -312,6 +325,8 @@ async fn run_periodic_local_sync_cycle(_permit: OwnedSemaphorePermit) {
         monitor_task_duration(
             "local_sync_flush_and_convert",
             Duration::from_secs(PARSEABLE.options.local_sync_threshold),
+            &CONVERSION_TASK_DURATION,
+            "periodic",
             || async {
                 let mut joinset = JoinSet::new();
                 PARSEABLE
@@ -357,6 +372,8 @@ async fn sync_start_inner(
         monitor_task_duration(
             "startup_local_sync",
             Duration::from_secs(PARSEABLE.options.local_sync_threshold),
+            &CONVERSION_TASK_DURATION,
+            "startup",
             || async move {
                 // Plans contain all paths from the startup snapshot. Execute
                 // streams and their event-minute groups sequentially to keep
@@ -386,6 +403,8 @@ async fn sync_start_inner(
         monitor_task_duration(
             "startup_object_store_sync",
             Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
+            &OBJECT_STORE_SYNC_DURATION,
+            "startup",
             || async {
                 let mut object_store_joinset = JoinSet::new();
                 sync_all_streams(&mut object_store_joinset);
