@@ -1367,25 +1367,11 @@ impl HotTierManager {
         if item.file.file_size > quota {
             return Ok(None);
         }
-        let removed_wrong_sized_file = match fs::metadata(&item.local_path).await {
-            Ok(metadata) if metadata.len() == item.file.file_size => return Ok(None),
-            Ok(_) => {
-                let _reconciliation_guard = state.eviction.write().await;
-                if state.bucket_is_pinned(minute) {
-                    return Ok(None);
-                }
-                match fs::metadata(&item.local_path).await {
-                    Ok(metadata) if metadata.len() == item.file.file_size => return Ok(None),
-                    Ok(_) => {
-                        fs::remove_file(&item.local_path).await?;
-                        true
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => return Err(error.into()),
+        let Some(removed_wrong_sized_file) = self
+            .prepare_local_file_for_download(state, minute, item, disk_budget)
+            .await?
+        else {
+            return Ok(None);
         };
         let mut runtime = state.runtime.lock().await;
         if removed_wrong_sized_file {
@@ -1458,6 +1444,38 @@ impl HotTierManager {
         }
         runtime.unmark_bucket_inflight(minute);
         Ok(None)
+    }
+
+    async fn prepare_local_file_for_download(
+        &self,
+        state: &Arc<StreamSyncState>,
+        minute: &str,
+        item: &WorkItem,
+        disk_budget: &DiskBudget,
+    ) -> Result<Option<bool>, HotTierError> {
+        let removed_wrong_sized_file = match fs::metadata(&item.local_path).await {
+            Ok(metadata) if metadata.len() == item.file.file_size => return Ok(None),
+            Ok(_) => {
+                let _reconciliation_guard = state.eviction.write().await;
+                if state.bucket_is_pinned(minute) {
+                    return Ok(None);
+                }
+                match fs::metadata(&item.local_path).await {
+                    Ok(metadata) if metadata.len() == item.file.file_size => return Ok(None),
+                    Ok(metadata) => {
+                        let removed_bytes = metadata.len();
+                        fs::remove_file(&item.local_path).await?;
+                        disk_budget.credit_eviction(removed_bytes).await;
+                        true
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Some(removed_wrong_sized_file))
     }
 
     async fn remove_file_if_unpinned(
@@ -2161,13 +2179,13 @@ mod tests {
         tokio::fs::create_dir_all(local_path.parent().unwrap())
             .await
             .unwrap();
-        tokio::fs::write(&local_path, [0_u8; 50]).await.unwrap();
+        tokio::fs::write(&local_path, [0_u8; 100]).await.unwrap();
 
         let mut runtime = RuntimeState::default();
         runtime.minutes.insert(
             minute.to_owned(),
             MinuteTotals {
-                bytes: 50,
+                bytes: 100,
                 files: 1,
                 verified: true,
             },
@@ -2186,9 +2204,16 @@ mod tests {
             timestamp: Utc::now(),
             minute_path: stream_root.join(minute),
             local_path: local_path.clone(),
-            file: manifest_file("logs/date=2026-07-16/hour=12/minute=00/cached.parquet", 100),
+            file: manifest_file("logs/date=2026-07-16/hour=12/minute=00/cached.parquet", 50),
         };
-        let budget = disk_budget();
+        let budget = DiskBudget::new(
+            Some(DiskUtil {
+                total_space: 1_000,
+                available_space: 0,
+                used_space: 1_000,
+            }),
+            100.0,
+        );
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let manager = HotTierManager::new(root, sender);
 
@@ -2198,7 +2223,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(reservation, None);
-        assert_eq!(tokio::fs::metadata(&local_path).await.unwrap().len(), 50);
+        assert_eq!(tokio::fs::metadata(&local_path).await.unwrap().len(), 100);
 
         drop(query_guard);
         let reservation = manager
