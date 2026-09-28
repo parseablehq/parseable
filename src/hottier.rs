@@ -64,7 +64,7 @@ mod planner;
 use local_state::{
     RuntimeState, cleanup_stale_partials, load_or_rebuild, persist_checkpoint, verify_bucket,
 };
-use planner::{WorkItem, build_work, reconcile_local_file};
+use planner::{WorkItem, build_work, local_file_matches_expected_size};
 
 async fn run_bounded_newest_first<T, P, O, Prepare, PrepareFut, Start, StartFut>(
     work: Vec<T>,
@@ -299,6 +299,14 @@ impl Drop for HotTierQueryGuard {
 }
 
 impl StreamSyncState {
+    fn bucket_is_pinned(&self, minute: &str) -> bool {
+        self.query_pins
+            .lock()
+            .expect("hot-tier query pins lock poisoned")
+            .values()
+            .any(|pin| pin.contains(minute))
+    }
+
     fn pin_query(self: &Arc<Self>, start: DateTime<Utc>, end: DateTime<Utc>) -> HotTierQueryGuard {
         let pin_id = self.next_query_pin.fetch_add(1, Ordering::Relaxed);
         self.query_pins
@@ -1019,7 +1027,7 @@ impl HotTierManager {
                 &s3_manifests,
                 latest_minutes,
                 cache_root,
-                reconcile_local_file,
+                local_file_matches_expected_size,
             )
         })
         .await
@@ -1328,7 +1336,8 @@ impl HotTierManager {
                 .await
                 .is_ok_and(|metadata| metadata.len() == item.file.file_size);
         if !valid {
-            let _ = fs::remove_file(&item.local_path).await;
+            self.remove_file_if_unpinned(&context.state, &minute, &item.local_path)
+                .await;
         }
         self.finish_reservation(&context.state, &context.disk_budget, &item, &minute, valid)
             .await;
@@ -1358,7 +1367,32 @@ impl HotTierManager {
         if item.file.file_size > quota {
             return Ok(None);
         }
+        let removed_wrong_sized_file = match fs::metadata(&item.local_path).await {
+            Ok(metadata) if metadata.len() == item.file.file_size => return Ok(None),
+            Ok(_) => {
+                let _reconciliation_guard = state.eviction.write().await;
+                if state.bucket_is_pinned(minute) {
+                    return Ok(None);
+                }
+                match fs::metadata(&item.local_path).await {
+                    Ok(metadata) if metadata.len() == item.file.file_size => return Ok(None),
+                    Ok(_) => {
+                        fs::remove_file(&item.local_path).await?;
+                        true
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
         let mut runtime = state.runtime.lock().await;
+        if removed_wrong_sized_file {
+            runtime
+                .minutes
+                .insert(minute.to_owned(), verify_bucket(stream_root, minute).await?);
+        }
         runtime.mark_bucket_inflight(minute);
         let reclaim_target = required_reclaim(
             runtime.free_bytes(quota),
@@ -1424,6 +1458,18 @@ impl HotTierManager {
         }
         runtime.unmark_bucket_inflight(minute);
         Ok(None)
+    }
+
+    async fn remove_file_if_unpinned(
+        &self,
+        state: &Arc<StreamSyncState>,
+        minute: &str,
+        path: &Path,
+    ) {
+        let _reconciliation_guard = state.eviction.write().await;
+        if !state.bucket_is_pinned(minute) {
+            let _ = fs::remove_file(path).await;
+        }
     }
 
     async fn finish_reservation(
@@ -2104,6 +2150,64 @@ mod tests {
             .unwrap();
         assert_eq!(evicted, Some(100));
         assert!(!oldest_directory.exists());
+    }
+
+    #[tokio::test]
+    async fn active_query_protects_wrong_sized_file_during_reconciliation() {
+        let root = Box::leak(tempfile::tempdir().unwrap().keep().into_boxed_path());
+        let stream_root = root.join("logs");
+        let minute = "date=2026-07-16/hour=12/minute=00";
+        let local_path = stream_root.join(minute).join("cached.parquet");
+        tokio::fs::create_dir_all(local_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&local_path, [0_u8; 50]).await.unwrap();
+
+        let mut runtime = RuntimeState::default();
+        runtime.minutes.insert(
+            minute.to_owned(),
+            MinuteTotals {
+                bytes: 50,
+                files: 1,
+                verified: true,
+            },
+        );
+        let state = Arc::new(StreamSyncState {
+            runtime: tokio::sync::Mutex::new(runtime),
+            eviction: Arc::new(tokio::sync::RwLock::new(())),
+            query_pins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_query_pin: std::sync::atomic::AtomicU64::new(0),
+        });
+        let query_guard = state.pin_query(
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 59).unwrap(),
+        );
+        let item = WorkItem {
+            timestamp: Utc::now(),
+            minute_path: stream_root.join(minute),
+            local_path: local_path.clone(),
+            file: manifest_file("logs/date=2026-07-16/hour=12/minute=00/cached.parquet", 100),
+        };
+        let budget = disk_budget();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let manager = HotTierManager::new(root, sender);
+
+        let reservation = manager
+            .reserve_item(&state, &stream_root, minute, &item, 1_000, &budget)
+            .await
+            .unwrap();
+
+        assert_eq!(reservation, None);
+        assert_eq!(tokio::fs::metadata(&local_path).await.unwrap().len(), 50);
+
+        drop(query_guard);
+        let reservation = manager
+            .reserve_item(&state, &stream_root, minute, &item, 1_000, &budget)
+            .await
+            .unwrap();
+
+        assert_eq!(reservation, Some(0));
+        assert!(!local_path.exists());
     }
 
     #[tokio::test]
