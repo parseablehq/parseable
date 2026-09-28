@@ -216,6 +216,22 @@ pub fn record_disk_metrics(disk_type: &str, path: &Path) {
     }
 }
 
+pub static ACTIVE_NODES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("active_nodes", "Number of active nodes").namespace(METRICS_NAMESPACE),
+        &["node_type"],
+    )
+    .expect("metric can be created")
+});
+
+pub static INACTIVE_NODES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("inactive_nodes", "Number of inactive nodes").namespace(METRICS_NAMESPACE),
+        &["node_type"],
+    )
+    .expect("metric can be created")
+});
+
 pub static PROCESS_CPU_USAGE_PERCENT_AVG: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
@@ -861,6 +877,12 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(DISK_TOTAL_BYTES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(ACTIVE_NODES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(INACTIVE_NODES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
