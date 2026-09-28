@@ -29,7 +29,7 @@ use once_cell::sync::Lazy;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::parseable::PARSEABLE;
+use crate::{parseable::PARSEABLE, tenants::TENANT_METADATA};
 
 type SchedulerHandle = JoinHandle<()>;
 
@@ -51,6 +51,13 @@ pub fn init_scheduler() {
             vec![None]
         };
         for tenant_id in tenants {
+            if tenant_id
+                .as_deref()
+                .is_some_and(|tenant| TENANT_METADATA.is_workspace_suspended(tenant))
+            {
+                continue;
+            }
+
             for stream_name in PARSEABLE.streams.list(&tenant_id) {
                 match PARSEABLE.get_stream(&stream_name, &tenant_id) {
                     Ok(stream) => {
@@ -202,6 +209,7 @@ impl From<Retention> for Vec<TaskView> {
 mod action {
     use crate::catalog::remove_manifest_from_snapshot;
     use crate::parseable::PARSEABLE;
+    use crate::tenants::TENANT_METADATA;
     use chrono::{Days, NaiveDate, Utc};
     use futures::{StreamExt, stream::FuturesUnordered};
     use itertools::Itertools;
@@ -209,6 +217,13 @@ mod action {
     use tracing::{error, info};
 
     pub(super) async fn delete(stream_name: String, days: u32, tenant_id: &Option<String>) {
+        if tenant_id
+            .as_deref()
+            .is_some_and(|tenant| TENANT_METADATA.is_workspace_suspended(tenant))
+        {
+            return;
+        }
+
         info!("running retention task - delete for stream={stream_name}");
         let store = PARSEABLE.storage.get_object_store();
 

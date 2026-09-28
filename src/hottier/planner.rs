@@ -118,15 +118,8 @@ pub(super) fn minute_ancestor(path: &Path) -> Option<&Path> {
     None
 }
 
-pub(super) fn reconcile_local_file(path: &Path, expected_size: u64) -> bool {
-    match std::fs::metadata(path) {
-        Ok(metadata) if metadata.len() == expected_size => true,
-        Ok(_) => {
-            let _ = std::fs::remove_file(path);
-            false
-        }
-        Err(_) => false,
-    }
+pub(super) fn local_file_matches_expected_size(path: &Path, expected_size: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.len() == expected_size)
 }
 
 #[cfg(test)]
@@ -137,7 +130,7 @@ mod tests {
 
     use crate::catalog::manifest::{File, Manifest};
 
-    use super::{build_work, minute_ancestor, reconcile_local_file};
+    use super::{build_work, local_file_matches_expected_size, minute_ancestor};
 
     fn file(path: &str, size: u64) -> File {
         File {
@@ -206,12 +199,12 @@ mod tests {
     }
 
     #[test]
-    fn wrong_sized_local_file_is_removed_before_reservation() {
+    fn planning_does_not_remove_wrong_sized_local_file() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("wrong.parquet");
         std::fs::write(&path, [0_u8; 3]).unwrap();
 
-        assert!(!reconcile_local_file(&path, 7));
-        assert!(!path.exists());
+        assert!(!local_file_matches_expected_size(&path, 7));
+        assert!(path.exists());
     }
 }

@@ -22,8 +22,8 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{
-        Arc, OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex as StdMutex, OnceLock,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock, mpsc};
@@ -42,6 +42,7 @@ use crate::{
     tenants::TENANT_METADATA,
     utils::{
         disk::{DiskUtil, disk_usage_for_path},
+        extract_datetime,
         human_size::bytes_to_human_size,
     },
     validator::error::HotTierValidationError,
@@ -63,7 +64,7 @@ mod planner;
 use local_state::{
     RuntimeState, cleanup_stale_partials, load_or_rebuild, persist_checkpoint, verify_bucket,
 };
-use planner::{WorkItem, build_work, reconcile_local_file};
+use planner::{WorkItem, build_work, local_file_matches_expected_size};
 
 async fn run_bounded_newest_first<T, P, O, Prepare, PrepareFut, Start, StartFut>(
     work: Vec<T>,
@@ -260,6 +261,63 @@ pub struct StreamHotTier {
 /// Per-stream in-memory bookkeeping. Downloads run outside the lock.
 struct StreamSyncState {
     runtime: AsyncMutex<RuntimeState>,
+    eviction: Arc<AsyncRwLock<()>>,
+    query_pins: StdMutex<HashMap<u64, QueryPin>>,
+    next_query_pin: AtomicU64,
+}
+
+struct QueryPin {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+}
+
+impl QueryPin {
+    fn contains(&self, minute: &str) -> bool {
+        extract_datetime(minute)
+            .map(|timestamp| timestamp.and_utc())
+            .is_none_or(|bucket_start| {
+                let bucket_end = bucket_start + chrono::Duration::minutes(1);
+                bucket_end > self.start && bucket_start <= self.end
+            })
+    }
+}
+
+/// Keeps hot-tier buckets needed by an active query from being evicted.
+pub struct HotTierQueryGuard {
+    state: Arc<StreamSyncState>,
+    pin_id: u64,
+}
+
+impl Drop for HotTierQueryGuard {
+    fn drop(&mut self) {
+        self.state
+            .query_pins
+            .lock()
+            .expect("hot-tier query pins lock poisoned")
+            .remove(&self.pin_id);
+    }
+}
+
+impl StreamSyncState {
+    fn bucket_is_pinned(&self, minute: &str) -> bool {
+        self.query_pins
+            .lock()
+            .expect("hot-tier query pins lock poisoned")
+            .values()
+            .any(|pin| pin.contains(minute))
+    }
+
+    fn pin_query(self: &Arc<Self>, start: DateTime<Utc>, end: DateTime<Utc>) -> HotTierQueryGuard {
+        let pin_id = self.next_query_pin.fetch_add(1, Ordering::Relaxed);
+        self.query_pins
+            .lock()
+            .expect("hot-tier query pins lock poisoned")
+            .insert(pin_id, QueryPin { start, end });
+        HotTierQueryGuard {
+            state: self.clone(),
+            pin_id,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -539,6 +597,9 @@ impl HotTierManager {
         let runtime = load_or_rebuild(&stream_root).await?;
         let state = Arc::new(StreamSyncState {
             runtime: AsyncMutex::new(runtime),
+            eviction: Arc::new(AsyncRwLock::new(())),
+            query_pins: StdMutex::new(HashMap::new()),
+            next_query_pin: AtomicU64::new(0),
         });
         self.state_cache
             .write()
@@ -558,6 +619,21 @@ impl HotTierManager {
 
     pub fn disk_path(&self, manifest_path: &str) -> object_store::Result<PathBuf> {
         hot_tier_disk_path(self.hot_tier_path, manifest_path)
+    }
+
+    /// Prevent eviction of buckets in the queried time range while local files are in use.
+    pub async fn query_guard(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<HotTierQueryGuard, HotTierError> {
+        let state = self.get_or_load_state(stream, tenant_id).await?;
+        let registration_guard = state.eviction.read().await;
+        let query_guard = state.pin_query(start, end);
+        drop(registration_guard);
+        Ok(query_guard)
     }
 
     /// Drop cached state for a stream (used after delete).
@@ -884,6 +960,13 @@ impl HotTierManager {
         tenant_id: Option<String>,
         anchor: DateTime<Utc>,
     ) -> Result<(), HotTierError> {
+        if tenant_id
+            .as_deref()
+            .is_some_and(|tenant| TENANT_METADATA.is_workspace_suspended(tenant))
+        {
+            return Ok(());
+        }
+
         let stream_start = std::time::Instant::now();
         self.process_manifest(&stream, &tenant_id, anchor)
             .await
@@ -944,7 +1027,7 @@ impl HotTierManager {
                 &s3_manifests,
                 latest_minutes,
                 cache_root,
-                reconcile_local_file,
+                local_file_matches_expected_size,
             )
         })
         .await
@@ -1253,7 +1336,8 @@ impl HotTierManager {
                 .await
                 .is_ok_and(|metadata| metadata.len() == item.file.file_size);
         if !valid {
-            let _ = fs::remove_file(&item.local_path).await;
+            self.remove_file_if_unpinned(&context.state, &minute, &item.local_path)
+                .await;
         }
         self.finish_reservation(&context.state, &context.disk_budget, &item, &minute, valid)
             .await;
@@ -1283,7 +1367,18 @@ impl HotTierManager {
         if item.file.file_size > quota {
             return Ok(None);
         }
+        let Some(removed_wrong_sized_file) = self
+            .prepare_local_file_for_download(state, minute, item, disk_budget)
+            .await?
+        else {
+            return Ok(None);
+        };
         let mut runtime = state.runtime.lock().await;
+        if removed_wrong_sized_file {
+            runtime
+                .minutes
+                .insert(minute.to_owned(), verify_bucket(stream_root, minute).await?);
+        }
         runtime.mark_bucket_inflight(minute);
         let reclaim_target = required_reclaim(
             runtime.free_bytes(quota),
@@ -1292,11 +1387,27 @@ impl HotTierManager {
         );
         let mut reclaim = ReclaimBudget::new(reclaim_target);
         let mut evicted = 0_u64;
+        let _eviction_guard = if reclaim.needs_more() {
+            // Query registrations hold read access only long enough to publish their time range.
+            // Waiting here cannot wait for query execution, and writer priority prevents a steady
+            // stream of new registrations from starving eviction.
+            Some(state.eviction.write().await)
+        } else {
+            None
+        };
         while reclaim.needs_more() {
-            let Some(oldest) = runtime
-                .oldest_evictable_bucket_before(minute)
-                .map(str::to_owned)
-            else {
+            let oldest = {
+                let query_pins = state
+                    .query_pins
+                    .lock()
+                    .expect("hot-tier query pins lock poisoned");
+                runtime
+                    .oldest_evictable_bucket_before_with(minute, |candidate| {
+                        query_pins.values().any(|pin| pin.contains(candidate))
+                    })
+                    .map(str::to_owned)
+            };
+            let Some(oldest) = oldest else {
                 runtime.unmark_bucket_inflight(minute);
                 return Ok(None);
             };
@@ -1333,6 +1444,50 @@ impl HotTierManager {
         }
         runtime.unmark_bucket_inflight(minute);
         Ok(None)
+    }
+
+    async fn prepare_local_file_for_download(
+        &self,
+        state: &Arc<StreamSyncState>,
+        minute: &str,
+        item: &WorkItem,
+        disk_budget: &DiskBudget,
+    ) -> Result<Option<bool>, HotTierError> {
+        let removed_wrong_sized_file = match fs::metadata(&item.local_path).await {
+            Ok(metadata) if metadata.len() == item.file.file_size => return Ok(None),
+            Ok(_) => {
+                let _reconciliation_guard = state.eviction.write().await;
+                if state.bucket_is_pinned(minute) {
+                    return Ok(None);
+                }
+                match fs::metadata(&item.local_path).await {
+                    Ok(metadata) if metadata.len() == item.file.file_size => return Ok(None),
+                    Ok(metadata) => {
+                        let removed_bytes = metadata.len();
+                        fs::remove_file(&item.local_path).await?;
+                        disk_budget.credit_eviction(removed_bytes).await;
+                        true
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Some(removed_wrong_sized_file))
+    }
+
+    async fn remove_file_if_unpinned(
+        &self,
+        state: &Arc<StreamSyncState>,
+        minute: &str,
+        path: &Path,
+    ) {
+        let _reconciliation_guard = state.eviction.write().await;
+        if !state.bucket_is_pinned(minute) {
+            let _ = fs::remove_file(path).await;
+        }
     }
 
     async fn finish_reservation(
@@ -1758,7 +1913,7 @@ mod tests {
 
     use super::local_state::{MinuteTotals, RuntimeState};
     use super::{
-        DiskBudget, DiskUtil, HotTierManager, ReclaimBudget, StreamSyncState, WorkItem,
+        DiskBudget, DiskUtil, HotTierManager, QueryPin, ReclaimBudget, StreamSyncState, WorkItem,
         classify_manifest_files_with, hot_tier_disk_path, manifest_check_concurrency,
         required_reclaim, run_bounded_newest_first,
     };
@@ -1804,6 +1959,16 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
 
         assert!(hot_tier_disk_path(root.path(), "../outside.parquet").is_err());
+    }
+
+    #[test]
+    fn query_pin_treats_unparseable_bucket_as_overlapping() {
+        let pin = QueryPin {
+            start: Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 30).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 7, 16, 12, 5, 0).unwrap(),
+        };
+
+        assert!(pin.contains("invalid-minute-bucket"));
     }
 
     fn disk_budget() -> DiskBudget {
@@ -1903,6 +2068,9 @@ mod tests {
         }
         let state = Arc::new(StreamSyncState {
             runtime: tokio::sync::Mutex::new(runtime),
+            eviction: Arc::new(tokio::sync::RwLock::new(())),
+            query_pins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_query_pin: std::sync::atomic::AtomicU64::new(0),
         });
         let item = WorkItem {
             timestamp: Utc::now(),
@@ -1929,6 +2097,203 @@ mod tests {
         assert_eq!(evicted, Some(100));
         assert!(!stream_root.join(oldest).exists());
         assert!(stream_root.join(next).exists());
+    }
+
+    #[tokio::test]
+    async fn active_query_protects_overlapping_bucket() {
+        let root = Box::leak(tempfile::tempdir().unwrap().keep().into_boxed_path());
+        let stream_root = root.join("logs");
+        let oldest = "date=2026-07-16/hour=12/minute=00";
+        let oldest_directory = stream_root.join(oldest);
+        tokio::fs::create_dir_all(&oldest_directory).await.unwrap();
+        tokio::fs::write(oldest_directory.join("cached.parquet"), [0_u8; 100])
+            .await
+            .unwrap();
+
+        let mut runtime = RuntimeState::default();
+        runtime.minutes.insert(
+            oldest.to_owned(),
+            MinuteTotals {
+                bytes: 100,
+                files: 1,
+                verified: true,
+            },
+        );
+        let state = Arc::new(StreamSyncState {
+            runtime: tokio::sync::Mutex::new(runtime),
+            eviction: Arc::new(tokio::sync::RwLock::new(())),
+            query_pins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_query_pin: std::sync::atomic::AtomicU64::new(0),
+        });
+        let query_guard = state.pin_query(
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 30).unwrap(),
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 59).unwrap(),
+        );
+        let budget = disk_budget();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let manager = HotTierManager::new(root, sender);
+        let item = WorkItem {
+            timestamp: Utc::now(),
+            minute_path: stream_root.join("date=2026-07-16/hour=12/minute=01"),
+            local_path: stream_root.join("date=2026-07-16/hour=12/minute=01/new.parquet"),
+            file: manifest_file("logs/date=2026-07-16/hour=12/minute=01/new.parquet", 100),
+        };
+
+        let evicted = manager
+            .reserve_item(
+                &state,
+                &stream_root,
+                "date=2026-07-16/hour=12/minute=01",
+                &item,
+                100,
+                &budget,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(evicted, None);
+        assert!(oldest_directory.exists());
+
+        drop(query_guard);
+        let evicted = manager
+            .reserve_item(
+                &state,
+                &stream_root,
+                "date=2026-07-16/hour=12/minute=01",
+                &item,
+                100,
+                &budget,
+            )
+            .await
+            .unwrap();
+        assert_eq!(evicted, Some(100));
+        assert!(!oldest_directory.exists());
+    }
+
+    #[tokio::test]
+    async fn active_query_protects_wrong_sized_file_during_reconciliation() {
+        let root = Box::leak(tempfile::tempdir().unwrap().keep().into_boxed_path());
+        let stream_root = root.join("logs");
+        let minute = "date=2026-07-16/hour=12/minute=00";
+        let local_path = stream_root.join(minute).join("cached.parquet");
+        tokio::fs::create_dir_all(local_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&local_path, [0_u8; 100]).await.unwrap();
+
+        let mut runtime = RuntimeState::default();
+        runtime.minutes.insert(
+            minute.to_owned(),
+            MinuteTotals {
+                bytes: 100,
+                files: 1,
+                verified: true,
+            },
+        );
+        let state = Arc::new(StreamSyncState {
+            runtime: tokio::sync::Mutex::new(runtime),
+            eviction: Arc::new(tokio::sync::RwLock::new(())),
+            query_pins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_query_pin: std::sync::atomic::AtomicU64::new(0),
+        });
+        let query_guard = state.pin_query(
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 59).unwrap(),
+        );
+        let item = WorkItem {
+            timestamp: Utc::now(),
+            minute_path: stream_root.join(minute),
+            local_path: local_path.clone(),
+            file: manifest_file("logs/date=2026-07-16/hour=12/minute=00/cached.parquet", 50),
+        };
+        let budget = DiskBudget::new(
+            Some(DiskUtil {
+                total_space: 1_000,
+                available_space: 0,
+                used_space: 1_000,
+            }),
+            100.0,
+        );
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let manager = HotTierManager::new(root, sender);
+
+        let reservation = manager
+            .reserve_item(&state, &stream_root, minute, &item, 1_000, &budget)
+            .await
+            .unwrap();
+
+        assert_eq!(reservation, None);
+        assert_eq!(tokio::fs::metadata(&local_path).await.unwrap().len(), 100);
+
+        drop(query_guard);
+        let reservation = manager
+            .reserve_item(&state, &stream_root, minute, &item, 1_000, &budget)
+            .await
+            .unwrap();
+
+        assert_eq!(reservation, Some(0));
+        assert!(!local_path.exists());
+    }
+
+    #[tokio::test]
+    async fn active_recent_query_does_not_block_old_bucket_eviction() {
+        let root = Box::leak(tempfile::tempdir().unwrap().keep().into_boxed_path());
+        let stream_root = root.join("logs");
+        let oldest = "date=2026-07-16/hour=12/minute=00";
+        let pinned = "date=2026-07-16/hour=12/minute=01";
+        for minute in [oldest, pinned] {
+            let directory = stream_root.join(minute);
+            tokio::fs::create_dir_all(&directory).await.unwrap();
+            tokio::fs::write(directory.join("cached.parquet"), [0_u8; 100])
+                .await
+                .unwrap();
+        }
+
+        let mut runtime = RuntimeState::default();
+        for minute in [oldest, pinned] {
+            runtime.minutes.insert(
+                minute.to_owned(),
+                MinuteTotals {
+                    bytes: 100,
+                    files: 1,
+                    verified: true,
+                },
+            );
+        }
+        let state = Arc::new(StreamSyncState {
+            runtime: tokio::sync::Mutex::new(runtime),
+            eviction: Arc::new(tokio::sync::RwLock::new(())),
+            query_pins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_query_pin: std::sync::atomic::AtomicU64::new(0),
+        });
+        let _query_guard = state.pin_query(
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 1, 30).unwrap(),
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 1, 59).unwrap(),
+        );
+        let item = WorkItem {
+            timestamp: Utc::now(),
+            minute_path: stream_root.join("date=2026-07-16/hour=12/minute=02"),
+            local_path: stream_root.join("date=2026-07-16/hour=12/minute=02/new.parquet"),
+            file: manifest_file("logs/date=2026-07-16/hour=12/minute=02/new.parquet", 100),
+        };
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let manager = HotTierManager::new(root, sender);
+
+        let evicted = manager
+            .reserve_item(
+                &state,
+                &stream_root,
+                "date=2026-07-16/hour=12/minute=02",
+                &item,
+                200,
+                &disk_budget(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(evicted, Some(100));
+        assert!(!stream_root.join(oldest).exists());
+        assert!(stream_root.join(pinned).exists());
     }
 
     async fn wait_until_len(values: &Arc<Mutex<Vec<u8>>>, expected: usize) {

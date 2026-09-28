@@ -40,6 +40,7 @@ use crate::{
     option::Mode,
     parseable::PARSEABLE,
     query::{QUERY_SESSION, execute, resolve_stream_names},
+    tenants::TENANT_METADATA,
     utils::time::TimeRange,
 };
 
@@ -57,6 +58,14 @@ use super::{ALERTS, AlertError, AlertOperator, AlertState};
 ///
 /// check whether notification needs to be triggered or not
 pub async fn evaluate_alert(alert: &dyn AlertTrait) -> Result<(), AlertError> {
+    if alert
+        .get_tenant_id()
+        .as_deref()
+        .is_some_and(|tenant| TENANT_METADATA.is_workspace_suspended(tenant))
+    {
+        return Ok(());
+    }
+
     trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
     let message = alert.eval_alert().await?;

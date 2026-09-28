@@ -16,7 +16,7 @@
  *
  */
 
-use std::{cmp::Reverse, collections::HashMap, ops::Bound, sync::Arc};
+use std::{any::Any, cmp::Reverse, collections::HashMap, ops::Bound, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
@@ -29,15 +29,16 @@ use datafusion::{
         tree_node::{TreeNode, TreeNodeRecursion},
     },
     datasource::{
-        MemTable, TableProvider,
+        DefaultTableSource, MemTable, TableProvider,
         file_format::{FileFormat, parquet::ParquetFormat},
         listing::PartitionedFile,
         physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource},
+        provider_as_source,
     },
     error::{DataFusionError, Result as DataFusionResult},
     execution::object_store::ObjectStoreUrl,
     logical_expr::{
-        BinaryExpr, Operator, TableProviderFilterPushDown, TableType,
+        BinaryExpr, Operator, TableProviderFilterPushDown, TableSource, TableType,
         physical_planning_context::PhysicalPlanningContext, utils::conjunction,
     },
     physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr, expressions::col},
@@ -97,6 +98,7 @@ impl SchemaProvider for GlobalSchemaProvider {
                     .get_schema(),
                 stream: name.to_owned(),
                 tenant_id: self.tenant_id.clone(),
+                hot_tier_guarded: false,
             })))
         } else {
             Ok(None)
@@ -114,6 +116,39 @@ struct StandardTableProvider {
     // prefix under which to find snapshot
     stream: String,
     tenant_id: Option<String>,
+    hot_tier_guarded: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct HotTierStreamKey {
+    pub tenant_id: Option<String>,
+    pub stream: String,
+}
+
+fn standard_table_provider(source: &Arc<dyn TableSource>) -> Option<&StandardTableProvider> {
+    let source = (source.as_ref() as &dyn Any).downcast_ref::<DefaultTableSource>()?;
+    (source.table_provider.as_ref() as &dyn Any).downcast_ref::<StandardTableProvider>()
+}
+
+pub(super) fn hot_tier_stream_key(source: &Arc<dyn TableSource>) -> Option<HotTierStreamKey> {
+    let provider = standard_table_provider(source)?;
+    Some(HotTierStreamKey {
+        tenant_id: provider.tenant_id.clone(),
+        stream: provider.stream.clone(),
+    })
+}
+
+/// Creates a query-specific source that may read hot-tier files because its guard is held.
+pub(super) fn guarded_hot_tier_table_source(
+    source: &Arc<dyn TableSource>,
+) -> Option<Arc<dyn TableSource>> {
+    let provider = standard_table_provider(source)?;
+    Some(provider_as_source(Arc::new(StandardTableProvider {
+        schema: provider.schema.clone(),
+        stream: provider.stream.clone(),
+        tenant_id: provider.tenant_id.clone(),
+        hot_tier_guarded: true,
+    })))
 }
 
 pub fn exact_source_filters(filters: &[Expr]) -> Vec<Expr> {
@@ -830,7 +865,8 @@ impl TableProvider for StandardTableProvider {
         }
 
         // Hot tier data fetch
-        if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
+        if self.hot_tier_guarded
+            && let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
             && hot_tier_manager.check_stream_hot_tier_exists(&self.stream, &self.tenant_id)
         {
             self.get_hottier_exectuion_plan(
@@ -1275,8 +1311,10 @@ mod tests {
     use datafusion::{
         datasource::{
             TableProvider,
+            empty::EmptyTable,
             listing::PartitionedFile,
             physical_plan::{FileScanConfigBuilder, FileSource},
+            provider_as_source,
             source::DataSourceExec,
         },
         execution::context::{SessionConfig, SessionContext},
@@ -1294,10 +1332,44 @@ mod tests {
     };
 
     use super::{
-        PartialTimeFilter, balanced_file_groups, build_parquet_scan_components,
-        build_parquet_scan_components_with_full_filters, exact_source_filters,
-        extract_timestamp_bound, file_groups_are_time_ordered, is_overlapping_query,
+        HotTierStreamKey, PartialTimeFilter, StandardTableProvider, balanced_file_groups,
+        build_parquet_scan_components, build_parquet_scan_components_with_full_filters,
+        exact_source_filters, extract_timestamp_bound, file_groups_are_time_ordered,
+        guarded_hot_tier_table_source, hot_tier_stream_key, is_overlapping_query,
+        standard_table_provider,
     };
+
+    #[test]
+    fn guarded_hot_tier_source_preserves_provider_identity() {
+        let source = provider_as_source(Arc::new(StandardTableProvider {
+            schema: Arc::new(Schema::empty()),
+            stream: "logs".to_owned(),
+            tenant_id: Some("other-tenant".to_owned()),
+            hot_tier_guarded: false,
+        }));
+
+        assert_eq!(
+            hot_tier_stream_key(&source),
+            Some(HotTierStreamKey {
+                tenant_id: Some("other-tenant".to_owned()),
+                stream: "logs".to_owned(),
+            })
+        );
+
+        let guarded_source = guarded_hot_tier_table_source(&source).unwrap();
+        let guarded_provider = standard_table_provider(&guarded_source).unwrap();
+        assert_eq!(guarded_provider.stream, "logs");
+        assert_eq!(guarded_provider.tenant_id.as_deref(), Some("other-tenant"));
+        assert!(guarded_provider.hot_tier_guarded);
+    }
+
+    #[test]
+    fn hot_tier_source_rewrite_ignores_non_standard_providers() {
+        let source = provider_as_source(Arc::new(EmptyTable::new(Arc::new(Schema::empty()))));
+
+        assert!(hot_tier_stream_key(&source).is_none());
+        assert!(guarded_hot_tier_table_source(&source).is_none());
+    }
 
     fn file(path: &str, size: u64) -> File {
         File {
