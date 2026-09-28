@@ -282,7 +282,8 @@ impl QueryPin {
     }
 }
 
-pub(crate) struct HotTierQueryGuard {
+/// Keeps hot-tier buckets needed by an active query from being evicted.
+pub struct HotTierQueryGuard {
     state: Arc<StreamSyncState>,
     pin_id: u64,
 }
@@ -613,7 +614,7 @@ impl HotTierManager {
     }
 
     /// Prevent eviction of buckets in the queried time range while local files are in use.
-    pub(crate) async fn query_guard(
+    pub async fn query_guard(
         &self,
         stream: &str,
         tenant_id: &Option<String>,
