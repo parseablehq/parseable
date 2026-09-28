@@ -71,7 +71,7 @@ fn cgroup_cpu_limit_cores() -> Option<f64> {
     let mounts = process.mountinfo().ok()?.0;
 
     let v2_limit = || {
-        let cgroup = cgroups.iter().find(|group| group.controllers.is_empty())?;
+        let cgroup = cgroups.iter().find(|group| group.hierarchy == 0)?;
         let mount = mounts.iter().find(|mount| mount.fs_type == "cgroup2")?;
         let directory = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point)?;
         let cpu_max = std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).ok()?;
@@ -101,11 +101,7 @@ fn cgroup_cpu_limit_cores() -> Option<f64> {
 }
 
 pub fn cpu_limit_cores() -> f64 {
-    cgroup_cpu_limit_cores().unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|count| count.get() as f64)
-            .unwrap_or(1.0)
-    })
+    cgroup_cpu_limit_cores().unwrap_or(0.0)
 }
 
 async fn sample_process_metrics() {
