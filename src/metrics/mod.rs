@@ -29,8 +29,7 @@ use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
 use once_cell::sync::Lazy;
 use prometheus::{
-    Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
-    Registry,
+    Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
     core::{Atomic, AtomicF64},
 };
 
@@ -209,33 +208,18 @@ pub fn record_disk_metrics(disk_type: &str, path: &Path) {
     }
 }
 
-pub static ACTIVE_INGESTORS: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::with_opts(
-        Opts::new("active_ingestors", "Number of active ingestor nodes")
-            .namespace(METRICS_NAMESPACE),
+pub static ACTIVE_NODES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("active_nodes", "Number of active nodes").namespace(METRICS_NAMESPACE),
+        &["node_type"],
     )
     .expect("metric can be created")
 });
 
-pub static INACTIVE_INGESTORS: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::with_opts(
-        Opts::new("inactive_ingestors", "Number of inactive ingestor nodes")
-            .namespace(METRICS_NAMESPACE),
-    )
-    .expect("metric can be created")
-});
-
-pub static ACTIVE_QUERIERS: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::with_opts(
-        Opts::new("active_queriers", "Number of active querier nodes").namespace(METRICS_NAMESPACE),
-    )
-    .expect("metric can be created")
-});
-
-pub static INACTIVE_QUERIERS: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::with_opts(
-        Opts::new("inactive_queriers", "Number of inactive querier nodes")
-            .namespace(METRICS_NAMESPACE),
+pub static INACTIVE_NODES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("inactive_nodes", "Number of inactive nodes").namespace(METRICS_NAMESPACE),
+        &["node_type"],
     )
     .expect("metric can be created")
 });
@@ -859,16 +843,10 @@ fn custom_metrics(registry: &Registry) {
         .register(Box::new(DISK_TOTAL_BYTES.clone()))
         .expect("metric can be registered");
     registry
-        .register(Box::new(ACTIVE_INGESTORS.clone()))
+        .register(Box::new(ACTIVE_NODES.clone()))
         .expect("metric can be registered");
     registry
-        .register(Box::new(INACTIVE_INGESTORS.clone()))
-        .expect("metric can be registered");
-    registry
-        .register(Box::new(ACTIVE_QUERIERS.clone()))
-        .expect("metric can be registered");
-    registry
-        .register(Box::new(INACTIVE_QUERIERS.clone()))
+        .register(Box::new(INACTIVE_NODES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
