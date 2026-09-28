@@ -62,8 +62,10 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::Instrument;
 
 use self::error::ExecuteError;
-use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
+use self::stream_schema_provider::{
+    GlobalSchemaProvider, HotTierStreamKey, guarded_hot_tier_table_source, hot_tier_stream_key,
+};
 use crate::alerts::alert_structs::Conditions;
 use crate::alerts::alerts_utils::get_filter_string;
 use crate::catalog::Snapshot as CatalogSnapshot;
@@ -374,9 +376,12 @@ impl Query {
     )]
     pub async fn execute(&self, is_streaming: bool, tenant_id: &Option<String>) -> QueryResult {
         let ctx = QUERY_SESSION.get_ctx();
-        let logical_plan = self.final_logical_plan(tenant_id);
-        let hot_tier_guards =
-            hot_tier_query_guards(&logical_plan, tenant_id, &self.time_range).await?;
+        let mut logical_plan = self.final_logical_plan(tenant_id);
+        let (hot_tier_guards, guarded_hot_tier_streams) =
+            hot_tier_query_guards(&logical_plan, &self.time_range).await?;
+        if !guarded_hot_tier_streams.is_empty() {
+            logical_plan = enable_hot_tier_reads(logical_plan, &guarded_hot_tier_streams)?;
+        }
         let df = ctx.execute_logical_plan(logical_plan).await?;
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let fields = df
@@ -551,32 +556,74 @@ impl Query {
 /// outside active query ranges, so long-running or overlapping queries cannot starve hot-tier sync.
 async fn hot_tier_query_guards(
     logical_plan: &LogicalPlan,
-    tenant_id: &Option<String>,
     time_range: &TimeRange,
-) -> Result<Vec<HotTierQueryGuard>, DataFusionError> {
+) -> Result<(Vec<HotTierQueryGuard>, BTreeSet<HotTierStreamKey>), DataFusionError> {
     let Some(manager) = GLOBAL_HOTTIER.get() else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), BTreeSet::new()));
     };
 
     let mut streams = BTreeSet::new();
     logical_plan.apply_with_subqueries(|plan| {
-        if let LogicalPlan::TableScan(table) = plan {
-            streams.insert(table.table_name.table().to_owned());
+        if let LogicalPlan::TableScan(table) = plan
+            && let Some(key) = hot_tier_stream_key(&table.source)
+        {
+            streams.insert(key);
         }
         Ok(TreeNodeRecursion::Continue)
     })?;
 
     let mut guards = Vec::new();
+    let mut guarded_streams = BTreeSet::new();
     for stream in streams {
-        if manager.check_stream_hot_tier_exists(&stream, tenant_id) {
-            let guard = manager
-                .query_guard(&stream, tenant_id, time_range.start, time_range.end)
+        if manager.check_stream_hot_tier_exists(&stream.stream, &stream.tenant_id) {
+            match manager
+                .query_guard(
+                    &stream.stream,
+                    &stream.tenant_id,
+                    time_range.start,
+                    time_range.end,
+                )
                 .await
-                .map_err(|error| DataFusionError::External(Box::new(error)))?;
-            guards.push(guard);
+            {
+                Ok(guard) => {
+                    guards.push(guard);
+                    guarded_streams.insert(stream);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        stream = %stream.stream,
+                        tenant = ?stream.tenant_id,
+                        %error,
+                        "hot-tier query guard unavailable; using object storage"
+                    );
+                }
+            }
         }
     }
-    Ok(guards)
+    Ok((guards, guarded_streams))
+}
+
+fn enable_hot_tier_reads(
+    plan: LogicalPlan,
+    guarded_streams: &BTreeSet<HotTierStreamKey>,
+) -> Result<LogicalPlan, DataFusionError> {
+    plan.transform_up_with_subqueries(|plan| match plan {
+        LogicalPlan::TableScan(mut table) => {
+            let Some(key) = hot_tier_stream_key(&table.source) else {
+                return Ok(Transformed::no(LogicalPlan::TableScan(table)));
+            };
+            if !guarded_streams.contains(&key) {
+                return Ok(Transformed::no(LogicalPlan::TableScan(table)));
+            }
+            let Some(source) = guarded_hot_tier_table_source(&table.source) else {
+                return Ok(Transformed::no(LogicalPlan::TableScan(table)));
+            };
+            table.source = source;
+            Ok(Transformed::yes(LogicalPlan::TableScan(table)))
+        }
+        _ => Ok(Transformed::no(plan)),
+    })
+    .map(|transformed| transformed.data)
 }
 
 /// Recursively sums up "bytes_scanned" from all nodes in the plan
