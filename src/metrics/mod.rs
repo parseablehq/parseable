@@ -381,6 +381,17 @@ pub static PROCESS_CPU_USAGE_PERCENT_AVG: Lazy<Gauge> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static PROCESS_CPU_LIMIT_CORES: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_cpu_limit_cores",
+            "Cgroup CPU limit in cores, or available logical CPUs when cgroup limits are unavailable",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
 pub static PROCESS_MEMORY_BYTES_AVG: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
@@ -453,7 +464,12 @@ impl ProcessMetricsAccumulator {
 pub static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
     Lazy::new(ProcessMetricsAccumulator::default);
 
-pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64, total_mem: u64) {
+pub fn record_process_metrics_sample(
+    cpu_usage_percent: f64,
+    memory_bytes: u64,
+    total_mem: u64,
+    cpu_limit_cores: f64,
+) {
     if PROCESS_METRICS_INIT.get().is_none() {
         // first measurement
         let _ = PROCESS_METRICS_INIT.set((cpu_usage_percent, memory_bytes));
@@ -461,6 +477,7 @@ pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64, 
     let (average_cpu_usage, average_memory_bytes) =
         PROCESS_METRICS_ACCUMULATOR.record(cpu_usage_percent, memory_bytes);
     PROCESS_CPU_USAGE_PERCENT_AVG.set(average_cpu_usage);
+    PROCESS_CPU_LIMIT_CORES.set(cpu_limit_cores);
     PROCESS_MEMORY_BYTES_AVG.set(average_memory_bytes);
     PROCESS_MEMORY_LIMIT_BYTES.set(total_mem as f64);
 }
@@ -1036,6 +1053,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_CPU_LIMIT_CORES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_MEMORY_BYTES_AVG.clone()))

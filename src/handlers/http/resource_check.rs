@@ -16,7 +16,10 @@
  *
  */
 
-use std::sync::{Arc, LazyLock, atomic::AtomicBool};
+use std::{
+    fs,
+    sync::{Arc, LazyLock, atomic::AtomicBool},
+};
 
 use actix_web::{
     body::MessageBody,
@@ -37,8 +40,37 @@ use crate::metrics::{record_disk_metrics, record_process_metrics_sample};
 use crate::parseable::PARSEABLE;
 
 const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+const CGROUP_V2_CPU_MAX_PATH: &str = "/sys/fs/cgroup/cpu.max";
+const CGROUP_V1_CPU_QUOTA_PATH: &str = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us";
+const CGROUP_V1_CPU_PERIOD_PATH: &str = "/sys/fs/cgroup/cpu/cpu.cfs_period_us";
 
 static SERVER_OK: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(true)));
+
+fn cpu_quota_cores(quota: &str, period: &str) -> Option<f64> {
+    let quota = quota.trim().parse::<f64>().ok()?;
+    let period = period.trim().parse::<f64>().ok()?;
+    (quota > 0.0 && period > 0.0).then_some(quota / period)
+}
+
+pub fn cpu_limit_cores() -> f64 {
+    let cgroup_limit = fs::read_to_string(CGROUP_V2_CPU_MAX_PATH)
+        .ok()
+        .and_then(|cpu_max| {
+            let mut values = cpu_max.split_whitespace();
+            cpu_quota_cores(values.next()?, values.next()?)
+        })
+        .or_else(|| {
+            let quota = fs::read_to_string(CGROUP_V1_CPU_QUOTA_PATH).ok()?;
+            let period = fs::read_to_string(CGROUP_V1_CPU_PERIOD_PATH).ok()?;
+            cpu_quota_cores(&quota, &period)
+        });
+
+    cgroup_limit.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|count| count.get() as f64)
+            .unwrap_or(1.0)
+    })
+}
 
 async fn sample_process_metrics() {
     refresh_sys_info();
@@ -52,12 +84,19 @@ async fn sample_process_metrics() {
         sysinfo::get_current_pid()
             .ok()
             .and_then(|pid| sys.process(pid))
-            .map(|process| (process.cpu_usage() as f64, process.memory(), total_mem))
+            .map(|process| {
+                (
+                    process.cpu_usage() as f64,
+                    process.memory(),
+                    total_mem,
+                    cpu_limit_cores(),
+                )
+            })
     })
     .await
     .unwrap();
-    if let Some((cpu_usage, memory_bytes, total_mem)) = process_metrics {
-        record_process_metrics_sample(cpu_usage, memory_bytes, total_mem);
+    if let Some((cpu_usage, memory_bytes, total_mem, cpu_limit_cores)) = process_metrics {
+        record_process_metrics_sample(cpu_usage, memory_bytes, total_mem, cpu_limit_cores);
     }
 
     let staging_path = PARSEABLE.options.staging_dir().clone();
