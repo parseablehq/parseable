@@ -22,8 +22,8 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{
-        Arc, OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex as StdMutex, OnceLock,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock, mpsc};
@@ -42,6 +42,7 @@ use crate::{
     tenants::TENANT_METADATA,
     utils::{
         disk::{DiskUtil, disk_usage_for_path},
+        extract_datetime,
         human_size::bytes_to_human_size,
     },
     validator::error::HotTierValidationError,
@@ -260,6 +261,54 @@ pub struct StreamHotTier {
 /// Per-stream in-memory bookkeeping. Downloads run outside the lock.
 struct StreamSyncState {
     runtime: AsyncMutex<RuntimeState>,
+    eviction: Arc<AsyncRwLock<()>>,
+    query_pins: StdMutex<HashMap<u64, QueryPin>>,
+    next_query_pin: AtomicU64,
+}
+
+struct QueryPin {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+}
+
+impl QueryPin {
+    fn contains(&self, minute: &str) -> bool {
+        extract_datetime(minute)
+            .map(|timestamp| timestamp.and_utc())
+            .is_none_or(|bucket_start| {
+                let bucket_end = bucket_start + chrono::Duration::minutes(1);
+                bucket_end > self.start && bucket_start <= self.end
+            })
+    }
+}
+
+pub(crate) struct HotTierQueryGuard {
+    state: Arc<StreamSyncState>,
+    pin_id: u64,
+}
+
+impl Drop for HotTierQueryGuard {
+    fn drop(&mut self) {
+        self.state
+            .query_pins
+            .lock()
+            .expect("hot-tier query pins lock poisoned")
+            .remove(&self.pin_id);
+    }
+}
+
+impl StreamSyncState {
+    fn pin_query(self: &Arc<Self>, start: DateTime<Utc>, end: DateTime<Utc>) -> HotTierQueryGuard {
+        let pin_id = self.next_query_pin.fetch_add(1, Ordering::Relaxed);
+        self.query_pins
+            .lock()
+            .expect("hot-tier query pins lock poisoned")
+            .insert(pin_id, QueryPin { start, end });
+        HotTierQueryGuard {
+            state: self.clone(),
+            pin_id,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -539,6 +588,9 @@ impl HotTierManager {
         let runtime = load_or_rebuild(&stream_root).await?;
         let state = Arc::new(StreamSyncState {
             runtime: AsyncMutex::new(runtime),
+            eviction: Arc::new(AsyncRwLock::new(())),
+            query_pins: StdMutex::new(HashMap::new()),
+            next_query_pin: AtomicU64::new(0),
         });
         self.state_cache
             .write()
@@ -558,6 +610,21 @@ impl HotTierManager {
 
     pub fn disk_path(&self, manifest_path: &str) -> object_store::Result<PathBuf> {
         hot_tier_disk_path(self.hot_tier_path, manifest_path)
+    }
+
+    /// Prevent eviction of buckets in the queried time range while local files are in use.
+    pub(crate) async fn query_guard(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<HotTierQueryGuard, HotTierError> {
+        let state = self.get_or_load_state(stream, tenant_id).await?;
+        let registration_guard = state.eviction.read().await;
+        let query_guard = state.pin_query(start, end);
+        drop(registration_guard);
+        Ok(query_guard)
     }
 
     /// Drop cached state for a stream (used after delete).
@@ -884,6 +951,13 @@ impl HotTierManager {
         tenant_id: Option<String>,
         anchor: DateTime<Utc>,
     ) -> Result<(), HotTierError> {
+        if tenant_id
+            .as_deref()
+            .is_some_and(|tenant| TENANT_METADATA.is_workspace_suspended(tenant))
+        {
+            return Ok(());
+        }
+
         let stream_start = std::time::Instant::now();
         self.process_manifest(&stream, &tenant_id, anchor)
             .await
@@ -1292,11 +1366,27 @@ impl HotTierManager {
         );
         let mut reclaim = ReclaimBudget::new(reclaim_target);
         let mut evicted = 0_u64;
+        let _eviction_guard = if reclaim.needs_more() {
+            // Query registrations hold read access only long enough to publish their time range.
+            // Waiting here cannot wait for query execution, and writer priority prevents a steady
+            // stream of new registrations from starving eviction.
+            Some(state.eviction.write().await)
+        } else {
+            None
+        };
         while reclaim.needs_more() {
-            let Some(oldest) = runtime
-                .oldest_evictable_bucket_before(minute)
-                .map(str::to_owned)
-            else {
+            let oldest = {
+                let query_pins = state
+                    .query_pins
+                    .lock()
+                    .expect("hot-tier query pins lock poisoned");
+                runtime
+                    .oldest_evictable_bucket_before_with(minute, |candidate| {
+                        query_pins.values().any(|pin| pin.contains(candidate))
+                    })
+                    .map(str::to_owned)
+            };
+            let Some(oldest) = oldest else {
                 runtime.unmark_bucket_inflight(minute);
                 return Ok(None);
             };
@@ -1758,7 +1848,7 @@ mod tests {
 
     use super::local_state::{MinuteTotals, RuntimeState};
     use super::{
-        DiskBudget, DiskUtil, HotTierManager, ReclaimBudget, StreamSyncState, WorkItem,
+        DiskBudget, DiskUtil, HotTierManager, QueryPin, ReclaimBudget, StreamSyncState, WorkItem,
         classify_manifest_files_with, hot_tier_disk_path, manifest_check_concurrency,
         required_reclaim, run_bounded_newest_first,
     };
@@ -1804,6 +1894,16 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
 
         assert!(hot_tier_disk_path(root.path(), "../outside.parquet").is_err());
+    }
+
+    #[test]
+    fn query_pin_treats_unparseable_bucket_as_overlapping() {
+        let pin = QueryPin {
+            start: Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 30).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 7, 16, 12, 5, 0).unwrap(),
+        };
+
+        assert!(pin.contains("invalid-minute-bucket"));
     }
 
     fn disk_budget() -> DiskBudget {
@@ -1903,6 +2003,9 @@ mod tests {
         }
         let state = Arc::new(StreamSyncState {
             runtime: tokio::sync::Mutex::new(runtime),
+            eviction: Arc::new(tokio::sync::RwLock::new(())),
+            query_pins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_query_pin: std::sync::atomic::AtomicU64::new(0),
         });
         let item = WorkItem {
             timestamp: Utc::now(),
@@ -1929,6 +2032,138 @@ mod tests {
         assert_eq!(evicted, Some(100));
         assert!(!stream_root.join(oldest).exists());
         assert!(stream_root.join(next).exists());
+    }
+
+    #[tokio::test]
+    async fn active_query_protects_overlapping_bucket() {
+        let root = Box::leak(tempfile::tempdir().unwrap().keep().into_boxed_path());
+        let stream_root = root.join("logs");
+        let oldest = "date=2026-07-16/hour=12/minute=00";
+        let oldest_directory = stream_root.join(oldest);
+        tokio::fs::create_dir_all(&oldest_directory).await.unwrap();
+        tokio::fs::write(oldest_directory.join("cached.parquet"), [0_u8; 100])
+            .await
+            .unwrap();
+
+        let mut runtime = RuntimeState::default();
+        runtime.minutes.insert(
+            oldest.to_owned(),
+            MinuteTotals {
+                bytes: 100,
+                files: 1,
+                verified: true,
+            },
+        );
+        let state = Arc::new(StreamSyncState {
+            runtime: tokio::sync::Mutex::new(runtime),
+            eviction: Arc::new(tokio::sync::RwLock::new(())),
+            query_pins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_query_pin: std::sync::atomic::AtomicU64::new(0),
+        });
+        let query_guard = state.pin_query(
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 30).unwrap(),
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 0, 59).unwrap(),
+        );
+        let budget = disk_budget();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let manager = HotTierManager::new(root, sender);
+        let item = WorkItem {
+            timestamp: Utc::now(),
+            minute_path: stream_root.join("date=2026-07-16/hour=12/minute=01"),
+            local_path: stream_root.join("date=2026-07-16/hour=12/minute=01/new.parquet"),
+            file: manifest_file("logs/date=2026-07-16/hour=12/minute=01/new.parquet", 100),
+        };
+
+        let evicted = manager
+            .reserve_item(
+                &state,
+                &stream_root,
+                "date=2026-07-16/hour=12/minute=01",
+                &item,
+                100,
+                &budget,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(evicted, None);
+        assert!(oldest_directory.exists());
+
+        drop(query_guard);
+        let evicted = manager
+            .reserve_item(
+                &state,
+                &stream_root,
+                "date=2026-07-16/hour=12/minute=01",
+                &item,
+                100,
+                &budget,
+            )
+            .await
+            .unwrap();
+        assert_eq!(evicted, Some(100));
+        assert!(!oldest_directory.exists());
+    }
+
+    #[tokio::test]
+    async fn active_recent_query_does_not_block_old_bucket_eviction() {
+        let root = Box::leak(tempfile::tempdir().unwrap().keep().into_boxed_path());
+        let stream_root = root.join("logs");
+        let oldest = "date=2026-07-16/hour=12/minute=00";
+        let pinned = "date=2026-07-16/hour=12/minute=01";
+        for minute in [oldest, pinned] {
+            let directory = stream_root.join(minute);
+            tokio::fs::create_dir_all(&directory).await.unwrap();
+            tokio::fs::write(directory.join("cached.parquet"), [0_u8; 100])
+                .await
+                .unwrap();
+        }
+
+        let mut runtime = RuntimeState::default();
+        for minute in [oldest, pinned] {
+            runtime.minutes.insert(
+                minute.to_owned(),
+                MinuteTotals {
+                    bytes: 100,
+                    files: 1,
+                    verified: true,
+                },
+            );
+        }
+        let state = Arc::new(StreamSyncState {
+            runtime: tokio::sync::Mutex::new(runtime),
+            eviction: Arc::new(tokio::sync::RwLock::new(())),
+            query_pins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_query_pin: std::sync::atomic::AtomicU64::new(0),
+        });
+        let _query_guard = state.pin_query(
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 1, 30).unwrap(),
+            Utc.with_ymd_and_hms(2026, 7, 16, 12, 1, 59).unwrap(),
+        );
+        let item = WorkItem {
+            timestamp: Utc::now(),
+            minute_path: stream_root.join("date=2026-07-16/hour=12/minute=02"),
+            local_path: stream_root.join("date=2026-07-16/hour=12/minute=02/new.parquet"),
+            file: manifest_file("logs/date=2026-07-16/hour=12/minute=02/new.parquet", 100),
+        };
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let manager = HotTierManager::new(root, sender);
+
+        let evicted = manager
+            .reserve_item(
+                &state,
+                &stream_root,
+                "date=2026-07-16/hour=12/minute=02",
+                &item,
+                200,
+                &disk_budget(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(evicted, Some(100));
+        assert!(!stream_root.join(oldest).exists());
+        assert!(stream_root.join(pinned).exists());
     }
 
     async fn wait_until_len(values: &Arc<Mutex<Vec<u8>>>, expected: usize) {

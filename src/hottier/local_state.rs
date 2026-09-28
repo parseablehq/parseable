@@ -85,11 +85,17 @@ impl RuntimeState {
         }
     }
 
-    pub fn oldest_evictable_bucket_before(&self, target: &str) -> Option<&str> {
+    pub fn oldest_evictable_bucket_before_with(
+        &self,
+        target: &str,
+        is_pinned: impl Fn(&str) -> bool,
+    ) -> Option<&str> {
         self.minutes
             .keys()
             .take_while(|minute| minute.as_str() < target)
-            .find(|minute| !self.inflight_buckets.contains_key(*minute))
+            .find(|minute| {
+                !self.inflight_buckets.contains_key(*minute) && !is_pinned(minute.as_str())
+            })
             .map(String::as_str)
     }
 
@@ -308,7 +314,9 @@ mod tests {
         state.mark_bucket_inflight("date=2026-07-16/hour=12/minute=00");
 
         assert_eq!(
-            state.oldest_evictable_bucket_before("date=2026-07-16/hour=12/minute=14"),
+            state.oldest_evictable_bucket_before_with("date=2026-07-16/hour=12/minute=14", |_| {
+                false
+            },),
             Some("date=2026-07-16/hour=12/minute=05")
         );
     }
@@ -318,7 +326,9 @@ mod tests {
         let state = runtime_with_minutes(&["minute=14"]);
 
         assert_eq!(
-            state.oldest_evictable_bucket_before("date=2026-07-16/hour=12/minute=00"),
+            state.oldest_evictable_bucket_before_with("date=2026-07-16/hour=12/minute=00", |_| {
+                false
+            },),
             None
         );
     }
@@ -328,7 +338,9 @@ mod tests {
         let state = runtime_with_minutes(&["minute=14"]);
 
         assert_eq!(
-            state.oldest_evictable_bucket_before("date=2026-07-16/hour=12/minute=14"),
+            state.oldest_evictable_bucket_before_with("date=2026-07-16/hour=12/minute=14", |_| {
+                false
+            },),
             None
         );
     }

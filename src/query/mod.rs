@@ -26,7 +26,8 @@ use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::SchemaProvider;
-use datafusion::common::tree_node::Transformed;
+use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
+use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::{
     RecordBatchStream, SendableRecordBatchStream, SessionState, SessionStateBuilder,
@@ -49,6 +50,7 @@ use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::ops::Bound;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -70,6 +72,7 @@ use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
 use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
+use crate::hottier::{GLOBAL_HOTTIER, HotTierQueryGuard};
 use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
@@ -371,9 +374,10 @@ impl Query {
     )]
     pub async fn execute(&self, is_streaming: bool, tenant_id: &Option<String>) -> QueryResult {
         let ctx = QUERY_SESSION.get_ctx();
-        let df = ctx
-            .execute_logical_plan(self.final_logical_plan(tenant_id))
-            .await?;
+        let logical_plan = self.final_logical_plan(tenant_id);
+        let hot_tier_guards =
+            hot_tier_query_guards(&logical_plan, tenant_id, &self.time_range).await?;
+        let df = ctx.execute_logical_plan(logical_plan).await?;
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let fields = df
             .schema()
@@ -404,6 +408,7 @@ impl Query {
             let current_date = chrono::Utc::now().date_naive().to_string();
             increment_bytes_scanned_in_query_by_date(actual_io_bytes, &current_date, tenant);
 
+            drop(hot_tier_guards);
             Either::Left(batches)
         } else {
             let task_ctx = ctx.task_ctx();
@@ -413,6 +418,7 @@ impl Query {
             let monitor_state = Arc::new(MonitorState {
                 plan: plan.clone(),
                 active_streams: AtomicUsize::new(output_partitions),
+                _hot_tier_guards: hot_tier_guards,
             });
 
             let partition_streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?;
@@ -538,6 +544,39 @@ impl Query {
             _ => None,
         }
     }
+}
+
+/// Pins the queried time range for every hot-tier stream referenced by the query, including
+/// subqueries, from physical planning through execution. Eviction remains free to reclaim buckets
+/// outside active query ranges, so long-running or overlapping queries cannot starve hot-tier sync.
+async fn hot_tier_query_guards(
+    logical_plan: &LogicalPlan,
+    tenant_id: &Option<String>,
+    time_range: &TimeRange,
+) -> Result<Vec<HotTierQueryGuard>, DataFusionError> {
+    let Some(manager) = GLOBAL_HOTTIER.get() else {
+        return Ok(Vec::new());
+    };
+
+    let mut streams = BTreeSet::new();
+    logical_plan.apply_with_subqueries(|plan| {
+        if let LogicalPlan::TableScan(table) = plan {
+            streams.insert(table.table_name.table().to_owned());
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+
+    let mut guards = Vec::new();
+    for stream in streams {
+        if manager.check_stream_hot_tier_exists(&stream, tenant_id) {
+            let guard = manager
+                .query_guard(&stream, tenant_id, time_range.start, time_range.end)
+                .await
+                .map_err(|error| DataFusionError::External(Box::new(error)))?;
+            guards.push(guard);
+        }
+    }
+    Ok(guards)
 }
 
 /// Recursively sums up "bytes_scanned" from all nodes in the plan
@@ -1077,6 +1116,7 @@ pub mod error {
 struct MonitorState {
     plan: Arc<dyn ExecutionPlan>,
     active_streams: AtomicUsize,
+    _hot_tier_guards: Vec<HotTierQueryGuard>,
 }
 
 /// A wrapper that monitors the ExecutionPlan and logs metrics when the stream finishes.
