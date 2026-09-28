@@ -16,10 +16,9 @@
  *
  */
 
-use std::{
-    fs,
-    sync::{Arc, LazyLock, atomic::AtomicBool},
-};
+#[cfg(target_os = "linux")]
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, atomic::AtomicBool};
 
 use actix_web::{
     body::MessageBody,
@@ -40,32 +39,69 @@ use crate::metrics::{record_disk_metrics, record_process_metrics_sample};
 use crate::parseable::PARSEABLE;
 
 const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
-const CGROUP_V2_CPU_MAX_PATH: &str = "/sys/fs/cgroup/cpu.max";
-const CGROUP_V1_CPU_QUOTA_PATH: &str = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us";
-const CGROUP_V1_CPU_PERIOD_PATH: &str = "/sys/fs/cgroup/cpu/cpu.cfs_period_us";
+#[cfg(target_os = "linux")]
+const CGROUP_V2_CPU_MAX_FILE: &str = "cpu.max";
+#[cfg(target_os = "linux")]
+const CGROUP_V1_CPU_QUOTA_FILE: &str = "cpu.cfs_quota_us";
+#[cfg(target_os = "linux")]
+const CGROUP_V1_CPU_PERIOD_FILE: &str = "cpu.cfs_period_us";
 
 static SERVER_OK: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(true)));
 
+#[cfg(target_os = "linux")]
 fn cpu_quota_cores(quota: &str, period: &str) -> Option<f64> {
     let quota = quota.trim().parse::<f64>().ok()?;
     let period = period.trim().parse::<f64>().ok()?;
     (quota > 0.0 && period > 0.0).then_some(quota / period)
 }
 
-pub fn cpu_limit_cores() -> f64 {
-    let cgroup_limit = fs::read_to_string(CGROUP_V2_CPU_MAX_PATH)
-        .ok()
-        .and_then(|cpu_max| {
-            let mut values = cpu_max.split_whitespace();
-            cpu_quota_cores(values.next()?, values.next()?)
-        })
-        .or_else(|| {
-            let quota = fs::read_to_string(CGROUP_V1_CPU_QUOTA_PATH).ok()?;
-            let period = fs::read_to_string(CGROUP_V1_CPU_PERIOD_PATH).ok()?;
-            cpu_quota_cores(&quota, &period)
-        });
+#[cfg(target_os = "linux")]
+fn cgroup_directory(pathname: &str, root: &str, mount_point: &Path) -> Option<PathBuf> {
+    let pathname = Path::new(pathname);
+    if pathname == Path::new("/") {
+        return Some(mount_point.to_path_buf());
+    }
+    Some(mount_point.join(pathname.strip_prefix(root).ok()?))
+}
 
-    cgroup_limit.unwrap_or_else(|| {
+#[cfg(target_os = "linux")]
+fn cgroup_cpu_limit_cores() -> Option<f64> {
+    let process = procfs::process::Process::myself().ok()?;
+    let cgroups = process.cgroups().ok()?.0;
+    let mounts = process.mountinfo().ok()?.0;
+
+    let v2_limit = || {
+        let cgroup = cgroups.iter().find(|group| group.controllers.is_empty())?;
+        let mount = mounts.iter().find(|mount| mount.fs_type == "cgroup2")?;
+        let directory = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point)?;
+        let cpu_max = std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).ok()?;
+        let mut values = cpu_max.split_whitespace();
+        cpu_quota_cores(values.next()?, values.next()?)
+    };
+
+    let v1_limit = || {
+        let cgroup = cgroups
+            .iter()
+            .find(|group| group.controllers.iter().any(|item| item == "cpu"))?;
+        let mount = mounts
+            .iter()
+            .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpu"))?;
+        let directory = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point)?;
+        let quota = std::fs::read_to_string(directory.join(CGROUP_V1_CPU_QUOTA_FILE)).ok()?;
+        let period = std::fs::read_to_string(directory.join(CGROUP_V1_CPU_PERIOD_FILE)).ok()?;
+        cpu_quota_cores(&quota, &period)
+    };
+
+    v2_limit().or_else(v1_limit)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cgroup_cpu_limit_cores() -> Option<f64> {
+    None
+}
+
+pub fn cpu_limit_cores() -> f64 {
+    cgroup_cpu_limit_cores().unwrap_or_else(|| {
         std::thread::available_parallelism()
             .map(|count| count.get() as f64)
             .unwrap_or(1.0)
