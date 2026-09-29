@@ -221,7 +221,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 anyhow = "1.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-procfs = { version = "0.16.0", default-features = false }
+procfs = { version = "0.18.0", default-features = false }
 
 [dev-dependencies]
 rstest = "0.26.1"
