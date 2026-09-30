@@ -160,8 +160,11 @@ fn target_info_record(
     target
 }
 
-/// Compute a stable u64 identifier for the physical series a sample
-/// belongs to. Hashes `metric_name` plus every attribute key/value pair
+/// Compute a stable u64 identifier for an already-flattened physical series.
+/// Protocol adapters can call this directly without constructing an
+/// intermediate OTLP `MetricsData` tree.
+///
+/// Hashes `metric_name` plus every attribute key/value pair
 /// that survived OTel flattening — everything in the flattened data
 /// point that isn't a known sample-level field is treated as a label.
 ///
@@ -169,7 +172,7 @@ fn target_info_record(
 /// query time. Uses rustc-hash's FxHasher (fast, deterministic,
 /// non-cryptographic) and feeds keys in sorted order so the hash
 /// doesn't depend on JSON Map iteration order.
-fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
+pub fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
     let mut label_pairs: Vec<(&str, Cow<'_, str>)> = Vec::with_capacity(dp.len());
     for (key, value) in dp {
         if OTEL_METRICS_KNOWN_FIELDS.contains(key.as_str()) {
