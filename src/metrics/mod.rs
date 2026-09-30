@@ -247,7 +247,7 @@ pub static PROCESS_CPU_LIMIT_CORES: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
             "process_cpu_limit_cores",
-            "Cgroup CPU limit in cores, or zero when unavailable",
+            "Cgroup CPU limit in cores, available logical CPUs when unlimited, or zero when detection fails",
         )
         .namespace(METRICS_NAMESPACE),
     )

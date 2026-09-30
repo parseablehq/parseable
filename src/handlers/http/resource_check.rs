@@ -49,10 +49,19 @@ const CGROUP_V1_CPU_PERIOD_FILE: &str = "cpu.cfs_period_us";
 static SERVER_OK: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(true)));
 
 #[cfg(target_os = "linux")]
-fn cpu_quota_cores(quota: &str, period: &str) -> Option<f64> {
-    let quota = quota.trim().parse::<f64>().ok()?;
-    let period = period.trim().parse::<f64>().ok()?;
-    (quota > 0.0 && period > 0.0).then_some(quota / period)
+fn cpu_quota_cores(quota: &str, period: &str) -> Result<Option<f64>, ()> {
+    let quota = quota.trim();
+    if quota == "max" || quota == "-1" {
+        return Ok(None);
+    }
+
+    let quota = quota.parse::<f64>().map_err(|_| ())?;
+    let period = period.trim().parse::<f64>().map_err(|_| ())?;
+    if quota <= 0.0 || period <= 0.0 {
+        return Err(());
+    }
+
+    Ok(Some(quota / period))
 }
 
 #[cfg(target_os = "linux")]
@@ -65,65 +74,71 @@ fn cgroup_directory(pathname: &str, root: &str, mount_point: &Path) -> Option<Pa
 }
 
 #[cfg(target_os = "linux")]
-fn cgroup_cpu_limit_cores() -> Option<f64> {
-    let process = procfs::process::Process::myself().ok()?;
-    let cgroups = process.cgroups().ok()?.0;
-    let mounts = process.mountinfo().ok()?.0;
+fn cgroup_cpu_limit_cores() -> Result<Option<f64>, ()> {
+    let process = procfs::process::Process::myself().map_err(|_| ())?;
+    let cgroups = process.cgroups().map_err(|_| ())?.0;
+    let mounts = process.mountinfo().map_err(|_| ())?.0;
 
-    let v2_limit = || {
-        let cgroup = cgroups.iter().find(|group| group.hierarchy == 0)?;
-        let mount = mounts.iter().find(|mount| mount.fs_type == "cgroup2")?;
-        let directory = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point)?;
-        let cpu_max = std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).ok()?;
+    if let (Some(cgroup), Some(mount)) = (
+        cgroups.iter().find(|group| group.hierarchy == 0),
+        mounts.iter().find(|mount| mount.fs_type == "cgroup2"),
+    ) {
+        let directory =
+            cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
+        let cpu_max =
+            std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).map_err(|_| ())?;
         let mut values = cpu_max.split_whitespace();
-        cpu_quota_cores(values.next()?, values.next()?)
-    };
+        return cpu_quota_cores(values.next().ok_or(())?, values.next().ok_or(())?);
+    }
 
-    let v1_limit = || {
-        let cgroup = cgroups
-            .iter()
-            .find(|group| group.controllers.iter().any(|item| item == "cpu"))?;
-        let mount = mounts
-            .iter()
-            .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpu"))?;
-        let directory = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point)?;
-        let quota = std::fs::read_to_string(directory.join(CGROUP_V1_CPU_QUOTA_FILE)).ok()?;
-        let period = std::fs::read_to_string(directory.join(CGROUP_V1_CPU_PERIOD_FILE)).ok()?;
-        cpu_quota_cores(&quota, &period)
-    };
-
-    v2_limit().or_else(v1_limit)
+    let cgroup = cgroups
+        .iter()
+        .find(|group| group.controllers.iter().any(|item| item == "cpu"))
+        .ok_or(())?;
+    let mount = mounts
+        .iter()
+        .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpu"))
+        .ok_or(())?;
+    let directory = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
+    let quota =
+        std::fs::read_to_string(directory.join(CGROUP_V1_CPU_QUOTA_FILE)).map_err(|_| ())?;
+    let period =
+        std::fs::read_to_string(directory.join(CGROUP_V1_CPU_PERIOD_FILE)).map_err(|_| ())?;
+    cpu_quota_cores(&quota, &period)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn cgroup_cpu_limit_cores() -> Option<f64> {
-    None
+fn cgroup_cpu_limit_cores() -> Result<Option<f64>, ()> {
+    Err(())
 }
 
 pub fn cpu_limit_cores() -> f64 {
-    cgroup_cpu_limit_cores().unwrap_or(0.0)
+    match cgroup_cpu_limit_cores() {
+        Ok(Some(limit)) => limit,
+        Ok(None) => num_cpus::get() as f64,
+        Err(()) => 0.0,
+    }
 }
 
 async fn sample_process_metrics() {
     refresh_sys_info();
     let process_metrics = tokio::task::spawn_blocking(|| {
-        let sys = SYS_INFO.lock().unwrap();
-        let total_mem = if let Some(cgroup) = sys.cgroup_limits() {
-            cgroup.total_memory
-        } else {
-            sys.total_memory()
+        let process_metrics = {
+            let sys = SYS_INFO.lock().unwrap();
+            let total_mem = if let Some(cgroup) = sys.cgroup_limits() {
+                cgroup.total_memory
+            } else {
+                sys.total_memory()
+            };
+            sysinfo::get_current_pid()
+                .ok()
+                .and_then(|pid| sys.process(pid))
+                .map(|process| (process.cpu_usage() as f64, process.memory(), total_mem))
         };
-        sysinfo::get_current_pid()
-            .ok()
-            .and_then(|pid| sys.process(pid))
-            .map(|process| {
-                (
-                    process.cpu_usage() as f64,
-                    process.memory(),
-                    total_mem,
-                    cpu_limit_cores(),
-                )
-            })
+
+        process_metrics.map(|(cpu_usage, memory_bytes, total_mem)| {
+            (cpu_usage, memory_bytes, total_mem, cpu_limit_cores())
+        })
     })
     .await
     .unwrap();
@@ -235,4 +250,22 @@ pub async fn check_resource_utilization_middleware(
 
     // Continue processing the request if resource utilization is within limits
     next.call(req).await
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::cpu_quota_cores;
+
+    #[test]
+    fn parses_limited_and_unlimited_cpu_quotas() {
+        assert_eq!(cpu_quota_cores("50000", "100000"), Ok(Some(0.5)));
+        assert_eq!(cpu_quota_cores("max", "100000"), Ok(None));
+        assert_eq!(cpu_quota_cores("-1", "100000"), Ok(None));
+    }
+
+    #[test]
+    fn rejects_invalid_cpu_quotas() {
+        assert_eq!(cpu_quota_cores("invalid", "100000"), Err(()));
+        assert_eq!(cpu_quota_cores("50000", "0"), Err(()));
+    }
 }
