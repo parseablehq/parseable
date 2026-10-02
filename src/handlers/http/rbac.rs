@@ -72,7 +72,12 @@ impl From<&user::User> for User {
 // returns list of all registered users
 pub async fn list_users(req: HttpRequest) -> impl Responder {
     let tenant_id = get_tenant_id_from_request(&req);
-    web::Json(Users.collect_user::<User>(&tenant_id))
+    web::Json(list_users_internal(&tenant_id))
+}
+
+/// Shared user-list implementation for HTTP handlers and in-process callers.
+pub fn list_users_internal(tenant_id: &Option<String>) -> serde_json::Value {
+    serde_json::to_value(Users.collect_user::<User>(tenant_id)).unwrap_or_default()
 }
 
 /// Handler for GET /api/v1/users
@@ -262,17 +267,25 @@ pub async fn get_role(
 ) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    Ok(web::Json(get_role_internal(&userid, &tenant_id)?))
+}
+
+/// Shared user-role implementation for HTTP handlers and in-process callers.
+pub fn get_role_internal(
+    userid: &str,
+    tenant_id: &Option<String>,
+) -> Result<serde_json::Value, RBACError> {
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    if !Users.contains(&userid, &tenant_id) {
+    if !Users.contains(userid, tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     }
-    if let Some(p) = Users.is_protected(&userid, &tenant_id)
+    if let Some(p) = Users.is_protected(userid, tenant_id)
         && p
     {
         return Err(RBACError::ProtectedUser);
     };
     let direct_roles: HashMap<String, Role> = Users
-        .get_role(&userid, &tenant_id)
+        .get_role(userid, tenant_id)
         .iter()
         .filter_map(|role_name| {
             if let Some(roles) = roles().get(tenant)
@@ -287,7 +300,7 @@ pub async fn get_role(
 
     let mut group_roles: HashMap<String, HashMap<String, Role>> = HashMap::new();
     // user might be part of some user groups, fetch the roles from there as well
-    for user_group in Users.get_user_groups(&userid, &tenant_id) {
+    for user_group in Users.get_user_groups(userid, tenant_id) {
         if let Some(groups) = read_user_groups().get(tenant)
             && let Some(group) = groups.get(&user_group)
         {
@@ -311,7 +324,7 @@ pub async fn get_role(
         direct_roles,
         group_roles,
     };
-    Ok(web::Json(res))
+    Ok(serde_json::to_value(res)?)
 }
 
 // Handler for DELETE /api/v1/user/delete/{userid}

@@ -234,19 +234,23 @@ pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {
     let session_key =
         extract_session_key_from_req(req).map_err(|e| anyhow::Error::msg(e.to_string()))?;
 
-    let permissions = Users.get_permissions(&session_key);
+    Ok(is_admin_for_session(&session_key))
+}
+
+pub fn is_admin_for_session(session_key: &SessionKey) -> bool {
+    let permissions = Users.get_permissions(session_key);
 
     // Check if user has admin permissions (Action::All on All resources)
     for permission in permissions.iter() {
         match permission {
             Permission::Resource(Action::All, Some(ParseableResourceType::All)) => {
-                return Ok(true);
+                return true;
             }
             _ => continue,
         }
     }
 
-    Ok(false)
+    false
 }
 
 pub fn create_intracluster_auth_headermap(
