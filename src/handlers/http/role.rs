@@ -99,19 +99,31 @@ pub async fn put(
 pub async fn get(req: HttpRequest, name: web::Path<String>) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let metadata = get_metadata(&tenant_id).await?;
-    let role = metadata.roles.get(&name).cloned().unwrap_or_default();
+    Ok(web::Json(get_internal(&name, &tenant_id).await?))
+}
+
+/// Shared role lookup implementation for HTTP handlers and in-process callers.
+pub async fn get_internal(name: &str, tenant_id: &Option<String>) -> Result<Role, RoleError> {
+    let metadata = get_metadata(tenant_id).await?;
+    let role = metadata.roles.get(name).cloned().unwrap_or_default();
     if role.role_type().eq(&RoleType::Internal) {
         return Err(RoleError::ProtectedRole);
     }
-    Ok(web::Json(role))
+    Ok(role)
 }
 
 // Handler for GET /api/v1/roles
 // Fetch all roles in the system
 pub async fn list(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
-    let metadata = get_metadata(&tenant_id).await?;
+    Ok(web::Json(list_internal(&tenant_id).await?))
+}
+
+/// Shared role-list implementation for HTTP handlers and in-process callers.
+pub async fn list_internal(
+    tenant_id: &Option<String>,
+) -> Result<HashMap<String, RoleUI>, RoleError> {
+    let metadata = get_metadata(tenant_id).await?;
     let mut roles = HashMap::new();
     for (k, r) in metadata.roles.into_iter() {
         if !r.role_type().eq(&RoleType::Internal) {
@@ -119,7 +131,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, RoleError> {
         }
     }
 
-    Ok(web::Json(roles))
+    Ok(roles)
 }
 
 // Handler for DELETE /api/v1/role/{name}
@@ -188,6 +200,11 @@ pub async fn put_default(
 // Delete existing role
 pub async fn get_default(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
+    Ok(web::Json(get_default_internal(&tenant_id)))
+}
+
+/// Shared default-role implementation for HTTP handlers and in-process callers.
+pub fn get_default_internal(tenant_id: &Option<String>) -> serde_json::Value {
     let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let res = if let Some(role) = DEFAULT_ROLE
         .read()
@@ -208,7 +225,7 @@ pub async fn get_default(req: HttpRequest) -> Result<impl Responder, RoleError> 
     //     None => serde_json::Value::Null,
     // };
 
-    Ok(web::Json(res))
+    res
 }
 
 async fn get_metadata(

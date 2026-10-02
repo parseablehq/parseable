@@ -41,7 +41,11 @@ use crate::{parseable::PARSEABLE, storage::object_storage::sync_all_streams};
 pub static SIGNAL_RECEIVED: Lazy<Arc<Mutex<bool>>> = Lazy::new(|| Arc::new(Mutex::new(false)));
 
 pub async fn liveness() -> HttpResponse {
-    HttpResponse::new(StatusCode::OK)
+    HttpResponse::new(liveness_internal())
+}
+
+pub fn liveness_internal() -> StatusCode {
+    StatusCode::OK
 }
 
 pub async fn check_shutdown_middleware(
@@ -107,16 +111,20 @@ async fn perform_object_store_sync() {
 
 pub async fn readiness(req: HttpRequest) -> HttpResponse {
     let tenant_id = get_tenant_id_from_request(&req);
+    HttpResponse::new(readiness_internal(&tenant_id).await)
+}
+
+pub async fn readiness_internal(tenant_id: &Option<String>) -> StatusCode {
     // Check the object store connection
     if PARSEABLE
         .storage
         .get_object_store()
-        .check(&tenant_id)
+        .check(tenant_id)
         .await
         .is_ok()
     {
-        HttpResponse::new(StatusCode::OK)
+        StatusCode::OK
     } else {
-        HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE)
+        StatusCode::SERVICE_UNAVAILABLE
     }
 }

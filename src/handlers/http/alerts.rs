@@ -22,7 +22,10 @@ use crate::{
     alerts::{
         ALERTS, AlertError, AlertState, Severity,
         alert_enums::{AlertType, NotificationState},
-        alert_structs::{AlertConfig, AlertRequest, AlertStateEntry, NotificationStateRequest},
+        alert_structs::{
+            AlertConfig, AlertConfigResponse, AlertRequest, AlertStateEntry,
+            NotificationStateRequest,
+        },
         alert_traits::AlertTrait,
         alert_types::ThresholdAlert,
         target::Retry,
@@ -30,6 +33,7 @@ use crate::{
     },
     metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
+    rbac::map::SessionKey,
     utils::{actix::extract_session_key_from_req, get_tenant_id_from_request},
 };
 use actix_web::{
@@ -211,9 +215,16 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
         .map_err(|_| AlertError::InvalidQueryParameter("malformed query parameters".to_string()))?;
+    Ok(web::Json(list_internal(session_key, &query_map).await?))
+}
 
+/// Shared alert-list implementation for HTTP handlers and in-process callers.
+pub async fn list_internal(
+    session_key: SessionKey,
+    query_map: &HashMap<String, String>,
+) -> Result<Vec<serde_json::Map<String, serde_json::Value>>, AlertError> {
     // Parse and validate query parameters
-    let params = parse_list_query_params(&query_map)?;
+    let params = parse_list_query_params(query_map)?;
 
     // Get alerts from the manager
     let guard = ALERTS.read().await;
@@ -241,7 +252,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     // Paginate results
     let paginated_alerts = paginate_alerts(alerts_summary, params.offset, params.limit);
 
-    Ok(web::Json(paginated_alerts))
+    Ok(paginated_alerts)
 }
 
 // POST /alerts
@@ -250,6 +261,18 @@ pub async fn post(
     Json(alert): Json<AlertRequest>,
 ) -> Result<impl Responder, AlertError> {
     let tenant_id = get_tenant_id_from_request(&req);
+    let session_key = extract_session_key_from_req(&req)?;
+    Ok(web::Json(
+        post_internal(alert, &session_key, &tenant_id).await?,
+    ))
+}
+
+/// Shared alert-creation implementation for HTTP handlers and in-process callers.
+pub async fn post_internal(
+    alert: AlertRequest,
+    session_key: &SessionKey,
+    tenant_id: &Option<String>,
+) -> Result<AlertConfigResponse, AlertError> {
     let mut alert: AlertConfig = alert.into(tenant_id.clone()).await?;
 
     if alert.notification_config.interval > alert.get_eval_frequency() {
@@ -303,14 +326,12 @@ pub async fn post(
 
     // validate the incoming alert query
     // does the user have access to these tables or not?
-    let session_key = extract_session_key_from_req(&req)?;
-
-    alert.validate(&session_key).await?;
+    alert.validate(session_key).await?;
 
     // update persistent storage first
     PARSEABLE
         .metastore
-        .put_alert(&alert.to_alert_config(), &tenant_id)
+        .put_alert(&alert.to_alert_config(), tenant_id)
         .await?;
 
     // create initial alert state entry (default to NotTriggered)
@@ -318,7 +339,7 @@ pub async fn post(
         AlertStateEntry::new(*alert.get_id(), AlertState::NotTriggered, tenant_id.clone());
     PARSEABLE
         .metastore
-        .put_alert_state(&state_entry as &dyn MetastoreObject, &tenant_id)
+        .put_alert_state(&state_entry as &dyn MetastoreObject, tenant_id)
         .await?;
 
     // update in memory
@@ -327,7 +348,7 @@ pub async fn post(
     // start the task
     alerts.start_task(alert.clone_box()).await?;
 
-    Ok(web::Json(alert.to_alert_config().to_response()))
+    Ok(alert.to_alert_config().to_response())
 }
 
 // GET /alerts/{alert_id}
@@ -335,6 +356,17 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    Ok(web::Json(
+        get_internal(&session_key, alert_id, &tenant_id).await?,
+    ))
+}
+
+/// Shared alert lookup implementation for HTTP handlers and in-process callers.
+pub async fn get_internal(
+    session_key: &SessionKey,
+    alert_id: Ulid,
+    tenant_id: &Option<String>,
+) -> Result<AlertConfigResponse, AlertError> {
     let guard = ALERTS.read().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -342,11 +374,11 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
 
-    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, tenant_id).await?;
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
+    user_auth_for_alert_config(session_key, &alert.to_alert_config()).await?;
 
-    Ok(web::Json(alert.to_alert_config().to_response()))
+    Ok(alert.to_alert_config().to_response())
 }
 
 // DELETE /alerts/{alert_id}
@@ -457,6 +489,17 @@ pub async fn disable_alert(
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    Ok(web::Json(
+        disable_alert_internal(&session_key, alert_id, &tenant_id).await?,
+    ))
+}
+
+/// Shared alert-disable implementation for HTTP handlers and in-process callers.
+pub async fn disable_alert_internal(
+    session_key: &SessionKey,
+    alert_id: Ulid,
+    tenant_id: &Option<String>,
+) -> Result<AlertConfigResponse, AlertError> {
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -465,16 +508,16 @@ pub async fn disable_alert(
     };
 
     // check if alert id exists in map
-    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, tenant_id).await?;
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
+    user_auth_for_alert_config(session_key, &alert.to_alert_config()).await?;
 
     alerts
-        .update_state(alert_id, AlertState::Disabled, Some("".into()), &tenant_id)
+        .update_state(alert_id, AlertState::Disabled, Some("".into()), tenant_id)
         .await?;
-    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, tenant_id).await?;
 
-    Ok(web::Json(alert.to_alert_config().to_response()))
+    Ok(alert.to_alert_config().to_response())
 }
 
 // PATCH /alerts/{alert_id}/enable
@@ -487,6 +530,17 @@ pub async fn enable_alert(
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    Ok(web::Json(
+        enable_alert_internal(&session_key, alert_id, &tenant_id).await?,
+    ))
+}
+
+/// Shared alert-enable implementation for HTTP handlers and in-process callers.
+pub async fn enable_alert_internal(
+    session_key: &SessionKey,
+    alert_id: Ulid,
+    tenant_id: &Option<String>,
+) -> Result<AlertConfigResponse, AlertError> {
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -495,7 +549,7 @@ pub async fn enable_alert(
     };
 
     // check if alert id exists in map
-    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, tenant_id).await?;
 
     // only run if alert is disabled
     if alert.get_state().ne(&AlertState::Disabled) {
@@ -505,19 +559,19 @@ pub async fn enable_alert(
     }
 
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
+    user_auth_for_alert_config(session_key, &alert.to_alert_config()).await?;
 
     alerts
         .update_state(
             alert_id,
             AlertState::NotTriggered,
             Some("".into()),
-            &tenant_id,
+            tenant_id,
         )
         .await?;
-    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, tenant_id).await?;
 
-    Ok(web::Json(alert.to_alert_config().to_response()))
+    Ok(alert.to_alert_config().to_response())
 }
 
 // PUT /alerts/{alert_id}
@@ -616,6 +670,17 @@ pub async fn evaluate_alert(
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    Ok(Json(
+        evaluate_alert_internal(&session_key, alert_id, &tenant_id).await?,
+    ))
+}
+
+/// Shared alert-evaluation implementation for HTTP handlers and in-process callers.
+pub async fn evaluate_alert_internal(
+    session_key: &SessionKey,
+    alert_id: Ulid,
+    tenant_id: &Option<String>,
+) -> Result<AlertConfigResponse, AlertError> {
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -623,9 +688,9 @@ pub async fn evaluate_alert(
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
 
-    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, tenant_id).await?;
 
-    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
+    user_auth_for_alert_config(session_key, &alert.to_alert_config()).await?;
 
     let config = alert.to_alert_config().to_response();
 
@@ -635,17 +700,21 @@ pub async fn evaluate_alert(
     // add the task back again so that it evaluates right now
     alerts.start_task(alert).await?;
 
-    Ok(Json(config))
+    Ok(config)
 }
 
 pub async fn list_tags(req: HttpRequest) -> Result<impl Responder, AlertError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    Ok(web::Json(list_tags_internal(&tenant_id).await?))
+}
+
+/// Shared alert-tag implementation for HTTP handlers and in-process callers.
+pub async fn list_tags_internal(tenant_id: &Option<String>) -> Result<Vec<String>, AlertError> {
     let guard = ALERTS.read().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
     } else {
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
-    let tenant_id = get_tenant_id_from_request(&req);
-    let tags = alerts.list_tags(&tenant_id).await;
-    Ok(web::Json(tags))
+    Ok(alerts.list_tags(tenant_id).await)
 }

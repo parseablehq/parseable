@@ -183,6 +183,27 @@ pub async fn list_traces(
     req: HttpRequest,
     Json(body): Json<TraceListRequest>,
 ) -> Result<HttpResponse, TraceError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let target = query_target(&req, &tenant_id)?;
+    let response = list_traces_with_target(body, &tenant_id, target).await?;
+    Ok(HttpResponse::Ok().json(response))
+}
+
+pub async fn list_traces_internal(
+    body: TraceListRequest,
+    tenant_id: &Option<String>,
+    session_key: &SessionKey,
+    query_auth: Option<HeaderMap>,
+) -> Result<Value, TraceError> {
+    let target = internal_query_target(session_key, query_auth)?;
+    list_traces_with_target(body, tenant_id, target).await
+}
+
+async fn list_traces_with_target(
+    body: TraceListRequest,
+    tenant_id: &Option<String>,
+    target: TraceQueryTarget,
+) -> Result<Value, TraceError> {
     let limit = body.limit.unwrap_or(DEFAULT_TRACE_LIMIT);
     if limit == 0 || limit > MAX_TRACE_LIMIT {
         return Err(TraceError::BadRequest(format!(
@@ -201,13 +222,12 @@ pub async fn list_traces(
         ));
     }
 
-    let tenant_id = get_tenant_id_from_request(&req);
-    create_streams_for_distributed(vec![body.dataset.clone()], &tenant_id)
+    create_streams_for_distributed(vec![body.dataset.clone()], tenant_id)
         .await
         .map_err(|error| TraceError::BadRequest(error.to_string()))?;
     let time_range = parse_time_range(&body.start_time, &body.end_time)?;
     let dataset_info =
-        validate_trace_dataset(&body.dataset, &tenant_id, TRACE_LIST_REQUIRED_FIELDS)?;
+        validate_trace_dataset(&body.dataset, tenant_id, TRACE_LIST_REQUIRED_FIELDS)?;
     let context = TraceSqlContext::new(
         &body.dataset,
         &dataset_info.time_column,
@@ -217,7 +237,6 @@ pub async fn list_traces(
     let conditions = build_conditions_filter(body.conditions.as_ref())?;
     let option = body.options.unwrap_or_default();
     let sort_by = body.sort_by.unwrap_or_default();
-    let target = query_target(&req, &tenant_id)?;
     let start_time = time_range.start.to_rfc3339();
     let end_time = time_range.end.to_rfc3339();
 
@@ -228,7 +247,7 @@ pub async fn list_traces(
             build_trace_list_sql(&context, &conditions, option, sort_by, offset, limit),
             &start_time,
             &end_time,
-            &tenant_id,
+            tenant_id,
         ),
         execute_trace_query(
             "traces/list/count",
@@ -236,7 +255,7 @@ pub async fn list_traces(
             build_trace_count_sql(&context, &conditions, option),
             &start_time,
             &end_time,
-            &tenant_id,
+            tenant_id,
         ),
     )?;
     let count = count_records
@@ -245,31 +264,51 @@ pub async fn list_traces(
         .and_then(json_u64)
         .unwrap_or(0);
 
-    Ok(HttpResponse::Ok().json(TraceListResponse {
+    Ok(serde_json::to_value(TraceListResponse {
         count,
         offset,
         limit,
         records,
-    }))
+    })
+    .expect("trace list response is serializable"))
 }
 
 pub async fn get_trace_detail(
     req: HttpRequest,
     Json(body): Json<TraceDetailRequest>,
 ) -> Result<HttpResponse, TraceError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let target = query_target(&req, &tenant_id)?;
+    let response = get_trace_detail_with_target(body, &tenant_id, target).await?;
+    Ok(HttpResponse::Ok().json(response))
+}
+
+pub async fn get_trace_detail_internal(
+    body: TraceDetailRequest,
+    tenant_id: &Option<String>,
+    session_key: &SessionKey,
+    query_auth: Option<HeaderMap>,
+) -> Result<Value, TraceError> {
+    let target = internal_query_target(session_key, query_auth)?;
+    get_trace_detail_with_target(body, tenant_id, target).await
+}
+
+async fn get_trace_detail_with_target(
+    body: TraceDetailRequest,
+    tenant_id: &Option<String>,
+    target: TraceQueryTarget,
+) -> Result<Value, TraceError> {
     let trace_id = body.trace_id.trim();
     if trace_id.is_empty() {
         return Err(TraceError::BadRequest("traceId is required".to_string()));
     }
 
-    let tenant_id = get_tenant_id_from_request(&req);
-    create_streams_for_distributed(vec![body.dataset.clone()], &tenant_id)
+    create_streams_for_distributed(vec![body.dataset.clone()], tenant_id)
         .await
         .map_err(|error| TraceError::BadRequest(error.to_string()))?;
     let discovery_range = parse_time_range(&body.start_time, &body.end_time)?;
     let dataset_info =
-        validate_trace_dataset(&body.dataset, &tenant_id, TRACE_DETAIL_REQUIRED_FIELDS)?;
-    let target = query_target(&req, &tenant_id)?;
+        validate_trace_dataset(&body.dataset, tenant_id, TRACE_DETAIL_REQUIRED_FIELDS)?;
 
     let bounds = execute_trace_query(
         "traces/detail/bounds",
@@ -277,7 +316,7 @@ pub async fn get_trace_detail(
         build_trace_bounds_sql(&body.dataset, trace_id, &dataset_info.time_column),
         &discovery_range.start.to_rfc3339(),
         &discovery_range.end.to_rfc3339(),
-        &tenant_id,
+        tenant_id,
     )
     .await?;
     let bounds = bounds.first().ok_or_else(|| {
@@ -313,15 +352,16 @@ pub async fn get_trace_detail(
         ),
         &start_time.to_rfc3339(),
         &(end_time + Duration::minutes(1)).to_rfc3339(),
-        &tenant_id,
+        tenant_id,
     )
     .await?;
 
-    Ok(HttpResponse::Ok().json(TraceDetailResponse {
+    Ok(serde_json::to_value(TraceDetailResponse {
         start_time: start_time.to_rfc3339(),
         end_time: end_time.to_rfc3339(),
         records,
-    }))
+    })
+    .expect("trace detail response is serializable"))
 }
 
 fn parse_time_range(start_time: &str, end_time: &str) -> Result<TimeRange, TraceError> {
@@ -657,6 +697,21 @@ fn query_target(
         Mode::Prism => Ok(TraceQueryTarget::Remote(build_auth_headers(
             req, tenant_id,
         )?)),
+        mode => Err(TraceError::BadRequest(format!(
+            "Trace queries are not available in {mode:?} mode"
+        ))),
+    }
+}
+
+fn internal_query_target(
+    session_key: &SessionKey,
+    query_auth: Option<HeaderMap>,
+) -> Result<TraceQueryTarget, TraceError> {
+    match PARSEABLE.options.mode {
+        Mode::All | Mode::Query => Ok(TraceQueryTarget::Local(session_key.clone())),
+        Mode::Prism => query_auth.map(TraceQueryTarget::Remote).ok_or_else(|| {
+            TraceError::Internal("Missing query-node authentication headers".to_string())
+        }),
         mode => Err(TraceError::BadRequest(format!(
             "Trace queries are not available in {mode:?} mode"
         ))),

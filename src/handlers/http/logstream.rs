@@ -177,23 +177,26 @@ pub async fn get_schema(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let schema = get_schema_internal(&stream_name, &tenant_id).await?;
+    Ok((web::Json(schema), StatusCode::OK))
+}
+
+/// Shared schema implementation for HTTP handlers and in-process callers.
+pub async fn get_schema_internal(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<Arc<arrow_schema::Schema>, StreamError> {
     // Ensure parseable is aware of stream in distributed mode
-    if !PARSEABLE
-        .check_or_load_stream(&stream_name, &tenant_id)
-        .await
-    {
-        return Err(StreamNotFound(stream_name.clone()).into());
+    if !PARSEABLE.check_or_load_stream(stream_name, tenant_id).await {
+        return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
-    let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+    let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
     if stream.is_deleting() {
-        return Err(StreamNotFound(stream_name.clone()).into());
+        return Err(StreamNotFound(stream_name.to_owned()).into());
     }
-    match update_schema_when_distributed(&vec![stream_name.clone()], &tenant_id).await {
-        Ok(_) => {
-            let schema = stream.get_schema();
-            Ok((web::Json(schema), StatusCode::OK))
-        }
+    match update_schema_when_distributed(&vec![stream_name.to_owned()], tenant_id).await {
+        Ok(_) => Ok(stream.get_schema()),
         Err(err) => Err(StreamError::Custom {
             msg: err.to_string(),
             status: StatusCode::EXPECTATION_FAILED,
@@ -222,21 +225,26 @@ pub async fn get_retention(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let retention = get_retention_internal(&stream_name, &tenant_id).await?;
+    Ok((web::Json(retention), StatusCode::OK))
+}
+
+/// Shared retention implementation for HTTP handlers and in-process callers.
+pub async fn get_retention_internal(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<Retention, StreamError> {
     // For query mode, if the stream not found in memory map,
     // check if it exists in the storage
     // create stream and schema from storage
-    if !PARSEABLE
-        .check_or_load_stream(&stream_name, &tenant_id)
-        .await
-    {
-        return Err(StreamNotFound(stream_name.clone()).into());
+    if !PARSEABLE.check_or_load_stream(stream_name, tenant_id).await {
+        return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
-    let retention = PARSEABLE
-        .get_stream(&stream_name, &tenant_id)?
+    Ok(PARSEABLE
+        .get_stream(stream_name, tenant_id)?
         .get_retention()
-        .unwrap_or_default();
-    Ok((web::Json(retention), StatusCode::OK))
+        .unwrap_or_default())
 }
 
 pub async fn put_retention(
