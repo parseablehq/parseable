@@ -1,3 +1,8 @@
+#![allow(clippy::double_must_use)]
+// `async_trait` currently expands async trait methods with a redundant
+// `must_use` marker under Rust 1.99. Keep the compatibility allowance scoped
+// to this lint until the upstream macro/compiler combination stops emitting it.
+
 /*
  * Parseable Server (C) 2022 - 2025 Parseable, Inc.
  *
