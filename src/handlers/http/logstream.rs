@@ -527,24 +527,27 @@ pub async fn get_stream_hot_tier(
     tracing::Span::current()
         .record("stream", tracing::field::display(&stream_name))
         .record("tenant", tracing::field::debug(&tenant_id));
-    // For query mode, if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
-    if !PARSEABLE
-        .check_or_load_stream(&stream_name, &tenant_id)
-        .await
-    {
-        return Err(StreamNotFound(stream_name.clone()).into());
+    let meta = get_stream_hot_tier_internal(&stream_name, &tenant_id).await?;
+
+    Ok((web::Json(meta), StatusCode::OK))
+}
+
+pub async fn get_stream_hot_tier_internal(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<StreamHotTier, StreamError> {
+    // For query mode, if the stream is not in memory, load it from storage.
+    if !PARSEABLE.check_or_load_stream(stream_name, tenant_id).await {
+        return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
     let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() else {
-        return Err(StreamError::HotTierNotEnabled(stream_name));
+        return Err(StreamError::HotTierNotEnabled(stream_name.to_owned()));
     };
-    let meta = hot_tier_manager
-        .get_hot_tier(&stream_name, &tenant_id)
-        .await?;
-
-    Ok((web::Json(meta), StatusCode::OK))
+    hot_tier_manager
+        .get_hot_tier(stream_name, tenant_id)
+        .await
+        .map_err(Into::into)
 }
 
 #[tracing::instrument(

@@ -20,10 +20,12 @@ use crate::{
     handlers::http::rbac::RBACError,
     metastore::MetastoreError,
     parseable::PARSEABLE,
+    rbac::{Users, map::SessionKey},
     storage::{ObjectStorageError, StreamType},
     users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
     utils::{
         actix::extract_session_key_from_req, get_hash, get_user_and_tenant_from_request, is_admin,
+        is_admin_for_session,
     },
     validator,
 };
@@ -39,27 +41,41 @@ use ulid::Ulid;
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     let key =
         extract_session_key_from_req(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
-    let filters = FILTERS.list_filters(&key).await;
+    let filters = list_internal(&key).await;
     Ok((web::Json(filters), StatusCode::OK))
+}
+
+pub async fn list_internal(key: &SessionKey) -> Vec<Filter> {
+    FILTERS.list_filters(key).await
 }
 
 pub async fn get(
     req: HttpRequest,
     filter_id: Path<String>,
 ) -> Result<impl Responder, FiltersError> {
-    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
+    let key =
+        extract_session_key_from_req(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
+    let (_, tenant_id) = get_user_and_tenant_from_request(&req)?;
     let filter_id = filter_id.into_inner();
-    let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
-    if let Some(filter) = FILTERS
-        .get_filter(&filter_id, &get_hash(&user_id), is_admin, &tenant_id)
-        .await
-    {
-        return Ok((web::Json(filter), StatusCode::OK));
-    }
+    let filter = get_internal(&filter_id, &key, &tenant_id).await?;
+    Ok((web::Json(filter), StatusCode::OK))
+}
 
-    Err(FiltersError::Metadata(
-        "Filter does not exist or user is not authorized",
-    ))
+pub async fn get_internal(
+    filter_id: &str,
+    key: &SessionKey,
+    tenant_id: &Option<String>,
+) -> Result<Filter, FiltersError> {
+    let user_id = Users
+        .get_userid_from_session(key)
+        .map(|(user_id, _)| get_hash(&user_id))
+        .ok_or_else(|| FiltersError::Custom("unknown user session".to_owned()))?;
+    FILTERS
+        .get_filter(filter_id, &user_id, is_admin_for_session(key), tenant_id)
+        .await
+        .ok_or(FiltersError::Metadata(
+            "Filter does not exist or user is not authorized",
+        ))
 }
 
 pub async fn post(
