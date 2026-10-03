@@ -72,6 +72,12 @@ struct CgroupCpuMetrics {
 }
 
 #[cfg(target_os = "linux")]
+enum CgroupV2CpuMetrics {
+    Complete(CgroupCpuMetrics),
+    RootUsage(u64),
+}
+
+#[cfg(target_os = "linux")]
 static CGROUP_CPU_USAGE_SAMPLE: LazyLock<Mutex<Option<CgroupCpuUsageSample>>> =
     LazyLock::new(|| Mutex::new(None));
 
@@ -112,18 +118,25 @@ fn cpu_usage_micros_from_stat(cpu_stat: &str) -> Result<u64, ()> {
 }
 
 #[cfg(target_os = "linux")]
-fn read_cgroup_v2_cpu_metrics(directory: &Path) -> Result<CgroupCpuMetrics, ()> {
-    let cpu_max =
-        std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).map_err(|_| ())?;
-    let mut values = cpu_max.split_whitespace();
-    let limit_cores = cpu_quota_cores(values.next().ok_or(())?, values.next().ok_or(())?)?;
+fn read_cgroup_v2_cpu_metrics(directory: &Path) -> Result<CgroupV2CpuMetrics, ()> {
     let cpu_stat =
         std::fs::read_to_string(directory.join(CGROUP_V2_CPU_STAT_FILE)).map_err(|_| ())?;
+    let usage_micros = cpu_usage_micros_from_stat(&cpu_stat)?;
 
-    Ok(CgroupCpuMetrics {
+    let cpu_max = match std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)) {
+        Ok(cpu_max) => cpu_max,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CgroupV2CpuMetrics::RootUsage(usage_micros));
+        }
+        Err(_) => return Err(()),
+    };
+    let mut values = cpu_max.split_whitespace();
+    let limit_cores = cpu_quota_cores(values.next().ok_or(())?, values.next().ok_or(())?)?;
+
+    Ok(CgroupV2CpuMetrics::Complete(CgroupCpuMetrics {
         limit_cores,
-        usage_micros: cpu_usage_micros_from_stat(&cpu_stat)?,
-    })
+        usage_micros,
+    }))
 }
 
 #[cfg(target_os = "linux")]
@@ -152,52 +165,70 @@ fn cgroup_cpu_metrics() -> Result<CgroupCpuMetrics, ()> {
     let process = procfs::process::Process::myself().map_err(|_| ())?;
     let cgroups = process.cgroups().map_err(|_| ())?.0;
     let mounts = process.mountinfo().map_err(|_| ())?.0;
+    let mut v2_root_usage = None;
 
     if let (Some(cgroup), Some(mount)) = (
         cgroups.iter().find(|group| group.hierarchy == 0),
         mounts.iter().find(|mount| mount.fs_type == "cgroup2"),
-    ) {
-        if let Some(directory) = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point)
-            && let Ok(metrics) = read_cgroup_v2_cpu_metrics(&directory)
-        {
-            return Ok(metrics);
+    ) && let Some(directory) =
+        cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point)
+    {
+        match read_cgroup_v2_cpu_metrics(&directory) {
+            Ok(CgroupV2CpuMetrics::Complete(metrics)) => return Ok(metrics),
+            Ok(CgroupV2CpuMetrics::RootUsage(usage_micros)) => {
+                v2_root_usage = Some(usage_micros);
+            }
+            Err(()) => {}
         }
     }
 
-    let limit_cgroup = cgroups
-        .iter()
-        .find(|group| group.controllers.iter().any(|item| item == "cpu"))
+    let v1_metrics = (|| {
+        let limit_cgroup = cgroups
+            .iter()
+            .find(|group| group.controllers.iter().any(|item| item == "cpu"))
+            .ok_or(())?;
+        let usage_cgroup = cgroups
+            .iter()
+            .find(|group| group.controllers.iter().any(|item| item == "cpuacct"))
+            .ok_or(())?;
+        if limit_cgroup.pathname != usage_cgroup.pathname {
+            return Err(());
+        }
+
+        let limit_mount = mounts
+            .iter()
+            .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpu"))
+            .ok_or(())?;
+        let usage_mount = mounts
+            .iter()
+            .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpuacct"))
+            .ok_or(())?;
+        let limit_directory = cgroup_directory(
+            &limit_cgroup.pathname,
+            &limit_mount.root,
+            &limit_mount.mount_point,
+        )
         .ok_or(())?;
-    let usage_cgroup = cgroups
-        .iter()
-        .find(|group| group.controllers.iter().any(|item| item == "cpuacct"))
+        let usage_directory = cgroup_directory(
+            &usage_cgroup.pathname,
+            &usage_mount.root,
+            &usage_mount.mount_point,
+        )
         .ok_or(())?;
-    if limit_cgroup.pathname != usage_cgroup.pathname {
-        return Err(());
+
+        read_cgroup_v1_cpu_metrics(&limit_directory, &usage_directory)
+    })();
+
+    if let Ok(metrics) = v1_metrics {
+        return Ok(metrics);
     }
 
-    let limit_mount = mounts
-        .iter()
-        .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpu"))
-        .ok_or(())?;
-    let usage_mount = mounts
-        .iter()
-        .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpuacct"))
-        .ok_or(())?;
-    let limit_directory = cgroup_directory(
-        &limit_cgroup.pathname,
-        &limit_mount.root,
-        &limit_mount.mount_point,
-    )
-    .ok_or(())?;
-    let usage_directory = cgroup_directory(
-        &usage_cgroup.pathname,
-        &usage_mount.root,
-        &usage_mount.mount_point,
-    )
-    .ok_or(())?;
-
-    read_cgroup_v1_cpu_metrics(&limit_directory, &usage_directory)
+    v2_root_usage
+        .map(|usage_micros| CgroupCpuMetrics {
+            limit_cores: None,
+            usage_micros,
+        })
+        .ok_or(())
 }
 
 #[cfg(target_os = "linux")]
