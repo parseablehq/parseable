@@ -174,60 +174,78 @@ pub async fn get_stats(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+        .map_err(|_| StreamError::InvalidQueryParameter(STATS_DATE_QUERY_PARAM.to_string()))?;
+    let date = if query_map.is_empty() {
+        None
+    } else {
+        Some(
+            query_map
+                .get(STATS_DATE_QUERY_PARAM)
+                .ok_or_else(|| {
+                    StreamError::InvalidQueryParameter(STATS_DATE_QUERY_PARAM.to_string())
+                })?
+                .as_str(),
+        )
+    };
+    Ok(web::Json(
+        get_stats_internal(&stream_name, &tenant_id, date).await?,
+    ))
+}
+
+/// Shared statistics implementation for HTTP handlers and in-process callers.
+pub async fn get_stats_internal(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+    date: Option<&str>,
+) -> Result<serde_json::Value, StreamError> {
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !PARSEABLE.streams.contains(&stream_name, &tenant_id)
+    if !PARSEABLE.streams.contains(stream_name, tenant_id)
         && !PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name, &tenant_id)
+            .create_stream_and_schema_from_storage(stream_name, tenant_id)
             .await
             .unwrap_or(false)
     {
-        return Err(StreamNotFound(stream_name.clone()).into());
+        return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
-    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
-        .map_err(|_| StreamError::InvalidQueryParameter(STATS_DATE_QUERY_PARAM.to_string()))?;
+    if let Some(date_value) = date
+        && !date_value.is_empty()
+    {
+        let obs = PARSEABLE
+            .metastore
+            .get_all_stream_jsons(stream_name, None, tenant_id, false)
+            .await?;
 
-    if !query_map.is_empty() {
-        let date_value = query_map.get(STATS_DATE_QUERY_PARAM).ok_or_else(|| {
-            StreamError::InvalidQueryParameter(STATS_DATE_QUERY_PARAM.to_string())
-        })?;
-
-        if !date_value.is_empty() {
-            let obs = PARSEABLE
-                .metastore
-                .get_all_stream_jsons(&stream_name, None, &tenant_id, false)
-                .await?;
-
-            let mut stream_jsons = Vec::new();
-            for ob in obs {
-                let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        error!("Failed to parse stream metadata: {:?}", e);
-                        continue;
-                    }
-                };
-                stream_jsons.push(stream_metadata);
-            }
-
-            let stats = fetch_daily_stats(date_value, &stream_jsons)?;
-
-            let stats = serde_json::to_value(stats)?;
-
-            return Ok(web::Json(stats));
+        let mut stream_jsons = Vec::new();
+        for ob in obs {
+            let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {
+                Ok(d) => d,
+                Err(e) => {
+                    error!("Failed to parse stream metadata: {:?}", e);
+                    continue;
+                }
+            };
+            stream_jsons.push(stream_metadata);
         }
+
+        let stats = fetch_daily_stats(date_value, &stream_jsons)?;
+
+        let stats = serde_json::to_value(stats)?;
+
+        return Ok(stats);
     }
 
-    let stats = stats::get_current_stats(&stream_name, "json", &tenant_id)
-        .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
+    let stats = stats::get_current_stats(stream_name, "json", tenant_id)
+        .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?;
 
     let ingestor_stats = if PARSEABLE
-        .get_stream(&stream_name, &tenant_id)
+        .get_stream(stream_name, tenant_id)
         .is_ok_and(|stream| stream.get_stream_type() == StreamType::UserDefined)
     {
-        Some(fetch_stats_from_ingestors(&stream_name, &tenant_id).await?)
+        Some(fetch_stats_from_ingestors(stream_name, tenant_id).await?)
     } else {
         None
     };
@@ -251,7 +269,7 @@ pub async fn get_stats(
             "parquet",
         );
 
-        QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
+        QueriedStats::new(stream_name, time, ingestion_stats, storage_stats)
     };
 
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
@@ -264,5 +282,5 @@ pub async fn get_stats(
 
     let stats = serde_json::to_value(stats)?;
 
-    Ok(web::Json(stats))
+    Ok(stats)
 }

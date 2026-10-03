@@ -155,14 +155,23 @@ pub async fn get_records_and_fields_for_authorized_query(
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let creds = extract_session_key_from_req(&req)?;
+    query_internal(query_request, &creds, &tenant_id).await
+}
+
+/// Shared query implementation for HTTP handlers and in-process callers.
+pub async fn query_internal(
+    query_request: Query,
+    creds: &SessionKey,
+    tenant_id: &Option<String>,
+) -> Result<HttpResponse, QueryError> {
     let mut session_state = QUERY_SESSION.get_ctx().state();
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
     // check or load streams in memory
-    create_streams_for_distributed(tables.clone(), &get_tenant_id_from_request(&req)).await?;
-
-    let tenant_id = get_tenant_id_from_request(&req);
+    create_streams_for_distributed(tables.clone(), tenant_id).await?;
     session_state
         .config_mut()
         .options_mut()
@@ -170,10 +179,9 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .default_schema = tenant_id.as_deref().unwrap_or("public").to_owned();
 
     let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
-    let creds = extract_session_key_from_req(&req)?;
-    let permissions = Users.get_permissions(&creds);
+    let permissions = Users.get_permissions(creds);
 
-    user_auth_for_datasets(&permissions, &tables, &tenant_id).await?;
+    user_auth_for_datasets(&permissions, &tables, tenant_id).await?;
     let time = Instant::now();
 
     // Track billing metrics for query calls
@@ -190,18 +198,18 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         let table = tables
             .first()
             .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
-        return handle_count_query(&query_request, table, column_name, time, &tenant_id).await;
+        return handle_count_query(&query_request, table, column_name, time, tenant_id).await;
     }
 
     // if the query request has streaming = false (default)
     // we use datafusion's `execute` method to get the records
     if !query_request.streaming {
-        return handle_non_streaming_query(query, tables, &query_request, time, &tenant_id).await;
+        return handle_non_streaming_query(query, tables, &query_request, time, tenant_id).await;
     }
 
     // if the query request has streaming = true
     // we use datafusion's `execute_stream` method to get the records
-    handle_streaming_query(query, tables, &query_request, time, &tenant_id).await
+    handle_streaming_query(query, tables, &query_request, time, tenant_id).await
 }
 
 /// Handles count queries (e.g., `SELECT COUNT(*) FROM <dataset-name>`)
