@@ -243,6 +243,17 @@ pub static PROCESS_CPU_USAGE_PERCENT_AVG: Lazy<Gauge> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static PROCESS_CPU_USAGE_CORES: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_cpu_usage_cores",
+            "CPU cores used by the Parseable cgroup, or zero when cgroup usage is unavailable",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
 pub static PROCESS_CPU_LIMIT_CORES: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
@@ -325,6 +336,10 @@ impl ProcessMetricsAccumulator {
 
 pub static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
     Lazy::new(ProcessMetricsAccumulator::default);
+
+pub fn record_process_cpu_usage_cores(cpu_usage_cores: f64) {
+    PROCESS_CPU_USAGE_CORES.set(cpu_usage_cores);
+}
 
 pub fn record_process_metrics_sample(
     cpu_usage_percent: f64,
@@ -903,6 +918,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_CPU_USAGE_CORES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_CPU_LIMIT_CORES.clone()))
