@@ -66,6 +66,12 @@ struct CgroupCpuUsageSample {
 }
 
 #[cfg(target_os = "linux")]
+struct CgroupCpuMetrics {
+    limit_cores: Option<f64>,
+    usage_micros: u64,
+}
+
+#[cfg(target_os = "linux")]
 static CGROUP_CPU_USAGE_SAMPLE: LazyLock<Mutex<Option<CgroupCpuUsageSample>>> =
     LazyLock::new(|| Mutex::new(None));
 
@@ -95,45 +101,6 @@ fn cgroup_directory(pathname: &str, root: &str, mount_point: &Path) -> Option<Pa
 }
 
 #[cfg(target_os = "linux")]
-fn cgroup_cpu_limit_cores() -> Result<Option<f64>, ()> {
-    let process = procfs::process::Process::myself().map_err(|_| ())?;
-    let cgroups = process.cgroups().map_err(|_| ())?.0;
-    let mounts = process.mountinfo().map_err(|_| ())?.0;
-
-    if let (Some(cgroup), Some(mount)) = (
-        cgroups.iter().find(|group| group.hierarchy == 0),
-        mounts.iter().find(|mount| mount.fs_type == "cgroup2"),
-    ) {
-        let v2_limit = (|| {
-            let directory =
-                cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
-            let cpu_max =
-                std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).map_err(|_| ())?;
-            let mut values = cpu_max.split_whitespace();
-            cpu_quota_cores(values.next().ok_or(())?, values.next().ok_or(())?)
-        })();
-        if let Ok(limit) = v2_limit {
-            return Ok(limit);
-        }
-    }
-
-    let cgroup = cgroups
-        .iter()
-        .find(|group| group.controllers.iter().any(|item| item == "cpu"))
-        .ok_or(())?;
-    let mount = mounts
-        .iter()
-        .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpu"))
-        .ok_or(())?;
-    let directory = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
-    let quota =
-        std::fs::read_to_string(directory.join(CGROUP_V1_CPU_QUOTA_FILE)).map_err(|_| ())?;
-    let period =
-        std::fs::read_to_string(directory.join(CGROUP_V1_CPU_PERIOD_FILE)).map_err(|_| ())?;
-    cpu_quota_cores(&quota, &period)
-}
-
-#[cfg(target_os = "linux")]
 fn cpu_usage_micros_from_stat(cpu_stat: &str) -> Result<u64, ()> {
     for line in cpu_stat.lines() {
         let mut fields = line.split_whitespace();
@@ -145,7 +112,43 @@ fn cpu_usage_micros_from_stat(cpu_stat: &str) -> Result<u64, ()> {
 }
 
 #[cfg(target_os = "linux")]
-fn cgroup_cpu_usage_micros() -> Result<u64, ()> {
+fn read_cgroup_v2_cpu_metrics(directory: &Path) -> Result<CgroupCpuMetrics, ()> {
+    let cpu_max =
+        std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).map_err(|_| ())?;
+    let mut values = cpu_max.split_whitespace();
+    let limit_cores = cpu_quota_cores(values.next().ok_or(())?, values.next().ok_or(())?)?;
+    let cpu_stat =
+        std::fs::read_to_string(directory.join(CGROUP_V2_CPU_STAT_FILE)).map_err(|_| ())?;
+
+    Ok(CgroupCpuMetrics {
+        limit_cores,
+        usage_micros: cpu_usage_micros_from_stat(&cpu_stat)?,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn read_cgroup_v1_cpu_metrics(
+    limit_directory: &Path,
+    usage_directory: &Path,
+) -> Result<CgroupCpuMetrics, ()> {
+    let quota =
+        std::fs::read_to_string(limit_directory.join(CGROUP_V1_CPU_QUOTA_FILE)).map_err(|_| ())?;
+    let period =
+        std::fs::read_to_string(limit_directory.join(CGROUP_V1_CPU_PERIOD_FILE)).map_err(|_| ())?;
+    let usage_nanos = std::fs::read_to_string(usage_directory.join(CGROUP_V1_CPU_USAGE_FILE))
+        .map_err(|_| ())?
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| ())?;
+
+    Ok(CgroupCpuMetrics {
+        limit_cores: cpu_quota_cores(&quota, &period)?,
+        usage_micros: usage_nanos / 1_000,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_cpu_metrics() -> Result<CgroupCpuMetrics, ()> {
     let process = procfs::process::Process::myself().map_err(|_| ())?;
     let cgroups = process.cgroups().map_err(|_| ())?.0;
     let mounts = process.mountinfo().map_err(|_| ())?.0;
@@ -154,33 +157,47 @@ fn cgroup_cpu_usage_micros() -> Result<u64, ()> {
         cgroups.iter().find(|group| group.hierarchy == 0),
         mounts.iter().find(|mount| mount.fs_type == "cgroup2"),
     ) {
-        let v2_usage = (|| {
-            let directory =
-                cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
-            let cpu_stat =
-                std::fs::read_to_string(directory.join(CGROUP_V2_CPU_STAT_FILE)).map_err(|_| ())?;
-            cpu_usage_micros_from_stat(&cpu_stat)
-        })();
-        if let Ok(usage_micros) = v2_usage {
-            return Ok(usage_micros);
+        if let Some(directory) = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point)
+            && let Ok(metrics) = read_cgroup_v2_cpu_metrics(&directory)
+        {
+            return Ok(metrics);
         }
     }
 
-    let cgroup = cgroups
+    let limit_cgroup = cgroups
+        .iter()
+        .find(|group| group.controllers.iter().any(|item| item == "cpu"))
+        .ok_or(())?;
+    let usage_cgroup = cgroups
         .iter()
         .find(|group| group.controllers.iter().any(|item| item == "cpuacct"))
         .ok_or(())?;
-    let mount = mounts
+    if limit_cgroup.pathname != usage_cgroup.pathname {
+        return Err(());
+    }
+
+    let limit_mount = mounts
+        .iter()
+        .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpu"))
+        .ok_or(())?;
+    let usage_mount = mounts
         .iter()
         .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpuacct"))
         .ok_or(())?;
-    let directory = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
-    let usage_nanos = std::fs::read_to_string(directory.join(CGROUP_V1_CPU_USAGE_FILE))
-        .map_err(|_| ())?
-        .trim()
-        .parse::<u64>()
-        .map_err(|_| ())?;
-    Ok(usage_nanos / 1_000)
+    let limit_directory = cgroup_directory(
+        &limit_cgroup.pathname,
+        &limit_mount.root,
+        &limit_mount.mount_point,
+    )
+    .ok_or(())?;
+    let usage_directory = cgroup_directory(
+        &usage_cgroup.pathname,
+        &usage_mount.root,
+        &usage_mount.mount_point,
+    )
+    .ok_or(())?;
+
+    read_cgroup_v1_cpu_metrics(&limit_directory, &usage_directory)
 }
 
 #[cfg(target_os = "linux")]
@@ -194,9 +211,9 @@ fn cpu_usage_cores_between(
 }
 
 #[cfg(target_os = "linux")]
-fn cgroup_cpu_usage_cores() -> Result<Option<f64>, ()> {
+fn cgroup_cpu_usage_cores(current_usage_micros: u64) -> Result<Option<f64>, ()> {
     let current = CgroupCpuUsageSample {
-        usage_micros: cgroup_cpu_usage_micros()?,
+        usage_micros: current_usage_micros,
         sampled_at: Instant::now(),
     };
     let mut previous = CGROUP_CPU_USAGE_SAMPLE.lock().map_err(|_| ())?;
@@ -214,28 +231,43 @@ fn cgroup_cpu_usage_cores() -> Result<Option<f64>, ()> {
     Ok(usage_cores)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn cgroup_cpu_limit_cores() -> Result<Option<f64>, ()> {
-    Err(())
-}
-
 pub fn cpu_limit_cores() -> f64 {
-    match cgroup_cpu_limit_cores() {
-        Ok(Some(limit)) => limit,
-        Ok(None) => num_cpus::get() as f64,
-        Err(()) => 0.0,
-    }
-}
-
-fn cpu_usage_cores() -> f64 {
     #[cfg(target_os = "linux")]
     {
-        cgroup_cpu_usage_cores().ok().flatten().unwrap_or_default()
+        match cgroup_cpu_metrics() {
+            Ok(metrics) => metrics
+                .limit_cores
+                .unwrap_or_else(|| num_cpus::get() as f64),
+            Err(()) => 0.0,
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
     {
         0.0
+    }
+}
+
+fn cpu_metrics() -> (f64, f64) {
+    #[cfg(target_os = "linux")]
+    {
+        match cgroup_cpu_metrics() {
+            Ok(metrics) => (
+                metrics
+                    .limit_cores
+                    .unwrap_or_else(|| num_cpus::get() as f64),
+                cgroup_cpu_usage_cores(metrics.usage_micros)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+            ),
+            Err(()) => (0.0, 0.0),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        (0.0, 0.0)
     }
 }
 
@@ -256,12 +288,13 @@ async fn sample_process_metrics() {
         };
 
         process_metrics.map(|(cpu_usage, memory_bytes, total_mem)| {
+            let (cpu_limit_cores, cpu_usage_cores) = cpu_metrics();
             (
                 cpu_usage,
                 memory_bytes,
                 total_mem,
-                cpu_limit_cores(),
-                cpu_usage_cores(),
+                cpu_limit_cores,
+                cpu_usage_cores,
             )
         })
     })
