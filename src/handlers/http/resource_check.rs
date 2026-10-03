@@ -104,12 +104,17 @@ fn cgroup_cpu_limit_cores() -> Result<Option<f64>, ()> {
         cgroups.iter().find(|group| group.hierarchy == 0),
         mounts.iter().find(|mount| mount.fs_type == "cgroup2"),
     ) {
-        let directory =
-            cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
-        let cpu_max =
-            std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).map_err(|_| ())?;
-        let mut values = cpu_max.split_whitespace();
-        return cpu_quota_cores(values.next().ok_or(())?, values.next().ok_or(())?);
+        let v2_limit = (|| {
+            let directory =
+                cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
+            let cpu_max =
+                std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).map_err(|_| ())?;
+            let mut values = cpu_max.split_whitespace();
+            cpu_quota_cores(values.next().ok_or(())?, values.next().ok_or(())?)
+        })();
+        if let Ok(limit) = v2_limit {
+            return Ok(limit);
+        }
     }
 
     let cgroup = cgroups
@@ -149,11 +154,16 @@ fn cgroup_cpu_usage_micros() -> Result<u64, ()> {
         cgroups.iter().find(|group| group.hierarchy == 0),
         mounts.iter().find(|mount| mount.fs_type == "cgroup2"),
     ) {
-        let directory =
-            cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
-        let cpu_stat =
-            std::fs::read_to_string(directory.join(CGROUP_V2_CPU_STAT_FILE)).map_err(|_| ())?;
-        return cpu_usage_micros_from_stat(&cpu_stat);
+        let v2_usage = (|| {
+            let directory =
+                cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
+            let cpu_stat =
+                std::fs::read_to_string(directory.join(CGROUP_V2_CPU_STAT_FILE)).map_err(|_| ())?;
+            cpu_usage_micros_from_stat(&cpu_stat)
+        })();
+        if let Ok(usage_micros) = v2_usage {
+            return Ok(usage_micros);
+        }
     }
 
     let cgroup = cgroups
