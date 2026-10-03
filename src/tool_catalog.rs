@@ -250,6 +250,15 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
             empty_schema(),
         ),
         ToolSpec::new(
+            "get_user",
+            "Get user",
+            "Get one user's profile, direct roles, group roles, and group membership.",
+            object_schema(
+                json!({ "userid": string_property("Exact user ID.") }),
+                &["userid"],
+            ),
+        ),
+        ToolSpec::new(
             "get_user_roles",
             "Get user roles",
             "Get roles assigned to a user.",
@@ -294,6 +303,33 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
             "Get the retention policy for a dataset.",
             dataset_schema(),
         ),
+        ToolSpec::new(
+            "get_hot_tier_config",
+            "Get hot-tier configuration",
+            "Get hot-tier configuration and utilization for a dataset.",
+            dataset_schema(),
+        ),
+        ToolSpec::new(
+            "list_filters",
+            "List saved filters",
+            "List saved filters visible to the caller.",
+            empty_schema(),
+        ),
+        ToolSpec::new(
+            "get_filter",
+            "Get saved filter",
+            "Get one saved filter by ID when visible to the caller.",
+            object_schema(
+                json!({ "id": string_property("Saved-filter ID.") }),
+                &["id"],
+            ),
+        ),
+        ToolSpec::new(
+            "list_dashboard_tags",
+            "List dashboard tags",
+            "List unique dashboard tags in the caller's tenant.",
+            empty_schema(),
+        ),
     ]
 }
 
@@ -332,7 +368,7 @@ mod tests {
         let tools = oss_tool_specs();
         let names = tools.iter().map(|tool| tool.name).collect::<HashSet<_>>();
 
-        assert_eq!(tools.len(), 28);
+        assert_eq!(tools.len(), 33);
         assert_eq!(tools.len(), names.len());
     }
 
@@ -346,7 +382,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response["tools"].as_array().unwrap().len(), 28);
+        assert_eq!(response["tools"].as_array().unwrap().len(), 33);
         assert_eq!(response["tools"][0]["name"], "list_datasets");
         assert_eq!(response["tools"][0]["inputSchema"]["type"], "object");
     }

@@ -259,10 +259,12 @@ pub async fn add_tile(
 }
 
 pub async fn list_tags(req: HttpRequest) -> Result<impl Responder, DashboardError> {
-    let tags = DASHBOARDS
-        .list_tags(&get_tenant_id_from_request(&req))
-        .await;
+    let tags = list_tags_internal(&get_tenant_id_from_request(&req)).await;
     Ok((web::Json(tags), StatusCode::OK))
+}
+
+pub async fn list_tags_internal(tenant_id: &Option<String>) -> Vec<String> {
+    DASHBOARDS.list_tags(tenant_id).await
 }
 
 #[derive(Debug, thiserror::Error)]

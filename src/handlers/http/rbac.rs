@@ -110,15 +110,21 @@ pub async fn get_prism_user(
 ) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    Ok(web::Json(get_user_internal(&userid, &tenant_id)?))
+}
+
+/// Shared user lookup implementation for HTTP handlers and in-process callers.
+pub fn get_user_internal(
+    userid: &str,
+    tenant_id: &Option<String>,
+) -> Result<rbac::UsersPrism, RBACError> {
     // First check if the user exists
     let users = rbac::map::users();
     if let Some(users) = users.get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-        && let Some(user) = users.get(&userid)
+        && let Some(user) = users.get(userid)
         && !user.protected
     {
-        // Create UsersPrism for the found user only
-        let prism_user = to_prism_user(user);
-        Ok(web::Json(prism_user))
+        Ok(to_prism_user(user))
     } else {
         Err(RBACError::UserDoesNotExist)
     }
