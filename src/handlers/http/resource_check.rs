@@ -220,7 +220,7 @@ pub fn cpu_limit_cores() -> f64 {
 fn cpu_usage_cores() -> f64 {
     #[cfg(target_os = "linux")]
     {
-        return cgroup_cpu_usage_cores().ok().flatten().unwrap_or_default();
+        cgroup_cpu_usage_cores().ok().flatten().unwrap_or_default()
     }
 
     #[cfg(not(target_os = "linux"))]
