@@ -151,8 +151,8 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
                     "end": { "type": "string" },
                     "step": { "type": "string" },
                     "time": { "type": "string" },
-                    "timeout": { "type": "string" },
-                    "limit": { "type": "string" },
+                    "timeout": { "type": "number", "minimum": 0 },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 500 },
                     "timestamp_format": { "type": "string", "enum": ["rfc3339", "unix"] },
                 }),
                 &["query", "stream"],
@@ -349,5 +349,19 @@ mod tests {
         assert_eq!(response["tools"].as_array().unwrap().len(), 28);
         assert_eq!(response["tools"][0]["name"], "list_datasets");
         assert_eq!(response["tools"][0]["inputSchema"]["type"], "object");
+    }
+
+    #[actix_web::test]
+    async fn promql_execution_limits_use_numeric_schema_types() {
+        let tools = oss_tool_specs();
+        let promql = tools
+            .iter()
+            .find(|tool| tool.name == "query_promql")
+            .unwrap();
+        let properties = &promql.input_schema["properties"];
+
+        assert_eq!(properties["timeout"]["type"], "number");
+        assert_eq!(properties["limit"]["type"], "integer");
+        assert_eq!(properties["limit"]["maximum"], 500);
     }
 }
