@@ -65,6 +65,7 @@ use crate::{
             },
         },
     },
+    hottier::GLOBAL_HOTTIER,
     metadata::{LogStreamMetadata, SchemaVersion},
     metastore::{
         metastore_traits::Metastore, metastores::object_store_metastore::ObjectStoreMetastore,
@@ -1248,6 +1249,10 @@ impl Parseable {
     }
 
     pub async fn delete_tenant(&self, tenant_id: &str) -> Result<(), anyhow::Error> {
+        if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() {
+            hot_tier_manager.cleanup_tenant(tenant_id).await;
+        }
+
         // delete users and sessions
         let users = mut_users().remove(tenant_id);
         if let Some(users) = users {
@@ -1272,6 +1277,9 @@ impl Parseable {
             tenants.retain(|t| t != tenant_id);
         }
         TENANT_METADATA.delete_tenant(tenant_id);
+        if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() {
+            hot_tier_manager.finish_tenant_cleanup(tenant_id).await;
+        }
         Ok(())
     }
 
