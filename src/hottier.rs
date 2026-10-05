@@ -644,6 +644,32 @@ impl HotTierManager {
         }
     }
 
+    /// Stop all hot-tier work and discard cached state for a deleted tenant.
+    pub async fn cleanup_tenant(&self, tenant_id: &str) {
+        let tenant = Some(tenant_id.to_owned());
+        let removed_tasks = {
+            let mut tasks = self.tasks.write().await;
+            tasks
+                .extract_if(|(task_tenant, _), _| task_tenant == &tenant)
+                .map(|(_, task)| task)
+                .collect::<Vec<_>>()
+        };
+
+        for task in removed_tasks {
+            task.latest.abort();
+            let _ = task.latest.await;
+        }
+
+        self.state_cache
+            .write()
+            .await
+            .retain(|(state_tenant, _), _| state_tenant != &tenant);
+        self.state_init_locks
+            .lock()
+            .await
+            .retain(|(state_tenant, _), _| state_tenant != &tenant);
+    }
+
     /// get the total hot tier size for all streams
     #[tracing::instrument(
         name = "hottier.get_hot_tiers_size",
@@ -912,6 +938,12 @@ impl HotTierManager {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
+                if t.as_deref()
+                    .is_some_and(|tenant| !TENANT_METADATA.contains_tenant(tenant))
+                {
+                    info!(stream = %s, tenant = ?t, "stopping hot tier task for deleted tenant");
+                    break;
+                }
                 let anchor = floor_to_minute(Utc::now());
                 let tick_span = tracing::info_span!(
                     "hottier.tick",
