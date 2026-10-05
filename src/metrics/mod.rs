@@ -17,7 +17,11 @@
  */
 
 pub mod prom_utils;
-use std::{path::Path, sync::OnceLock};
+use std::{
+    collections::VecDeque,
+    path::Path,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::{
     handlers::{TelemetryType, http::metrics_path},
@@ -247,7 +251,7 @@ pub static PROCESS_CPU_USAGE_CORES: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
             "process_cpu_usage_cores",
-            "CPU cores used by the Parseable cgroup, or zero when cgroup usage is unavailable",
+            "Average CPU cores used by the Parseable cgroup over the last minute",
         )
         .namespace(METRICS_NAMESPACE),
     )
@@ -337,8 +341,23 @@ impl ProcessMetricsAccumulator {
 pub static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
     Lazy::new(ProcessMetricsAccumulator::default);
 
+const CPU_USAGE_CORES_WINDOW_SAMPLES: usize = 12;
+static CPU_USAGE_CORES_SAMPLES: Lazy<Mutex<VecDeque<f64>>> =
+    Lazy::new(|| Mutex::new(VecDeque::with_capacity(CPU_USAGE_CORES_WINDOW_SAMPLES)));
+
+fn update_cpu_usage_cores_average(samples: &mut VecDeque<f64>, sample: f64) -> f64 {
+    if samples.len() == CPU_USAGE_CORES_WINDOW_SAMPLES {
+        samples.pop_front();
+    }
+    samples.push_back(sample);
+
+    samples.iter().sum::<f64>() / samples.len() as f64
+}
+
 pub fn record_process_cpu_usage_cores(cpu_usage_cores: f64) {
-    PROCESS_CPU_USAGE_CORES.set(cpu_usage_cores);
+    let mut samples = CPU_USAGE_CORES_SAMPLES.lock().unwrap();
+    let average = update_cpu_usage_cores_average(&mut samples, cpu_usage_cores);
+    PROCESS_CPU_USAGE_CORES.set(average);
 }
 
 pub fn record_process_metrics_sample(
@@ -363,7 +382,9 @@ pub fn record_process_metrics_sample(
 mod process_metrics_tests {
     use crate::metrics::PROCESS_METRICS_INIT;
 
-    use super::ProcessMetricsAccumulator;
+    use super::{
+        CPU_USAGE_CORES_WINDOW_SAMPLES, ProcessMetricsAccumulator, update_cpu_usage_cores_average,
+    };
 
     #[test]
     fn averages_process_metric_samples() {
@@ -373,6 +394,20 @@ mod process_metrics_tests {
 
         assert_eq!(accumulator.record(10.0, 100), (10.0, 100.0));
         assert_eq!(accumulator.record(20.0, 300), (10.8, 116.0));
+    }
+
+    #[test]
+    fn cpu_usage_cores_window_is_one_minute_of_samples() {
+        let mut samples = std::collections::VecDeque::new();
+        let mut average = 0.0;
+        for sample in 1..=CPU_USAGE_CORES_WINDOW_SAMPLES + 1 {
+            average = update_cpu_usage_cores_average(&mut samples, sample as f64);
+        }
+
+        assert_eq!(samples.len(), CPU_USAGE_CORES_WINDOW_SAMPLES);
+        assert_eq!(samples.front(), Some(&2.0));
+        assert_eq!(samples.back(), Some(&13.0));
+        assert_eq!(average, 7.5);
     }
 }
 
