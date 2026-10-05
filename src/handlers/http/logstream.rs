@@ -37,13 +37,15 @@ use crate::utils::json::flatten::{
 };
 use crate::{LOCK_EXPECT, stats, validator};
 
-use actix_web::http::StatusCode;
-use actix_web::web::{Json, Path};
-use actix_web::{HttpRequest, Responder, web};
+use actix_web::http::{StatusCode, header::ContentType};
+use actix_web::web::{Json, Path, Query};
+use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use arrow_json::reader::infer_json_schema_from_iterator;
+use arrow_schema::{DataType, Field, Schema, UnionFields};
 use bytes::Bytes;
 use chrono::Utc;
 use itertools::Itertools;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fs;
 use std::sync::Arc;
@@ -171,14 +173,128 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
     }
 }
 
+/// Output format for `GET /logstream/{logstream}/schema`.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SchemaFormat {
+    /// The existing Arrow JSON schema response.
+    #[default]
+    Json,
+    /// A tab-separated, line-oriented representation of the schema.
+    Compact,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct SchemaQuery {
+    #[serde(default)]
+    format: SchemaFormat,
+}
+
+/// Render a schema response for `GET /logstream/{logstream}/schema`.
+///
+/// Use `?format=compact` for UTF-8 `text/plain` rows of `name`, `type`, and
+/// `nullable`; omitting `format` (or using `json`) preserves the Arrow JSON response.
+/// Backslashes, tabs, carriage returns, and newlines in names and type displays are
+/// escaped as `\\`, `\t`, `\r`, and `\n` so every field remains one TSV row.
+fn schema_response(schema: &Schema, format: SchemaFormat) -> HttpResponse {
+    match format {
+        SchemaFormat::Json => HttpResponse::Ok().json(schema),
+        SchemaFormat::Compact => HttpResponse::Ok()
+            .insert_header(ContentType::plaintext())
+            .body(compact_schema(schema)),
+    }
+}
+
+fn compact_schema(schema: &Schema) -> String {
+    let mut output = String::from("name\ttype\tnullable\n");
+    for field in schema.fields() {
+        append_escaped_compact_field(&mut output, field.name());
+        output.push('\t');
+        append_escaped_compact_field(
+            &mut output,
+            &compact_data_type(field.data_type()).to_string(),
+        );
+        output.push('\t');
+        output.push_str(if field.is_nullable() { "true" } else { "false" });
+        output.push('\n');
+    }
+    output
+}
+
+/// Clone nested fields without metadata before using Arrow's type display, preserving type structure.
+fn compact_data_type(data_type: &DataType) -> DataType {
+    match data_type {
+        DataType::List(field) => DataType::List(compact_field(field)),
+        DataType::ListView(field) => DataType::ListView(compact_field(field)),
+        DataType::FixedSizeList(field, size) => {
+            DataType::FixedSizeList(compact_field(field), *size)
+        }
+        DataType::LargeList(field) => DataType::LargeList(compact_field(field)),
+        DataType::LargeListView(field) => DataType::LargeListView(compact_field(field)),
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|field| compact_field(field))
+                .collect::<Vec<_>>()
+                .into(),
+        ),
+        DataType::Union(fields, mode) => DataType::Union(
+            UnionFields::try_new(
+                fields.iter().map(|(type_id, _)| type_id),
+                fields.iter().map(|(_, field)| compact_field(field)),
+            )
+            .expect("existing union fields are valid"),
+            *mode,
+        ),
+        DataType::Dictionary(key, value) => DataType::Dictionary(
+            Box::new(compact_data_type(key)),
+            Box::new(compact_data_type(value)),
+        ),
+        DataType::Map(field, sorted) => DataType::Map(compact_field(field), *sorted),
+        DataType::RunEndEncoded(run_ends, values) => {
+            DataType::RunEndEncoded(compact_field(run_ends), compact_field(values))
+        }
+        _ => data_type.clone(),
+    }
+}
+
+fn compact_field(field: &Field) -> Arc<Field> {
+    Arc::new(Field::new(
+        field.name(),
+        compact_data_type(field.data_type()),
+        field.is_nullable(),
+    ))
+}
+
+fn append_escaped_compact_field(output: &mut String, value: &str) {
+    if !value.contains(['\\', '\t', '\r', '\n']) {
+        output.push_str(value);
+        return;
+    }
+
+    for character in value.chars() {
+        match character {
+            '\\' => output.push_str("\\\\"),
+            '\t' => output.push_str("\\t"),
+            '\r' => output.push_str("\\r"),
+            '\n' => output.push_str("\\n"),
+            _ => output.push(character),
+        }
+    }
+}
+
+/// Fetch the full Arrow JSON schema, or request `?format=compact` for a smaller TSV response.
+/// Compact output includes all column names, type displays and nullability, but omits
+/// schema/field metadata and dictionary IPC attributes; it is not an Arrow interchange format.
 pub async fn get_schema(
     req: HttpRequest,
     logstream: Path<String>,
+    query: Query<SchemaQuery>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let schema = get_schema_internal(&stream_name, &tenant_id).await?;
-    Ok((web::Json(schema), StatusCode::OK))
+    Ok(schema_response(&schema, query.format))
 }
 
 /// Shared schema implementation for HTTP handlers and in-process callers.
@@ -196,7 +312,10 @@ pub async fn get_schema_internal(
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
     match update_schema_when_distributed(&vec![stream_name.to_owned()], tenant_id).await {
-        Ok(_) => Ok(stream.get_schema()),
+        Ok(_) => {
+            let schema = stream.get_schema();
+            Ok(schema)
+        }
         Err(err) => Err(StreamError::Custom {
             msg: err.to_string(),
             status: StatusCode::EXPECTATION_FAILED,
@@ -769,10 +888,203 @@ pub mod error {
 
 #[cfg(test)]
 mod tests {
+    use super::{SchemaQuery, compact_schema, schema_response};
     use crate::{
         event::format::LogSource, handlers::http::modal::utils::logstream_utils::PutStreamHeaders,
     };
-    use actix_web::test::TestRequest;
+    use actix_web::{
+        App, HttpResponse,
+        http::{StatusCode, header},
+        test,
+        test::TestRequest,
+        web::{self, Query},
+    };
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    async fn schema_test_handler(
+        query: Query<SchemaQuery>,
+        schema: web::Data<Schema>,
+    ) -> HttpResponse {
+        schema_response(schema.get_ref(), query.into_inner().format)
+    }
+
+    fn test_schema() -> Schema {
+        Schema::new_with_metadata(
+            vec![
+                Arc::new(Field::new(
+                    "nested",
+                    DataType::Struct(
+                        vec![Arc::new(
+                            Field::new("inner", DataType::Int64, false).with_metadata(
+                                HashMap::from([(
+                                    String::from("inner-metadata"),
+                                    String::from("omitted"),
+                                )]),
+                            ),
+                        )]
+                        .into(),
+                    ),
+                    true,
+                )),
+                Arc::new(Field::new_list(
+                    "list",
+                    Arc::new(Field::new_list_field(DataType::Utf8, false)),
+                    false,
+                )),
+                Arc::new(Field::new_dictionary(
+                    "dictionary",
+                    DataType::Int32,
+                    DataType::Utf8,
+                    true,
+                )),
+                Arc::new(Field::new(
+                    "dictionary_struct",
+                    DataType::Dictionary(
+                        Box::new(DataType::Int32),
+                        Box::new(DataType::Struct(
+                            vec![Arc::new(
+                                Field::new("dictionary_inner", DataType::Utf8, true).with_metadata(
+                                    HashMap::from([(
+                                        String::from("dictionary-inner-metadata"),
+                                        String::from("omitted"),
+                                    )]),
+                                ),
+                            )]
+                            .into(),
+                        )),
+                    ),
+                    false,
+                )),
+                Arc::new(Field::new(
+                    "timestamp",
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                    false,
+                )),
+                Arc::new(Field::new("awk\\ward\tname\r\n", DataType::Utf8, true)),
+            ],
+            HashMap::from([(String::from("schema-metadata"), String::from("omitted"))]),
+        )
+    }
+
+    #[actix_web::test]
+    async fn schema_format_query_selects_byte_compatible_json_or_compact_tsv() {
+        let schema = test_schema();
+        let expected_json = serde_json::to_vec(&schema).unwrap();
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(schema))
+                .route("/schema", web::get().to(schema_test_handler)),
+        )
+        .await;
+
+        let default_response =
+            test::call_service(&app, TestRequest::get().uri("/schema").to_request()).await;
+        assert_eq!(default_response.status(), StatusCode::OK);
+        assert_eq!(
+            default_response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap(),
+            "application/json"
+        );
+        assert_eq!(test::read_body(default_response).await, expected_json);
+
+        let json_response = test::call_service(
+            &app,
+            TestRequest::get().uri("/schema?format=json").to_request(),
+        )
+        .await;
+        assert_eq!(json_response.status(), StatusCode::OK);
+        assert_eq!(
+            json_response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(test::read_body(json_response).await, expected_json);
+
+        let compact_response = test::call_service(
+            &app,
+            TestRequest::get()
+                .uri("/schema?format=compact")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(compact_response.status(), StatusCode::OK);
+        assert_eq!(
+            compact_response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        let compact = std::str::from_utf8(&test::read_body(compact_response).await)
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            compact,
+            "name\ttype\tnullable\n\
+             nested\tStruct(\"inner\": non-null Int64)\ttrue\n\
+             list\tList(non-null Utf8)\tfalse\n\
+             dictionary\tDictionary(Int32, Utf8)\ttrue\n\
+             dictionary_struct\tDictionary(Int32, Struct(\"dictionary_inner\": Utf8))\tfalse\n\
+             timestamp\tTimestamp(ns, \"UTC\")\tfalse\n\
+             awk\\\\ward\\tname\\r\\n\tUtf8\ttrue\n"
+        );
+        assert!(!compact.contains("schema-metadata"));
+        assert!(!compact.contains("inner-metadata"));
+        assert!(!compact.contains("dictionary-inner-metadata"));
+    }
+
+    #[actix_web::test]
+    async fn schema_format_query_rejects_invalid_format() {
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(Schema::empty()))
+                .route("/schema", web::get().to(schema_test_handler)),
+        )
+        .await;
+
+        let response = test::call_service(
+            &app,
+            TestRequest::get().uri("/schema?format=xml").to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[core::prelude::v1::test]
+    fn compact_schema_handles_empty_schemas_and_reduces_500_column_payloads() {
+        assert_eq!(compact_schema(&Schema::empty()), "name\ttype\tnullable\n");
+
+        let schema = Schema::new(
+            (0..500)
+                .map(|index| {
+                    Arc::new(Field::new(
+                        format!("field_{index:03}"),
+                        DataType::Utf8,
+                        index % 2 == 0,
+                    ))
+                })
+                .collect::<Vec<_>>(),
+        );
+        let compact_len = compact_schema(&schema).len();
+        let arrow_json_len = serde_json::to_vec(&schema).unwrap().len();
+        println!("compact schema: {compact_len} bytes vs Arrow JSON: {arrow_json_len} bytes");
+        assert_eq!(compact_schema(&schema).lines().count(), 501);
+        assert!(compact_len * 4 < arrow_json_len);
+    }
+
+    #[core::prelude::v1::test]
+    fn compact_schema_uses_arrow_display_for_complex_types() {
+        let schema = test_schema();
+        let compact = compact_schema(&schema);
+        assert!(compact.contains("Struct(\"inner\": non-null Int64)"));
+        assert!(compact.contains("List(non-null Utf8)"));
+        assert!(compact.contains("Dictionary(Int32, Utf8)"));
+        assert!(compact.contains("Dictionary(Int32, Struct(\"dictionary_inner\": Utf8))"));
+        assert!(compact.contains("Timestamp(ns, \"UTC\")"));
+    }
 
     // TODO: Fix this test with routes
     // #[actix_web::test]
