@@ -1277,6 +1277,9 @@ impl Parseable {
             tenants.retain(|t| t != tenant_id);
         }
         TENANT_METADATA.delete_tenant(tenant_id);
+        if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() {
+            hot_tier_manager.finish_tenant_cleanup(tenant_id).await;
+        }
         Ok(())
     }
 

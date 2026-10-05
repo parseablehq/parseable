@@ -26,7 +26,7 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
-use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, RwLock as AsyncRwLock, mpsc};
 
 use crate::{
     catalog::manifest::{File, Manifest},
@@ -286,6 +286,7 @@ impl QueryPin {
 pub struct HotTierQueryGuard {
     state: Arc<StreamSyncState>,
     pin_id: u64,
+    _tenant_admission: Option<OwnedRwLockReadGuard<bool>>,
 }
 
 impl Drop for HotTierQueryGuard {
@@ -316,6 +317,7 @@ impl StreamSyncState {
         HotTierQueryGuard {
             state: self.clone(),
             pin_id,
+            _tenant_admission: None,
         }
     }
 }
@@ -431,6 +433,7 @@ struct StreamTasks {
 pub struct HotTierManager {
     filesystem: LocalFileSystem,
     hot_tier_path: &'static Path,
+    tenant_gates: AsyncMutex<HashMap<String, Arc<AsyncRwLock<bool>>>>,
     state_cache: AsyncRwLock<HashMap<StreamKey, Arc<StreamSyncState>>>,
     state_init_locks: AsyncMutex<HashMap<StreamKey, Arc<AsyncMutex<()>>>>,
     tasks: AsyncRwLock<HashMap<StreamKey, StreamTasks>>,
@@ -544,11 +547,35 @@ impl HotTierManager {
         HotTierManager {
             filesystem: LocalFileSystem::new(),
             hot_tier_path,
+            tenant_gates: AsyncMutex::new(HashMap::new()),
             state_cache: AsyncRwLock::new(HashMap::new()),
             state_init_locks: AsyncMutex::new(HashMap::new()),
             tasks: AsyncRwLock::new(HashMap::new()),
             sender,
         }
+    }
+
+    async fn tenant_gate(&self, tenant_id: &str) -> Arc<AsyncRwLock<bool>> {
+        self.tenant_gates
+            .lock()
+            .await
+            .entry(tenant_id.to_owned())
+            .or_insert_with(|| Arc::new(AsyncRwLock::new(false)))
+            .clone()
+    }
+
+    async fn tenant_admission(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<OwnedRwLockReadGuard<bool>>, ()> {
+        let Some(tenant_id) = tenant_id else {
+            return Ok(None);
+        };
+        let admission = self.tenant_gate(tenant_id).await.read_owned().await;
+        if *admission || !TENANT_METADATA.contains_tenant(tenant_id) {
+            return Err(());
+        }
+        Ok(Some(admission))
     }
 
     #[tracing::instrument(name = "hottier.startup", skip(self))]
@@ -571,6 +598,22 @@ impl HotTierManager {
     }
 
     async fn get_or_load_state(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Arc<StreamSyncState>, HotTierError> {
+        let admission = self
+            .tenant_admission(tenant_id)
+            .await
+            .map_err(|()| HotTierValidationError::NotFound(stream.to_owned()))?;
+        let state = self
+            .get_or_load_state_with_admission(stream, tenant_id)
+            .await?;
+        drop(admission);
+        Ok(state)
+    }
+
+    async fn get_or_load_state_with_admission(
         &self,
         stream: &str,
         tenant_id: &Option<String>,
@@ -629,9 +672,16 @@ impl HotTierManager {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<HotTierQueryGuard, HotTierError> {
-        let state = self.get_or_load_state(stream, tenant_id).await?;
+        let admission = self
+            .tenant_admission(tenant_id)
+            .await
+            .map_err(|()| HotTierValidationError::NotFound(stream.to_owned()))?;
+        let state = self
+            .get_or_load_state_with_admission(stream, tenant_id)
+            .await?;
         let registration_guard = state.eviction.read().await;
-        let query_guard = state.pin_query(start, end);
+        let mut query_guard = state.pin_query(start, end);
+        query_guard._tenant_admission = admission;
         drop(registration_guard);
         Ok(query_guard)
     }
@@ -647,6 +697,8 @@ impl HotTierManager {
     /// Stop all hot-tier work and discard cached state for a deleted tenant.
     pub async fn cleanup_tenant(&self, tenant_id: &str) {
         let tenant = Some(tenant_id.to_owned());
+        let gate = self.tenant_gate(tenant_id).await;
+        *gate.write().await = true;
         let removed_tasks = {
             let mut tasks = self.tasks.write().await;
             tasks
@@ -668,6 +720,11 @@ impl HotTierManager {
             .lock()
             .await
             .retain(|(state_tenant, _), _| state_tenant != &tenant);
+    }
+
+    /// Remove the closed admission gate after tenant metadata is gone.
+    pub async fn finish_tenant_cleanup(&self, tenant_id: &str) {
+        self.tenant_gates.lock().await.remove(tenant_id);
     }
 
     /// get the total hot tier size for all streams
@@ -906,18 +963,21 @@ impl HotTierManager {
         fields(stream = %stream, tenant = ?tenant_id)
     )]
     pub async fn spawn_stream_task(&'static self, stream: String, tenant_id: Option<String>) {
-        let _ = tokio::spawn(async move {
-            self.sender
-                .send(HotTierMessage::StartTask((tenant_id, stream)))
-                .unwrap();
-        })
-        .instrument(tracing::Span::current())
-        .await;
+        let Ok(admission) = self.tenant_admission(&tenant_id).await else {
+            return;
+        };
+        self.sender
+            .send(HotTierMessage::StartTask((tenant_id, stream)))
+            .unwrap();
+        drop(admission);
     }
 
     /// Spawn Latest loop for a single stream. Idempotent:
     /// if tasks already exist for this (tenant, stream), no-op.
     async fn spawn_stream_task_inner(&'static self, stream: String, tenant_id: Option<String>) {
+        let Ok(admission) = self.tenant_admission(&tenant_id).await else {
+            return;
+        };
         let key: StreamKey = (tenant_id.clone(), stream.clone());
 
         let mut tasks = self.tasks.write().await;
@@ -964,6 +1024,8 @@ impl HotTierManager {
         if let Some(old) = tasks.insert(key, StreamTasks { latest }) {
             old.latest.abort();
         }
+        drop(tasks);
+        drop(admission);
     }
 
     /// Abort and remove per-stream tasks. Caller must ensure no further work
@@ -1936,6 +1998,7 @@ mod tests {
             Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
+        time::Duration,
     };
 
     use chrono::{TimeZone, Utc};
@@ -2012,6 +2075,33 @@ mod tests {
             }),
             80.0,
         )
+    }
+
+    #[tokio::test]
+    async fn tenant_cleanup_closes_admission_before_draining() {
+        let root = Box::leak(tempfile::tempdir().unwrap().keep().into_boxed_path());
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let manager: &'static HotTierManager =
+            Box::leak(Box::new(HotTierManager::new(root, sender)));
+        let tenant = "hot-tier-cleanup-admission-test".to_owned();
+        let gate = manager.tenant_gate(&tenant).await;
+        let admission = gate.clone().read_owned().await;
+
+        let cleanup_tenant = tenant.clone();
+        let cleanup = tokio::spawn(async move {
+            manager.cleanup_tenant(&cleanup_tenant).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!cleanup.is_finished());
+
+        drop(admission);
+        tokio::time::timeout(Duration::from_secs(1), cleanup)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(*gate.read().await);
+
+        manager.finish_tenant_cleanup(&tenant).await;
     }
 
     #[tokio::test]
