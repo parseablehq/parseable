@@ -26,8 +26,12 @@ use crate::{
     event::format::{LogSource, LogSourceEntry},
     handlers::{DatasetTag, TelemetryType, http::logstream::error::StreamError},
     metastore::MetastoreError,
-    parseable::PARSEABLE,
-    rbac::{Users, map::SessionKey, role::Action},
+    parseable::{DEFAULT_TENANT, PARSEABLE},
+    rbac::{
+        Users,
+        map::{SessionKey, users},
+        role::Action,
+    },
     storage::{ObjectStorageError, ObjectStoreFormat, StreamType},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
     utils::get_tenant_id_from_key,
@@ -61,10 +65,20 @@ pub struct DataSet {
     labels: Vec<String>,
 }
 
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Checklist {
+    pub data_ingested: bool,
+    pub keystone_created: bool,
+    pub alert_created: bool,
+    pub user_added: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HomeResponse {
     pub datasets: Vec<DataSet>,
+    pub checklist: Checklist,
 }
 
 #[derive(Debug, Serialize)]
@@ -144,7 +158,37 @@ pub async fn generate_home_response(
         }
     }
 
-    Ok(HomeResponse { datasets })
+    let data_ingested = datasets.iter().any(|dataset| dataset.ingestion);
+    let user_count = users()
+        .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+        .map(|users| {
+            users
+                .values()
+                .filter(|user| !user.protected && !user.is_api_key())
+                .count()
+        })
+        .unwrap_or(0);
+    let alert_created = {
+        let guard = ALERTS.read().await;
+        if let Some(alerts) = guard.as_ref() {
+            !alerts
+                .list_alerts_for_user(key.clone(), vec![])
+                .await?
+                .is_empty()
+        } else {
+            false
+        }
+    };
+
+    Ok(HomeResponse {
+        datasets,
+        checklist: Checklist {
+            data_ingested,
+            keystone_created: false,
+            alert_created,
+            user_added: user_count > 1,
+        },
+    })
 }
 
 async fn get_stream_metadata(stream: String, tenant_id: &Option<String>) -> StreamMetadataResponse {
