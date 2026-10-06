@@ -31,11 +31,11 @@ use crate::option::Mode;
 use crate::parseable::DEFAULT_TENANT;
 use crate::parseable::{LogStream, PARSEABLE, Stream};
 use crate::stats::FullStats;
-use crate::storage::SETTINGS_ROOT_DIRECTORY;
 use crate::storage::TARGETS_ROOT_DIRECTORY;
 use crate::storage::field_stats::DATASET_STATS_STREAM_NAME;
 use crate::storage::field_stats::calculate_field_stats;
 use crate::storage::field_stats::extract_datetime_from_parquet_path_regex;
+use crate::storage::{GLOBAL_SCHEMA_FILE_NAME, SETTINGS_ROOT_DIRECTORY};
 use crate::sync::{ACTIVE_OBJECT_STORE_SYNC_FILES, FLUSH_AND_CONVERT_RUNTIME};
 use arrow_schema::Schema;
 use async_trait::async_trait;
@@ -332,6 +332,13 @@ pub trait ObjectStorageProvider: std::fmt::Debug + Send + Sync {
 
 #[async_trait]
 pub trait ObjectStorage: Debug + Send + Sync + 'static {
+    /// Whether this backend provides atomic create/update and versioned reads.
+    /// Unsupported stores keep their existing schema behavior; CAS never falls
+    /// back to an unconditional write.
+    fn supports_conditional_writes(&self) -> bool {
+        false
+    }
+
     async fn get_buffered_reader(
         &self,
         path: &RelativePath,
@@ -353,6 +360,34 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         path: &RelativePath,
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError>;
+    /// Fetch bytes and the exact version token returned by the same GET.
+    ///
+    /// Implementations must not emulate this with a separate HEAD request: the
+    /// metadata and body need to describe one object generation.
+    async fn get_object_versioned(
+        &self,
+        _path: &RelativePath,
+        _tenant_id: &Option<String>,
+    ) -> Result<Option<(Bytes, object_store::UpdateVersion)>, ObjectStorageError> {
+        Err(ObjectStorageError::Custom(
+            "versioned object reads are not supported by this storage backend".into(),
+        ))
+    }
+    /// Atomically create an object when `expected` is `None`, or replace it only
+    /// if it still has the supplied version. `false` means a precondition
+    /// conflict; unsupported backends must return an error rather than falling
+    /// back to an unconditional write.
+    async fn put_object_if(
+        &self,
+        _path: &RelativePath,
+        _data: Bytes,
+        _expected: Option<object_store::UpdateVersion>,
+        _tenant_id: &Option<String>,
+    ) -> Result<bool, ObjectStorageError> {
+        Err(ObjectStorageError::Custom(
+            "conditional object writes are not supported by this storage backend".into(),
+        ))
+    }
     /// Fetch an object as concurrent bounded byte ranges instead of one stream.
     ///
     /// Intended for the few objects that are large enough (hundreds of MB) that
@@ -1430,6 +1465,24 @@ pub async fn commit_schema_to_storage(
     schema: Schema,
     tenant_id: &Option<String>,
 ) -> Result<(), ObjectStorageError> {
+    if let Some(global_schema) = PARSEABLE
+        .metastore
+        .get_global_schema(stream_name, tenant_id)
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
+    {
+        // The global schema already contains canonical names and resolved types.
+        // Do not merge it with this ingestor's raw schema: equal field names may
+        // intentionally have different raw types before registry resolution.
+        let canonical_schema = serde_json::from_slice::<Schema>(&global_schema.schema)?;
+        return PARSEABLE
+            .metastore
+            .put_schema(canonical_schema, stream_name, tenant_id)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())));
+    }
+
+    // Preserve the legacy strict-merge behavior while no global registry exists.
     let stream_schema = PARSEABLE
         .metastore
         .get_schema(stream_name, tenant_id)
@@ -1469,6 +1522,16 @@ pub fn schema_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePat
     } else {
         RelativePathBuf::from_iter([tenant, stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME])
     }
+}
+
+pub fn global_schema_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
+    let tenant = tenant_id.as_deref().unwrap_or("");
+    RelativePathBuf::from_iter([
+        tenant,
+        stream_name,
+        STREAM_ROOT_DIRECTORY,
+        GLOBAL_SCHEMA_FILE_NAME,
+    ])
 }
 
 #[inline(always)]

@@ -73,6 +73,82 @@ pub(crate) const RANGED_GET_MAX_ATTEMPTS: u32 = 3;
 /// round trip latency, so overlapping them is close to a pure win.
 pub(crate) const GET_OBJECTS_CONCURRENCY: usize = 32;
 
+/// Fetch an object's body and conditional-write token from the same GET request.
+pub(crate) async fn get_object_versioned<S: object_store::ObjectStore + ?Sized>(
+    client: &S,
+    path: &Path,
+) -> object_store::Result<Option<(bytes::Bytes, object_store::UpdateVersion)>> {
+    let result = match client
+        .get_opts(path, object_store::GetOptions::default())
+        .await
+    {
+        Ok(result) => result,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+
+    // Use the version returned by this same GET; a separate HEAD could describe
+    // a different generation from the bytes below.
+    let version = object_store::UpdateVersion {
+        e_tag: result.meta.e_tag.clone(),
+        version: result.meta.version.clone(),
+    };
+    if version.e_tag.is_none() && version.version.is_none() {
+        return Err(object_store::Error::NotSupported {
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "object store returned no validator for conditional updates",
+            )),
+        });
+    }
+
+    Ok(Some((result.bytes().await?, version)))
+}
+
+/// Atomically create or update `path`; return `false` only for a conditional
+/// precondition conflict. Every other storage failure is preserved as an error.
+pub(crate) async fn put_object_if<S: object_store::ObjectStore + ?Sized>(
+    client: &S,
+    path: &Path,
+    data: bytes::Bytes,
+    expected: Option<object_store::UpdateVersion>,
+) -> object_store::Result<bool> {
+    use object_store::{PutMode, PutOptions};
+
+    let mode = match expected {
+        None => PutMode::Create,
+        Some(version) if version.e_tag.is_some() || version.version.is_some() => {
+            PutMode::Update(version)
+        }
+        Some(_) => {
+            return Err(object_store::Error::NotSupported {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "conditional update requires an ETag or object version",
+                )),
+            });
+        }
+    };
+
+    match client
+        .put_opts(
+            path,
+            data.into(),
+            PutOptions {
+                mode,
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(
+            object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. },
+        ) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// Fetch an object as a series of bounded byte ranges rather than one stream.
 ///
 /// A single multi-hundred-MB response body is regularly killed mid transfer by
@@ -307,6 +383,7 @@ pub const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 pub const STREAM_ROOT_DIRECTORY: &str = ".stream";
 pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
 pub const SCHEMA_FILE_NAME: &str = ".schema";
+pub const GLOBAL_SCHEMA_FILE_NAME: &str = ".global.schema";
 pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
 pub const SETTINGS_ROOT_DIRECTORY: &str = ".settings";
 pub const TARGETS_ROOT_DIRECTORY: &str = ".targets";
@@ -674,5 +751,162 @@ mod tests {
             parsed.gcs.max_object_store_requests,
             DEFAULT_MAX_OBJECT_STORE_REQUESTS
         );
+    }
+}
+
+#[cfg(test)]
+mod global_schema_storage_tests {
+    use bytes::Bytes;
+    use object_store::{UpdateVersion, memory::InMemory, path::Path};
+
+    use super::{get_object_versioned, put_object_if};
+
+    #[tokio::test]
+    async fn versioned_get_reports_absence_and_returns_body_with_validator() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+
+        assert!(
+            get_object_versioned(&store, &path)
+                .await
+                .expect("missing objects are not errors")
+                .is_none()
+        );
+
+        assert!(
+            put_object_if(&store, &path, Bytes::from_static(b"schema"), None)
+                .await
+                .expect("create-only write should succeed")
+        );
+        let (body, version) = get_object_versioned(&store, &path)
+            .await
+            .expect("read should succeed")
+            .expect("object was just created");
+        assert_eq!(body, Bytes::from_static(b"schema"));
+        assert!(version.e_tag.is_some() || version.version.is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrent_create_only_writes_have_exactly_one_winner() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+        let (first, second) = tokio::join!(
+            put_object_if(&store, &path, Bytes::from_static(b"first"), None),
+            put_object_if(&store, &path, Bytes::from_static(b"second"), None),
+        );
+
+        let outcomes = [
+            first.expect("first write must resolve"),
+            second.expect("second write must resolve"),
+        ];
+        assert_eq!(outcomes.iter().filter(|written| **written).count(), 1);
+        assert_eq!(outcomes.iter().filter(|written| !**written).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_update_is_rejected_without_overwriting_newer_bytes() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+        assert!(
+            put_object_if(&store, &path, Bytes::from_static(b"initial"), None)
+                .await
+                .unwrap()
+        );
+        let (_, stale_version) = get_object_versioned(&store, &path).await.unwrap().unwrap();
+        assert!(
+            put_object_if(
+                &store,
+                &path,
+                Bytes::from_static(b"newer"),
+                Some(stale_version.clone()),
+            )
+            .await
+            .unwrap()
+        );
+
+        assert!(
+            !put_object_if(
+                &store,
+                &path,
+                Bytes::from_static(b"stale"),
+                Some(stale_version),
+            )
+            .await
+            .unwrap()
+        );
+        let (body, _) = get_object_versioned(&store, &path).await.unwrap().unwrap();
+        assert_eq!(body, Bytes::from_static(b"newer"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_additions_retry_with_the_winning_version_token() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+        let left = Bytes::from_static(b"left");
+        let right = Bytes::from_static(b"right");
+        let (left_written, right_written) = tokio::join!(
+            put_object_if(&store, &path, left.clone(), None),
+            put_object_if(&store, &path, right.clone(), None),
+        );
+        let left_written = left_written.unwrap();
+        let right_written = right_written.unwrap();
+        assert_ne!(left_written, right_written);
+
+        // The loser reloads the current version, merges its addition, and uses
+        // that exact token for the retry instead of issuing an unconditional PUT.
+        let (winner, version) = get_object_versioned(&store, &path).await.unwrap().unwrap();
+        let addition = if winner == left {
+            &right[..]
+        } else {
+            &left[..]
+        };
+        let merged = Bytes::from([winner.as_ref(), addition].concat());
+        assert!(
+            put_object_if(&store, &path, merged.clone(), Some(version))
+                .await
+                .expect("retry should compare-and-swap the current generation")
+        );
+        let (stored, _) = get_object_versioned(&store, &path).await.unwrap().unwrap();
+        assert_eq!(stored, merged);
+    }
+
+    #[tokio::test]
+    async fn unusable_update_token_is_an_error_not_a_contention_result() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+        let result = put_object_if(
+            &store,
+            &path,
+            Bytes::from_static(b"schema"),
+            Some(UpdateVersion {
+                e_tag: None,
+                version: None,
+            }),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(object_store::Error::NotSupported { .. })
+        ));
+
+        // InMemory needs an ETag to perform Update. Supplying a version-only
+        // token against an existing object reaches the backend and must preserve
+        // its genuine error rather than disguising it as a CAS conflict.
+        assert!(
+            put_object_if(&store, &path, Bytes::from_static(b"initial"), None)
+                .await
+                .unwrap()
+        );
+        let result = put_object_if(
+            &store,
+            &path,
+            Bytes::from_static(b"schema"),
+            Some(UpdateVersion {
+                e_tag: None,
+                version: Some("generation-1".into()),
+            }),
+        )
+        .await;
+        assert!(matches!(result, Err(object_store::Error::Generic { .. })));
     }
 }

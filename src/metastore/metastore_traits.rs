@@ -23,6 +23,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use erased_serde::Serialize as ErasedSerialize;
+use object_store::UpdateVersion;
 use tonic::async_trait;
 use ulid::Ulid;
 
@@ -36,6 +37,7 @@ use crate::{
     handlers::http::modal::NodeType,
     metastore::MetastoreError,
     option::Mode,
+    parseable::GlobalSchema,
     users::filters::Filter,
 };
 
@@ -291,6 +293,22 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
+
+    /// Global schema operations used to detect and resolve schema conflicts.
+    /// A missing expected version creates the record; a version updates it with
+    /// an atomic compare-and-swap. `false` indicates only a version conflict.
+    async fn get_global_schema(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<GlobalSchema>, MetastoreError>;
+    async fn put_global_schema(
+        &self,
+        obj: Schema,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+        expected: Option<UpdateVersion>,
+    ) -> Result<bool, MetastoreError>;
 
     /// parseable metadata
     async fn get_parseable_metadata(

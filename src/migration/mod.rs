@@ -485,9 +485,32 @@ pub async fn setup_logstream_metadata(
         tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
     );
 
-    let schema = PARSEABLE
-        .get_or_create_stream(stream, tenant_id)
-        .updated_schema(arrow_schema.clone());
+    let stream_ref = PARSEABLE.get_or_create_stream(stream, tenant_id);
+    // Once a dataset is coordinated, its persisted schema uses canonical names
+    // while surviving IPC files still contain raw ingest names. Resolve each
+    // file independently before merging, rather than merging those raw types
+    // directly into the canonical schema during recovery.
+    // Disabling bootstrap must not revert an already canonical dataset to raw
+    // conversion: existing coordinated streams still require their mappings.
+    let schema = if PARSEABLE.options.mode == Mode::Ingest
+        && !static_schema_flag
+        && PARSEABLE
+            .metastore
+            .get_global_schema(stream, tenant_id)
+            .await?
+            .is_some()
+    {
+        stream_ref
+            .restore_global_schema(
+                arrow_schema.clone(),
+                tenant_id,
+                time_partition.as_ref(),
+                custom_partition.as_ref(),
+            )
+            .await?
+    } else {
+        stream_ref.updated_schema(arrow_schema.clone())
+    };
     let schema = HashMap::from_iter(
         schema
             .fields
