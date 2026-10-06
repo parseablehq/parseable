@@ -1,3 +1,8 @@
+#![allow(clippy::double_must_use)]
+// `async_trait` currently expands async trait methods with a redundant
+// `must_use` marker under Rust 1.99. Keep the compatibility allowance scoped
+// to this lint until the upstream macro/compiler combination stops emitting it.
+
 /*
  * Parseable Server (C) 2022 - 2025 Parseable, Inc.
  *
@@ -52,6 +57,7 @@ pub mod storage;
 pub mod sync;
 pub mod telemetry;
 pub mod tenants;
+pub mod tool_catalog;
 pub mod users;
 pub mod utils;
 pub mod validator;
@@ -61,6 +67,7 @@ use std::time::Duration;
 pub use arrow_array;
 pub use arrow_flight;
 pub use arrow_ipc;
+pub use async_trait;
 pub use catalog as parseable_catalog;
 pub use datafusion;
 pub use datafusion_proto;

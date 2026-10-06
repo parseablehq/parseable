@@ -939,7 +939,14 @@ pub async fn send_retention_cleanup_request(
 
 /// Fetches cluster information for all nodes (ingestor, indexer, querier and prism)
 pub async fn get_cluster_info(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let tenant_id = &get_tenant_id_from_request(&req);
+    let tenant_id = get_tenant_id_from_request(&req);
+    Ok(actix_web::HttpResponse::Ok().json(get_cluster_info_internal(&tenant_id).await?))
+}
+
+/// Shared cluster-info implementation for HTTP handlers and in-process callers.
+pub async fn get_cluster_info_internal(
+    tenant_id: &Option<String>,
+) -> Result<Vec<utils::ClusterInfo>, StreamError> {
     // Get querier, ingestor and indexer metadata concurrently
     let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
         get_node_info(NodeType::Prism, tenant_id),
@@ -996,7 +1003,7 @@ pub async fn get_cluster_info(req: HttpRequest) -> Result<impl Responder, Stream
     infos.extend(querier_infos?);
     infos.extend(ingestor_infos?);
     infos.extend(indexer_infos?);
-    Ok(actix_web::HttpResponse::Ok().json(infos))
+    Ok(infos)
 }
 
 /// Fetches info for a single node
@@ -1085,13 +1092,18 @@ async fn fetch_nodes_info<T: Metadata>(
 }
 
 pub async fn get_cluster_metrics(req: HttpRequest) -> Result<impl Responder, PostError> {
-    let tenant_id = &get_tenant_id_from_request(&req);
-    let dresses = fetch_cluster_metrics(tenant_id).await.map_err(|err| {
+    let tenant_id = get_tenant_id_from_request(&req);
+    Ok(actix_web::HttpResponse::Ok().json(get_cluster_metrics_internal(&tenant_id).await?))
+}
+
+/// Shared cluster-metrics implementation for HTTP handlers and in-process callers.
+pub async fn get_cluster_metrics_internal(
+    tenant_id: &Option<String>,
+) -> Result<Vec<Metrics>, PostError> {
+    fetch_cluster_metrics(tenant_id).await.map_err(|err| {
         error!("Fatal: failed to fetch cluster metrics: {:?}", err);
         PostError::Invalid(err.into())
-    })?;
-
-    Ok(actix_web::HttpResponse::Ok().json(dresses))
+    })
 }
 
 /// get node info for a specific node type
