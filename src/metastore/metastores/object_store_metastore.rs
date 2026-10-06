@@ -102,59 +102,6 @@ impl Metastore for ObjectStoreMetastore {
             .await?)
     }
 
-    /// This function fetches all the overviews from the underlying object store
-    async fn get_overviews(
-        &self,
-        tenant_id: &Option<String>,
-    ) -> Result<HashMap<String, Option<Bytes>>, MetastoreError> {
-        let streams = self.list_streams(tenant_id).await?;
-
-        let mut all_overviews = HashMap::new();
-        for stream in streams {
-            let root = tenant_id.as_deref().unwrap_or("");
-            let overview_path = RelativePathBuf::from_iter([root, &stream, "overview"]);
-
-            // if the file doesn't exist, load an empty overview
-            let overview = (self.storage.get_object(&overview_path, tenant_id).await).ok();
-
-            all_overviews.insert(stream, overview);
-        }
-
-        Ok(all_overviews)
-    }
-
-    /// This function puts an overview in the object store at the given path
-    async fn put_overview(
-        &self,
-        obj: &dyn MetastoreObject,
-        stream: &str,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError> {
-        let path = if let Some(tenant_id) = tenant_id.as_ref() {
-            RelativePathBuf::from_iter([tenant_id, stream, "overview"])
-        } else {
-            RelativePathBuf::from_iter([stream, "overview"])
-        };
-        Ok(self
-            .storage
-            .put_object(&path, to_bytes(obj), tenant_id)
-            .await?)
-    }
-
-    /// Delete an overview
-    async fn delete_overview(
-        &self,
-        stream: &str,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError> {
-        let path = if let Some(tenant_id) = tenant_id.as_ref() {
-            RelativePathBuf::from_iter([tenant_id, stream, "overview"])
-        } else {
-            RelativePathBuf::from_iter([stream, "overview"])
-        };
-        Ok(self.storage.delete_object(&path, tenant_id).await?)
-    }
-
     /// This function fetches all the keystones from the underlying object store
     async fn get_keystones(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
         let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
