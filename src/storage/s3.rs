@@ -41,7 +41,7 @@ use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use object_store::{
     BackoffConfig, ClientOptions, ListResult, ObjectMeta, ObjectStore, ObjectStoreExt, PutPayload,
     RetryConfig,
-    aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum},
+    aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum, S3ConditionalPut},
     buffered::BufReader,
     limit::LimitStore,
     path::Path as StorePath,
@@ -277,6 +277,9 @@ impl S3Config {
             .with_region(&self.region)
             .with_endpoint(&self.endpoint_url)
             .with_bucket_name(&self.bucket_name)
+            // Global schema writes rely on conditional PUT, so enable S3's
+            // If-Match / If-None-Match support explicitly.
+            .with_conditional_put(S3ConditionalPut::ETagMatch)
             .with_virtual_hosted_style_request(!self.use_path_style)
             .with_allow_http(true)
             .with_retry(retry_config);
@@ -820,6 +823,10 @@ impl S3 {
 
 #[async_trait]
 impl ObjectStorage for S3 {
+    fn supports_conditional_writes(&self) -> bool {
+        true
+    }
+
     async fn get_buffered_reader(
         &self,
         path: &RelativePath,
@@ -905,6 +912,29 @@ impl ObjectStorage for S3 {
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError> {
         self._get_object(path, tenant_id).await
+    }
+
+    async fn get_object_versioned(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<(Bytes, object_store::UpdateVersion)>, ObjectStorageError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let result =
+            crate::storage::get_object_versioned(&*self.client, &to_object_store_path(path)).await;
+        increment_object_store_calls_by_date("GET", &date, tenant);
+        let result = result?;
+        if let Some((body, _)) = &result {
+            increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant);
+            increment_bytes_scanned_in_object_store_calls_by_date(
+                "GET",
+                body.len() as u64,
+                &date,
+                tenant,
+            );
+        }
+        Ok(result)
     }
 
     async fn get_object_ranged(
@@ -1048,6 +1078,30 @@ impl ObjectStorage for S3 {
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
 
         Ok(())
+    }
+
+    async fn put_object_if(
+        &self,
+        path: &RelativePath,
+        data: Bytes,
+        expected: Option<object_store::UpdateVersion>,
+        tenant_id: &Option<String>,
+    ) -> Result<bool, ObjectStorageError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let result = crate::storage::put_object_if(
+            &*self.client,
+            &to_object_store_path(path),
+            data,
+            expected,
+        )
+        .await;
+        increment_object_store_calls_by_date("PUT", &date, tenant);
+        let written = result?;
+        if written {
+            increment_files_scanned_in_object_store_calls_by_date("PUT", 1, &date, tenant);
+        }
+        Ok(written)
     }
 
     async fn delete_prefix(

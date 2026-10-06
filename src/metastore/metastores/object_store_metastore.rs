@@ -27,6 +27,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::{StreamExt, TryStreamExt};
+use object_store::UpdateVersion;
 use relative_path::RelativePathBuf;
 use tonic::async_trait;
 use tracing::{info, warn};
@@ -51,15 +52,15 @@ use crate::{
         metastore_traits::{Metastore, MetastoreObject},
     },
     option::Mode,
-    parseable::{DEFAULT_TENANT, PARSEABLE},
+    parseable::{DEFAULT_TENANT, GlobalSchema, PARSEABLE},
     storage::{
-        ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY,
-        SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
-        TARGETS_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
+        ALERTS_ROOT_DIRECTORY, GLOBAL_SCHEMA_FILE_NAME, ObjectStorage, ObjectStorageError,
+        PARSEABLE_ROOT_DIRECTORY, SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME,
+        STREAM_ROOT_DIRECTORY, TARGETS_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
         object_storage::{
-            alert_json_path, alert_state_json_path, filter_path, manifest_path, mttr_json_path,
-            outbound_http_policy_json_path, parseable_json_path, schema_path, stream_json_path,
-            to_bytes,
+            alert_json_path, alert_state_json_path, filter_path, global_schema_path, manifest_path,
+            mttr_json_path, outbound_http_policy_json_path, parseable_json_path, schema_path,
+            stream_json_path, to_bytes,
         },
     },
     users::filters::{Filter, migrate_v1_v2},
@@ -77,6 +78,10 @@ pub fn is_missing_optional_dir(err: &ObjectStorageError) -> bool {
         ObjectStorageError::IoError(err) => err.kind() == std::io::ErrorKind::NotFound,
         _ => false,
     }
+}
+
+fn is_legacy_schema_file(file_name: &str) -> bool {
+    file_name.contains(".schema") && !file_name.ends_with(GLOBAL_SCHEMA_FILE_NAME)
 }
 
 #[async_trait]
@@ -1160,7 +1165,7 @@ impl Metastore for ObjectStoreMetastore {
             .storage
             .get_objects(
                 Some(&path_prefix),
-                Box::new(|file_name: String| file_name.contains(".schema")),
+                Box::new(|file_name: String| is_legacy_schema_file(&file_name)),
                 tenant_id,
             )
             .await?
@@ -1178,6 +1183,10 @@ impl Metastore for ObjectStoreMetastore {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<Bytes, MetastoreError> {
+        if let Some(global_schema) = self.get_global_schema(stream_name, tenant_id).await? {
+            return Ok(global_schema.schema);
+        }
+
         Ok(self
             .storage
             .get_object(&schema_path(stream_name, tenant_id), tenant_id)
@@ -1194,6 +1203,40 @@ impl Metastore for ObjectStoreMetastore {
         Ok(self
             .storage
             .put_object(&path, to_bytes(&obj), tenant_id)
+            .await?)
+    }
+
+    /// Retrieve a global schema and the validator from the same object-store GET.
+    async fn get_global_schema(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<GlobalSchema>, MetastoreError> {
+        // LocalFS does not participate in the shared registry. Only bypass
+        // explicitly unsupported backends; propagate errors from cloud stores.
+        if !self.storage.supports_conditional_writes() {
+            return Ok(None);
+        }
+        let path = global_schema_path(stream_name, tenant_id);
+        let Some((schema, version)) = self.storage.get_object_versioned(&path, tenant_id).await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(GlobalSchema::new(schema, version)))
+    }
+
+    /// Atomically create a missing global schema or compare-and-swap an existing one.
+    async fn put_global_schema(
+        &self,
+        obj: Schema,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+        expected: Option<UpdateVersion>,
+    ) -> Result<bool, MetastoreError> {
+        let path = global_schema_path(stream_name, tenant_id);
+        Ok(self
+            .storage
+            .put_object_if(&path, to_bytes(&obj), expected, tenant_id)
             .await?)
     }
 
@@ -1468,5 +1511,20 @@ mod tests {
             storage.get_object(&path, &tenant_id).await,
             Err(ObjectStorageError::NoSuchKey(_))
         ));
+    }
+
+    #[test]
+    fn global_schema_path_is_tenant_scoped_and_distinct_from_legacy_schema() {
+        assert_eq!(
+            global_schema_path("events", &Some("tenant-a".to_string())).as_str(),
+            "tenant-a/events/.stream/.global.schema"
+        );
+        assert_eq!(
+            global_schema_path("events", &None).as_str(),
+            "events/.stream/.global.schema"
+        );
+        assert!(is_legacy_schema_file(".schema"));
+        assert!(is_legacy_schema_file(".ingestor.node-1.schema"));
+        assert!(!is_legacy_schema_file(GLOBAL_SCHEMA_FILE_NAME));
     }
 }

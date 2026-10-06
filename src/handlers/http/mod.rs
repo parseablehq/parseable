@@ -139,6 +139,13 @@ pub async fn fetch_schema(
     stream_name: &str,
     tenant_id: &Option<String>,
 ) -> anyhow::Result<arrow_schema::Schema> {
+    if let Some(global) = PARSEABLE
+        .metastore
+        .get_global_schema(stream_name, tenant_id)
+        .await?
+    {
+        return Ok(serde_json::from_slice(&global.schema)?);
+    }
     let res: Vec<Schema> = PARSEABLE
         .metastore
         .get_all_schemas(stream_name, tenant_id)

@@ -590,6 +590,10 @@ impl Gcs {
 
 #[async_trait]
 impl ObjectStorage for Gcs {
+    fn supports_conditional_writes(&self) -> bool {
+        true
+    }
+
     async fn parallel_chunked_download(
         &self,
         path: &RelativePath,
@@ -666,6 +670,29 @@ impl ObjectStorage for Gcs {
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError> {
         Ok(self._get_object(path, tenant_id).await?)
+    }
+
+    async fn get_object_versioned(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<(Bytes, object_store::UpdateVersion)>, ObjectStorageError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let result =
+            crate::storage::get_object_versioned(&*self.client, &to_object_store_path(path)).await;
+        increment_object_store_calls_by_date("GET", &date, tenant);
+        let result = result?;
+        if let Some((body, _)) = &result {
+            increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant);
+            increment_bytes_scanned_in_object_store_calls_by_date(
+                "GET",
+                body.len() as u64,
+                &date,
+                tenant,
+            );
+        }
+        Ok(result)
     }
 
     async fn get_object_ranged(
@@ -799,6 +826,30 @@ impl ObjectStorage for Gcs {
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
 
         Ok(())
+    }
+
+    async fn put_object_if(
+        &self,
+        path: &RelativePath,
+        data: Bytes,
+        expected: Option<object_store::UpdateVersion>,
+        tenant_id: &Option<String>,
+    ) -> Result<bool, ObjectStorageError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let result = crate::storage::put_object_if(
+            &*self.client,
+            &to_object_store_path(path),
+            data,
+            expected,
+        )
+        .await;
+        increment_object_store_calls_by_date("PUT", &date, tenant);
+        let written = result?;
+        if written {
+            increment_files_scanned_in_object_store_calls_by_date("PUT", 1, &date, tenant);
+        }
+        Ok(written)
     }
 
     async fn delete_prefix(
