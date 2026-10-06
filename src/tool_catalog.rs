@@ -1,6 +1,14 @@
 use actix_web::HttpResponse;
 use serde_json::{Value, json};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolEffect {
+    ReadOnly,
+    ExpensiveRead,
+    Mutation,
+    ExternalSideEffect,
+}
+
 #[derive(Clone, Debug)]
 pub struct ToolSpec {
     pub name: &'static str,
@@ -21,6 +29,35 @@ impl ToolSpec {
             title,
             description,
             input_schema,
+        }
+    }
+
+    pub fn effect(&self) -> ToolEffect {
+        match self.name {
+            "get_dataset_stats"
+            | "sample_events"
+            | "get_log_context"
+            | "query_sql"
+            | "query_promql"
+            | "get_cluster_metrics"
+            | "explain_query"
+            | "discover_datasets"
+            | "get_traces"
+            | "get_trace" => ToolEffect::ExpensiveRead,
+            "create_alert"
+            | "enable_alert"
+            | "disable_alert"
+            | "create_alert_target"
+            | "update_alert"
+            | "delete_alert"
+            | "update_alert_target"
+            | "delete_alert_target"
+            | "save_tile"
+            | "create_dashboard"
+            | "update_dashboard"
+            | "delete_dashboard" => ToolEffect::Mutation,
+            "evaluate_alert" => ToolEffect::ExternalSideEffect,
+            _ => ToolEffect::ReadOnly,
         }
     }
 }
@@ -74,6 +111,45 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
             "List datasets",
             "List all log datasets available on this Parseable server.",
             empty_schema(),
+        ),
+        ToolSpec::new(
+            "discover_datasets",
+            "Discover active datasets",
+            "Find RBAC-visible datasets that contain logs, metrics, or traces in a resolved time range. Use this for broad telemetry analysis when the user did not name an exact dataset.",
+            object_schema(
+                json!({
+                    "telemetryType": { "type": "string", "enum": ["logs", "metrics", "traces"] },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 },
+                    "startTime": string_property("Resolved RFC3339 start time."),
+                    "endTime": string_property("Resolved RFC3339 end time.")
+                }),
+                &["telemetryType", "startTime", "endTime"],
+            ),
+        ),
+        ToolSpec::new(
+            "resolve_dataset",
+            "Resolve dataset",
+            "Validate an exact user-named or trusted-context dataset against the caller-visible dataset list.",
+            object_schema(
+                json!({
+                    "query": string_property("User request or dataset search text."),
+                    "selectedDataset": { "type": "string" },
+                    "contextDataset": { "type": "string" }
+                }),
+                &["query"],
+            ),
+        ),
+        ToolSpec::new(
+            "resolve_time_range",
+            "Resolve time range",
+            "Resolve a user time expression into an absolute RFC3339 start and end time.",
+            object_schema(
+                json!({
+                    "expression": string_property("User time expression, such as `last hour` or `today`."),
+                    "timezone": { "type": "string", "default": "UTC" }
+                }),
+                &["expression"],
+            ),
         ),
         ToolSpec::new(
             "get_dataset_schema",
@@ -225,6 +301,35 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
             ),
         ),
         ToolSpec::new(
+            "get_traces",
+            "Get traces",
+            "List bounded traces or spans from caller-visible trace datasets.",
+            object_schema(
+                json!({
+                    "datasets": { "type": "array", "minItems": 1, "maxItems": 10, "items": { "type": "string" } },
+                    "serviceName": { "type": "string" },
+                    "startTime": string_property("RFC3339 range start."),
+                    "endTime": string_property("RFC3339 range end."),
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 }
+                }),
+                &["startTime", "endTime"],
+            ),
+        ),
+        ToolSpec::new(
+            "get_trace",
+            "Get trace",
+            "Get the bounded span details for one trace ID.",
+            object_schema(
+                json!({
+                    "traceId": string_property("Trace ID."),
+                    "datasets": { "type": "array", "minItems": 1, "maxItems": 10, "items": { "type": "string" } },
+                    "startTime": string_property("RFC3339 range start."),
+                    "endTime": string_property("RFC3339 range end.")
+                }),
+                &["traceId", "startTime", "endTime"],
+            ),
+        ),
+        ToolSpec::new(
             "ping",
             "Ping Parseable server",
             "Check connectivity and server health.",
@@ -330,6 +435,130 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
             "List unique dashboard tags in the caller's tenant.",
             empty_schema(),
         ),
+        ToolSpec::new(
+            "get_dashboard",
+            "Get dashboard",
+            "Retrieve one caller-visible dashboard with its tiles.",
+            object_schema(
+                json!({ "dashboardId": string_property("Dashboard ID.") }),
+                &["dashboardId"],
+            ),
+        ),
+        ToolSpec::new(
+            "list_dashboards",
+            "List dashboards",
+            "List caller-visible dashboards with compact metadata.",
+            object_schema(
+                json!({
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 }
+                }),
+                &[],
+            ),
+        ),
+        ToolSpec::new(
+            "update_alert",
+            "Update alert",
+            "Update an alert using an explicit validated patch or complete replacement after confirmation.",
+            object_schema(
+                json!({
+                    "alertId": string_property("Alert ID to update."),
+                    "patch": { "type": "object", "additionalProperties": true, "description": "Explicit camelCase alert patch." },
+                    "replacement": { "type": "object", "additionalProperties": true, "description": "Optional complete validated alert replacement." },
+                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                }),
+                &["alertId", "idempotencyKey"],
+            ),
+        ),
+        ToolSpec::new(
+            "delete_alert",
+            "Delete alert",
+            "Delete one alert after explicit confirmation.",
+            object_schema(
+                json!({
+                    "alertId": string_property("Alert ID to delete."),
+                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                }),
+                &["alertId", "idempotencyKey"],
+            ),
+        ),
+        ToolSpec::new(
+            "update_alert_target",
+            "Update alert target",
+            "Update an alert target using an explicit patch or replacement after confirmation.",
+            object_schema(
+                json!({
+                    "targetId": string_property("Alert-target ID."),
+                    "patch": { "type": "object", "additionalProperties": true },
+                    "replacement": { "type": "object", "additionalProperties": true },
+                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                }),
+                &["targetId", "idempotencyKey"],
+            ),
+        ),
+        ToolSpec::new(
+            "delete_alert_target",
+            "Delete alert target",
+            "Delete one alert target after explicit confirmation.",
+            object_schema(
+                json!({
+                    "targetId": string_property("Alert-target ID."),
+                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                }),
+                &["targetId", "idempotencyKey"],
+            ),
+        ),
+        ToolSpec::new(
+            "save_tile",
+            "Save tile",
+            "Persist a validated tile in an existing dashboard after confirmation.",
+            object_schema(
+                json!({
+                    "dashboardId": string_property("Dashboard ID."),
+                    "tile": { "type": "object", "additionalProperties": true },
+                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                }),
+                &["dashboardId", "tile", "idempotencyKey"],
+            ),
+        ),
+        ToolSpec::new(
+            "create_dashboard",
+            "Create dashboard",
+            "Persist a validated dashboard after confirmation.",
+            object_schema(
+                json!({
+                    "dashboard": { "type": "object", "additionalProperties": true },
+                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                }),
+                &["dashboard", "idempotencyKey"],
+            ),
+        ),
+        ToolSpec::new(
+            "update_dashboard",
+            "Update dashboard",
+            "Update a dashboard using an explicit patch or validated replacement after confirmation.",
+            object_schema(
+                json!({
+                    "dashboardId": string_property("Dashboard ID."),
+                    "patch": { "type": "object", "additionalProperties": true },
+                    "replacement": { "type": "object", "additionalProperties": true },
+                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                }),
+                &["dashboardId", "idempotencyKey"],
+            ),
+        ),
+        ToolSpec::new(
+            "delete_dashboard",
+            "Delete dashboard",
+            "Delete one dashboard after explicit confirmation.",
+            object_schema(
+                json!({
+                    "dashboardId": string_property("Dashboard ID."),
+                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                }),
+                &["dashboardId", "idempotencyKey"],
+            ),
+        ),
     ]
 }
 
@@ -368,7 +597,7 @@ mod tests {
         let tools = oss_tool_specs();
         let names = tools.iter().map(|tool| tool.name).collect::<HashSet<_>>();
 
-        assert_eq!(tools.len(), 33);
+        assert_eq!(tools.len(), 48);
         assert_eq!(tools.len(), names.len());
     }
 
@@ -382,7 +611,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response["tools"].as_array().unwrap().len(), 33);
+        assert_eq!(response["tools"].as_array().unwrap().len(), 48);
         assert_eq!(response["tools"][0]["name"], "list_datasets");
         assert_eq!(response["tools"][0]["inputSchema"]["type"], "object");
     }
