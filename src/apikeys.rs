@@ -30,12 +30,27 @@ use serde::Deserialize;
 /// Request body for creating a new API key. `roles` is a set of role names
 /// that must already exist in the tenant; permissions for the backing user
 /// are derived from these roles (same flow as native/OAuth users).
+/// `providedApiKey` lets a caller register their own key; omitting it preserves
+/// the existing server-generated key behavior.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateApiKeyRequest {
     pub key_name: String,
     #[serde(default)]
     pub roles: HashSet<String>,
+    pub provided_api_key: Option<String>,
+}
+
+/// Reject short or malformed caller-supplied credentials before persisting them.
+pub fn validate_provided_api_key(value: &str) -> Result<(), ApiKeyError> {
+    if !(32..=256).contains(&value.len())
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(ApiKeyError::InvalidProvidedApiKey);
+    }
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +60,12 @@ pub enum ApiKeyError {
 
     #[error("Duplicate key name: {0}")]
     DuplicateKeyName(String),
+
+    #[error("API key value is already registered")]
+    DuplicateApiKey,
+
+    #[error("providedApiKey must be 32-256 ASCII letters, digits, hyphens, or underscores")]
+    InvalidProvidedApiKey,
 
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
@@ -66,7 +87,10 @@ impl actix_web::ResponseError for ApiKeyError {
     fn status_code(&self) -> actix_web::http::StatusCode {
         match self {
             ApiKeyError::KeyNotFound(_) => actix_web::http::StatusCode::NOT_FOUND,
-            ApiKeyError::DuplicateKeyName(_) => actix_web::http::StatusCode::CONFLICT,
+            ApiKeyError::DuplicateKeyName(_) | ApiKeyError::DuplicateApiKey => {
+                actix_web::http::StatusCode::CONFLICT
+            }
+            ApiKeyError::InvalidProvidedApiKey => actix_web::http::StatusCode::BAD_REQUEST,
             ApiKeyError::Unauthorized(_) => actix_web::http::StatusCode::FORBIDDEN,
             ApiKeyError::RevocationSyncFailed(_) => {
                 actix_web::http::StatusCode::SERVICE_UNAVAILABLE
