@@ -451,18 +451,17 @@ pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyh
                 let id = *alert.get_id();
                 let handle = tokio::spawn(async move {
                     let mut retry_counter = 0;
-                    let mut sleep_duration = alert.get_eval_frequency();
                     loop {
-                        match alerts_utils::evaluate_alert(&*alert).await {
+                        let sleep_duration = match alerts_utils::evaluate_alert(&*alert).await {
                             Ok(_) => {
                                 retry_counter = 0;
+                                alert.get_eval_frequency()
                             }
                             Err(err) => {
                                 warn!(
                                     "Error while evaluation- {}\nRetrying after sleeping for 1 minute",
                                     err
                                 );
-                                sleep_duration = 1;
                                 retry_counter += 1;
 
                                 if retry_counter > 3 {
@@ -472,8 +471,9 @@ pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyh
                                     );
                                     break;
                                 }
+                                1
                             }
-                        }
+                        };
                         tokio::time::sleep(Duration::from_secs(sleep_duration * 60)).await;
                     }
                 });
