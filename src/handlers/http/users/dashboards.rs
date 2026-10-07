@@ -32,6 +32,7 @@ use actix_web::{
     web::{self, Json, Path},
 };
 use serde_json::Error as SerdeError;
+use serde_json::Value;
 
 pub async fn list_dashboards(req: HttpRequest) -> Result<impl Responder, DashboardError> {
     let tenant_id = get_tenant_id_from_request(&req);
@@ -56,23 +57,29 @@ pub async fn list_dashboards(req: HttpRequest) -> Result<impl Responder, Dashboa
             if tags.is_empty() {
                 return Err(DashboardError::Metadata("Tags cannot be empty"));
             }
-            let dashboards = DASHBOARDS.list_dashboards_by_tags(tags, &tenant_id).await;
-            let dashboard_summaries = dashboards
-                .iter()
-                .map(|dashboard| dashboard.to_summary())
-                .collect::<Vec<_>>();
+            let dashboard_summaries = list_dashboards_internal(0, Some(tags), &tenant_id).await;
             return Ok((web::Json(dashboard_summaries), StatusCode::OK));
         }
     }
-    let dashboards = DASHBOARDS
-        .list_dashboards(dashboard_limit, &tenant_id)
-        .await;
-    let dashboard_summaries = dashboards
-        .iter()
-        .map(|dashboard| dashboard.to_summary())
-        .collect::<Vec<_>>();
+    let dashboard_summaries = list_dashboards_internal(dashboard_limit, None, &tenant_id).await;
 
     Ok((web::Json(dashboard_summaries), StatusCode::OK))
+}
+
+pub async fn list_dashboards_internal(
+    limit: usize,
+    tags: Option<Vec<String>>,
+    tenant_id: &Option<String>,
+) -> Vec<Value> {
+    let dashboards = if let Some(tags) = tags {
+        DASHBOARDS.list_dashboards_by_tags(tags, tenant_id).await
+    } else {
+        DASHBOARDS.list_dashboards(limit, tenant_id).await
+    };
+    dashboards
+        .iter()
+        .map(|dashboard| Value::Object(dashboard.to_summary()))
+        .collect()
 }
 
 pub async fn get_dashboard(
@@ -81,12 +88,19 @@ pub async fn get_dashboard(
 ) -> Result<impl Responder, DashboardError> {
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
     let tenant_id = get_tenant_id_from_request(&req);
-    let dashboard = DASHBOARDS
-        .get_dashboard(dashboard_id, &tenant_id)
-        .await
-        .ok_or_else(|| DashboardError::Metadata("Dashboard does not exist"))?;
+    let dashboard = get_dashboard_internal(dashboard_id, &tenant_id).await?;
 
     Ok((web::Json(dashboard), StatusCode::OK))
+}
+
+pub async fn get_dashboard_internal(
+    dashboard_id: ulid::Ulid,
+    tenant_id: &Option<String>,
+) -> Result<Dashboard, DashboardError> {
+    DASHBOARDS
+        .get_dashboard(dashboard_id, tenant_id)
+        .await
+        .ok_or(DashboardError::Metadata("Dashboard does not exist"))
 }
 
 pub async fn create_dashboard(
@@ -245,10 +259,12 @@ pub async fn add_tile(
 }
 
 pub async fn list_tags(req: HttpRequest) -> Result<impl Responder, DashboardError> {
-    let tags = DASHBOARDS
-        .list_tags(&get_tenant_id_from_request(&req))
-        .await;
+    let tags = list_tags_internal(&get_tenant_id_from_request(&req)).await;
     Ok((web::Json(tags), StatusCode::OK))
+}
+
+pub async fn list_tags_internal(tenant_id: &Option<String>) -> Vec<String> {
+    DASHBOARDS.list_tags(tenant_id).await
 }
 
 #[derive(Debug, thiserror::Error)]

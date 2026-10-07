@@ -36,25 +36,40 @@ use crate::{
 // POST /targets
 pub async fn post(
     req: HttpRequest,
-    Json(mut target): Json<Target>,
+    Json(target): Json<Target>,
 ) -> Result<impl Responder, AlertError> {
     let tenant_id = get_tenant_id_from_request(&req);
-    target.tenant = tenant_id;
+    Ok(web::Json(post_internal(target, &tenant_id).await?))
+}
+
+/// Shared target-creation implementation for HTTP handlers and in-process callers.
+pub async fn post_internal(
+    mut target: Target,
+    tenant_id: &Option<String>,
+) -> Result<serde_json::Value, AlertError> {
+    target.tenant.clone_from(tenant_id);
     target.validate_outbound_policy().await?;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;
 
-    Ok(web::Json(target.mask()))
+    Ok(serde_json::to_value(target.mask())?)
 }
 
 // GET /targets
 pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     let tenant_id = get_tenant_id_from_request(&req);
+    Ok(web::Json(list_internal(&tenant_id).await?))
+}
+
+/// Shared target-list implementation for HTTP handlers and in-process callers.
+pub async fn list_internal(
+    tenant_id: &Option<String>,
+) -> Result<Vec<serde_json::Value>, AlertError> {
     let handles = FuturesUnordered::new();
     // add to the map
     let mut list = vec![];
-    for target in TARGETS.list(&tenant_id).await? {
+    for target in TARGETS.list(tenant_id).await? {
         handles.push(tokio::spawn(async move {
             if let Err(err) = target.validate_outbound_policy().await {
                 error!(error = %err, "Alert target rejected during outbound policy validation");
@@ -82,14 +97,22 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
         );
     }
 
-    Ok(web::Json(list))
+    Ok(list)
 }
 
 // GET /targets/{target_id}
 pub async fn get(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let target_id = target_id.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let target = TARGETS.get_target_by_id(&target_id, &tenant_id).await?;
+    Ok(web::Json(get_internal(target_id, &tenant_id).await?))
+}
+
+/// Shared target lookup implementation for HTTP handlers and in-process callers.
+pub async fn get_internal(
+    target_id: Ulid,
+    tenant_id: &Option<String>,
+) -> Result<serde_json::Value, AlertError> {
+    let target = TARGETS.get_target_by_id(&target_id, tenant_id).await?;
     let res = if let Err(e) = target.validate_outbound_policy().await {
         let message = match &e {
             AlertError::OutboundPolicy(policy_error) => policy_error.sanitized_message(),
@@ -106,7 +129,7 @@ pub async fn get(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Respond
             "enabled": true
         })
     };
-    Ok(web::Json(res))
+    Ok(res)
 }
 
 // PUT /targets/{target_id}

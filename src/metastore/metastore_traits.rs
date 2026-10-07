@@ -52,23 +52,6 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         tenant_id: &Option<String>,
     ) -> Result<Vec<Bytes>, MetastoreError>;
 
-    /// overview
-    async fn get_overviews(
-        &self,
-        tenant_id: &Option<String>,
-    ) -> Result<HashMap<String, Option<Bytes>>, MetastoreError>;
-    async fn put_overview(
-        &self,
-        obj: &dyn MetastoreObject,
-        stream: &str,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError>;
-    async fn delete_overview(
-        &self,
-        stream: &str,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError>;
-
     /// keystone
     async fn get_keystones(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
     async fn put_keystone(

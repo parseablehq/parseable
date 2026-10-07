@@ -111,6 +111,7 @@ impl ParseableServer for Server {
             .service(
                 web::scope(&prism_base_path())
                     .service(Server::get_prism_home())
+                    .service(Server::get_llm_webscope())
                     .service(Server::get_prism_logstream())
                     .service(Server::get_prism_datasets())
                     .service(Server::get_apikeys_webscope())
@@ -199,6 +200,16 @@ impl ParseableServer for Server {
 }
 
 impl Server {
+    pub fn get_llm_webscope() -> Scope {
+        web::scope("/llm").service(
+            web::resource("/tools").route(
+                web::get()
+                    .to(crate::tool_catalog::list_tool_registry)
+                    .authorize(Action::Query),
+            ),
+        )
+    }
+
     pub fn get_prism_home() -> Scope {
         web::scope("/home")
             .service(web::resource("").route(web::get().to(http::prism_home::home_api)))
