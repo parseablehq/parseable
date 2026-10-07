@@ -1919,6 +1919,14 @@ impl Stream {
         local_schema: &Schema,
         tenant_id: &Option<String>,
     ) -> Result<Arc<Resolution>, StagingError> {
+        let tenant_id = if let Some(tenant) = tenant_id
+            && tenant.eq(DEFAULT_TENANT)
+        {
+            &None
+        } else {
+            tenant_id
+        };
+
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|err| StagingError::GlobalSchema(err.to_string()))?;
         // The opt-out prevents bootstrap, not safe handling of a registry that
