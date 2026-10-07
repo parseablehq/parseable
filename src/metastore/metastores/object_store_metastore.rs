@@ -59,7 +59,7 @@ use crate::{
         object_storage::{
             alert_json_path, alert_state_json_path, filter_path, manifest_path, mttr_json_path,
             outbound_http_policy_json_path, parseable_json_path, schema_path, stream_json_path,
-            to_bytes,
+            tenant_prefix, to_bytes,
         },
     },
     users::filters::{Filter, migrate_v1_v2},
@@ -777,7 +777,7 @@ impl Metastore for ObjectStoreMetastore {
         tenant_id: &Option<String>,
         _is_migration: bool,
     ) -> Result<Bytes, MetastoreError> {
-        let tenant = tenant_id.as_deref().unwrap_or("");
+        let tenant = tenant_prefix(tenant_id);
         let path = if get_base {
             RelativePathBuf::from_iter([
                 tenant,
@@ -799,7 +799,7 @@ impl Metastore for ObjectStoreMetastore {
         tenant_id: &Option<String>,
         _is_migration: bool,
     ) -> Result<Vec<Bytes>, MetastoreError> {
-        let root = tenant_id.as_deref().unwrap_or("");
+        let root = tenant_prefix(tenant_id);
         let path = RelativePathBuf::from_iter([root, stream_name, STREAM_ROOT_DIRECTORY]);
         if let Some(mode) = mode {
             if mode.eq(&Mode::Ingest) {

@@ -1374,13 +1374,7 @@ fn stream_relative_path(
         let custom_partition_list = custom_partition_fields.split(',').collect::<Vec<&str>>();
         file_suffix = str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
     }
-    if let Some(tenant) = tenant_id
-        && !tenant.eq(DEFAULT_TENANT)
-    {
-        format!("{tenant}/{stream_name}/{file_suffix}")
-    } else {
-        format!("{stream_name}/{file_suffix}")
-    }
+    format!("{}/{file_suffix}", stream_prefix(stream_name, tenant_id))
 }
 
 pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
@@ -1449,6 +1443,30 @@ pub async fn commit_schema_to_storage(
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))
 }
 
+/// The tenant component of an object path, or `""` for the default tenant.
+///
+/// Single source of truth for tenant path scoping: a named tenant is prefixed
+/// as `{tenant}/...`, while the default tenant (`None`) has no prefix. Use this
+/// (or [`stream_prefix`]) instead of matching on `tenant_id` ad hoc, so
+/// list/delete/metadata paths cannot drift apart again.
+#[inline]
+pub fn tenant_prefix(tenant_id: &Option<String>) -> &str {
+    match tenant_id.as_deref() {
+        Some(tenant) if tenant != DEFAULT_TENANT => tenant,
+        _ => "",
+    }
+}
+
+/// Tenant-qualified stream prefix (no trailing slash): `{tenant}/{stream}` for
+/// a named tenant, `{stream}` for the default tenant.
+#[inline]
+pub fn stream_prefix(stream_name: &str, tenant_id: &Option<String>) -> String {
+    match tenant_prefix(tenant_id) {
+        "" => stream_name.to_owned(),
+        tenant => format!("{tenant}/{stream_name}"),
+    }
+}
+
 #[inline(always)]
 pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
     serde_json::to_vec(any)
@@ -1457,7 +1475,7 @@ pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
 }
 
 pub fn schema_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
-    let tenant = tenant_id.as_deref().unwrap_or("");
+    let tenant = tenant_prefix(tenant_id);
     if PARSEABLE.options.mode == Mode::Ingest {
         let id = INGESTOR_META
             .get()
@@ -1473,7 +1491,7 @@ pub fn schema_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePat
 
 #[inline(always)]
 pub fn stream_json_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
-    let tenant = tenant_id.as_deref().unwrap_or("");
+    let tenant = tenant_prefix(tenant_id);
     if PARSEABLE.options.mode == Mode::Ingest {
         let id = INGESTOR_META
             .get()
@@ -1503,7 +1521,7 @@ pub fn stream_json_path(stream_name: &str, tenant_id: &Option<String>) -> Relati
 /// scan to find it.
 #[inline(always)]
 pub fn tombstone_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
-    let tenant = tenant_id.as_deref().unwrap_or("");
+    let tenant = tenant_prefix(tenant_id);
     RelativePathBuf::from_iter([
         TOMBSTONE_ROOT_DIRECTORY,
         tenant,
@@ -1553,7 +1571,7 @@ pub async fn list_tombstoned_streams(
     storage: &(impl ObjectStorage + ?Sized),
     tenant_id: &Option<String>,
 ) -> Result<Vec<String>, ObjectStorageError> {
-    let tenant = tenant_id.as_deref().unwrap_or("");
+    let tenant = tenant_prefix(tenant_id);
     let root = RelativePathBuf::from_iter([TOMBSTONE_ROOT_DIRECTORY, tenant]);
     let candidates = storage.list_dirs_relative(&root, tenant_id).await?;
 
@@ -1574,7 +1592,7 @@ pub fn filter_path(
     filter_file_name: &str,
     tenant_id: &Option<String>,
 ) -> RelativePathBuf {
-    let root = tenant_id.as_deref().unwrap_or("");
+    let root = tenant_prefix(tenant_id);
     RelativePathBuf::from_iter([
         root,
         USERS_ROOT_DIR,
@@ -1594,21 +1612,20 @@ pub fn parseable_json_path() -> RelativePathBuf {
 /// TODO: Needs to be updated for distributed mode
 #[inline(always)]
 pub fn alert_json_path(alert_id: Ulid, tenant_id: &Option<String>) -> RelativePathBuf {
-    if let Some(tenant_id) = tenant_id.as_ref() {
-        RelativePathBuf::from_iter([
-            tenant_id,
+    match tenant_prefix(tenant_id) {
+        "" => RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, &format!("{alert_id}.json")]),
+        tenant => RelativePathBuf::from_iter([
+            tenant,
             ALERTS_ROOT_DIRECTORY,
             &format!("{alert_id}.json"),
-        ])
-    } else {
-        RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, &format!("{alert_id}.json")])
+        ]),
     }
 }
 
 /// TODO: Needs to be updated for distributed mode
 #[inline(always)]
 pub fn target_json_path(target_id: &Ulid, tenant_id: &Option<String>) -> RelativePathBuf {
-    let root = tenant_id.as_deref().unwrap_or("");
+    let root = tenant_prefix(tenant_id);
     RelativePathBuf::from_iter([
         root,
         SETTINGS_ROOT_DIRECTORY,
@@ -1621,7 +1638,7 @@ pub fn target_json_path(target_id: &Ulid, tenant_id: &Option<String>) -> Relativ
 /// Format: "<tenant>/settings/outbound_http_policy.json"
 #[inline(always)]
 pub fn outbound_http_policy_json_path(tenant_id: &Option<String>) -> RelativePathBuf {
-    let root = tenant_id.as_deref().unwrap_or("");
+    let root = tenant_prefix(tenant_id);
     RelativePathBuf::from_iter([root, SETTINGS_ROOT_DIRECTORY, "outbound_http_policy.json"])
 }
 
@@ -1629,7 +1646,7 @@ pub fn outbound_http_policy_json_path(tenant_id: &Option<String>) -> RelativePat
 /// Format: ".alerts/alert_state_{alert_id}.json"
 #[inline(always)]
 pub fn alert_state_json_path(alert_id: Ulid, tenant_id: &Option<String>) -> RelativePathBuf {
-    let root = tenant_id.as_deref().unwrap_or("");
+    let root = tenant_prefix(tenant_id);
     RelativePathBuf::from_iter([
         root,
         ALERTS_ROOT_DIRECTORY,
@@ -1641,10 +1658,9 @@ pub fn alert_state_json_path(alert_id: Ulid, tenant_id: &Option<String>) -> Rela
 /// Format: ".alerts/mttr.json"
 #[inline(always)]
 pub fn mttr_json_path(tenant_id: &Option<String>) -> RelativePathBuf {
-    if let Some(tenant) = tenant_id.as_ref() {
-        RelativePathBuf::from_iter([tenant, ALERTS_ROOT_DIRECTORY, "mttr.json"])
-    } else {
-        RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, "mttr.json"])
+    match tenant_prefix(tenant_id) {
+        "" => RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, "mttr.json"]),
+        tenant => RelativePathBuf::from_iter([tenant, ALERTS_ROOT_DIRECTORY, "mttr.json"]),
     }
 }
 
