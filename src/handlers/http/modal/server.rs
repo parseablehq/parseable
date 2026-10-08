@@ -201,13 +201,21 @@ impl ParseableServer for Server {
 
 impl Server {
     pub fn get_llm_webscope() -> Scope {
-        web::scope("/llm").service(
-            web::resource("/tools").route(
-                web::get()
-                    .to(crate::tool_catalog::list_tool_registry)
-                    .authorize(Action::Query),
-            ),
-        )
+        web::scope("/llm")
+            .service(
+                web::resource("/tools/list").route(
+                    web::get()
+                        .to(crate::tool_catalog::list_tool_registry)
+                        .authorize(Action::Query),
+                ),
+            )
+            .service(
+                web::resource("/tools/call").route(
+                    web::post()
+                        .to(crate::tool_executor::call_tool_registry)
+                        .authorize(Action::Query),
+                ),
+            )
     }
 
     pub fn get_prism_home() -> Scope {
