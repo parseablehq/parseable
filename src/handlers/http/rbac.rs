@@ -135,18 +135,14 @@ pub fn get_user_internal(
 pub async fn post_user(
     req: HttpRequest,
     userid: web::Path<String>,
-    body: Option<web::Json<serde_json::Value>>,
+    web::Json(body): web::Json<user::CreateUserOptions>,
 ) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     validator::user_role_name(&userid)?;
     let mut metadata = get_metadata(&tenant_id).await?;
 
-    let (user_roles, provided_password) = body
-        .map(|body| serde_json::from_value::<user::CreateUserRequest>(body.into_inner()))
-        .transpose()?
-        .map(user::CreateUserRequest::split_request)
-        .unwrap_or_default();
+    let (user_roles, password) = body.split_request();
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
@@ -171,13 +167,10 @@ pub async fn post_user(
         return Err(RBACError::UserExists(userid));
     }
 
-    let (user, password) = match provided_password {
-        Some(password) => user::User::new_basic_with_provided_password(
-            userid.clone(),
-            tenant_id.clone(),
-            false,
-            password,
-        )?,
+    let (user, password) = match password {
+        Some(password) => {
+            user::User::new_basic_with_password(userid.clone(), tenant_id.clone(), false, password)?
+        }
         None => user::User::new_basic(userid.clone(), tenant_id.clone(), false),
     };
 
@@ -560,8 +553,8 @@ pub enum RBACError {
     ProtectedUser,
     #[error("Role is protected")]
     ProtectedRole,
-    #[error("providedPassword must be 8-256 bytes with no control characters")]
-    InvalidProvidedPassword,
+    #[error("password must be 8-256 bytes with no control characters or surrounding whitespace")]
+    InvalidPassword,
     #[error("{0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Failed to connect to storage: {0}")]
@@ -600,7 +593,7 @@ impl actix_web::ResponseError for RBACError {
             Self::UserExists(_) => StatusCode::BAD_REQUEST,
             Self::ProtectedUser => StatusCode::BAD_REQUEST,
             Self::ProtectedRole => StatusCode::BAD_REQUEST,
-            Self::InvalidProvidedPassword => StatusCode::BAD_REQUEST,
+            Self::InvalidPassword => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist => StatusCode::NOT_FOUND,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::ValidationError(_) => StatusCode::BAD_REQUEST,

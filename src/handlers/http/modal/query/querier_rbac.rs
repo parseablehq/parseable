@@ -45,7 +45,7 @@ use crate::{
 pub async fn post_user(
     req: HttpRequest,
     userid: web::Path<String>,
-    body: Option<web::Json<serde_json::Value>>,
+    web::Json(body): web::Json<user::CreateUserOptions>,
 ) -> Result<impl Responder, RBACError> {
     let username = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
@@ -53,11 +53,7 @@ pub async fn post_user(
     validator::user_role_name(&username)?;
     let mut metadata = get_metadata(&tenant_id).await?;
 
-    let (user_roles, provided_password) = body
-        .map(|body| serde_json::from_value::<user::CreateUserRequest>(body.into_inner()))
-        .transpose()?
-        .map(user::CreateUserRequest::split_request)
-        .unwrap_or_default();
+    let (user_roles, password) = body.split_request();
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
@@ -83,8 +79,8 @@ pub async fn post_user(
         return Err(RBACError::UserExists(username));
     }
 
-    let (mut user, password) = match provided_password {
-        Some(password) => user::User::new_basic_with_provided_password(
+    let (mut user, password) = match password {
+        Some(password) => user::User::new_basic_with_password(
             username.clone(),
             tenant_id.clone(),
             false,
