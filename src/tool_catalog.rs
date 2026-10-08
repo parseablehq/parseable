@@ -302,11 +302,9 @@ fn target_schema() -> Value {
     )
 }
 
-/// Tools implemented by both Parseable OSS and Enterprise.
-///
-/// Enterprise may extend this catalog, but an OSS server only advertises this
-/// list so MCP clients never discover enterprise-only capabilities.
-pub fn oss_tool_specs() -> Vec<ToolSpec> {
+/// Read-only tools implemented by Parseable OSS and safe for generic external
+/// invocation without a confirmation flow.
+pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec::new(
             "list_datasets",
@@ -436,33 +434,6 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
             empty_schema(),
         ),
         ToolSpec::new(
-            "enable_alert",
-            "Enable alert",
-            "Enable a disabled alert.",
-            alert_schema(),
-        ),
-        ToolSpec::new(
-            "disable_alert",
-            "Disable alert",
-            "Disable an active alert.",
-            alert_schema(),
-        ),
-        ToolSpec::new(
-            "evaluate_alert",
-            "Evaluate alert now",
-            "Evaluate an alert immediately. This may trigger notifications.",
-            alert_schema(),
-        ),
-        ToolSpec::new(
-            "create_alert",
-            "Create alert",
-            "Create an alert from a complete Parseable alert specification.",
-            object_schema(
-                json!({ "spec": { "type": "object", "additionalProperties": true } }),
-                &["spec"],
-            ),
-        ),
-        ToolSpec::new(
             "list_alert_targets",
             "List alert targets",
             "List configured alert notification targets.",
@@ -473,15 +444,6 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
             "Get alert target",
             "Get the configuration for one alert target.",
             target_schema(),
-        ),
-        ToolSpec::new(
-            "create_alert_target",
-            "Create alert target",
-            "Create an alert notification target.",
-            object_schema(
-                json!({ "spec": { "type": "object", "additionalProperties": true } }),
-                &["spec"],
-            ),
         ),
         ToolSpec::new(
             "get_traces",
@@ -639,6 +601,50 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
                 &[],
             ),
         ),
+    ]
+}
+
+/// Effectful OSS tools retained in the canonical registry for internal agents.
+/// Generic external invocation must not use this catalog until confirmation is
+/// server-verifiable.
+pub fn oss_action_tool_specs() -> Vec<ToolSpec> {
+    vec![
+        ToolSpec::new(
+            "enable_alert",
+            "Enable alert",
+            "Enable a disabled alert.",
+            alert_schema(),
+        ),
+        ToolSpec::new(
+            "disable_alert",
+            "Disable alert",
+            "Disable an active alert.",
+            alert_schema(),
+        ),
+        ToolSpec::new(
+            "evaluate_alert",
+            "Evaluate alert now",
+            "Evaluate an alert immediately. This may trigger notifications.",
+            alert_schema(),
+        ),
+        ToolSpec::new(
+            "create_alert",
+            "Create alert",
+            "Create an alert from a complete Parseable alert specification.",
+            object_schema(
+                json!({ "spec": { "type": "object", "additionalProperties": true } }),
+                &["spec"],
+            ),
+        ),
+        ToolSpec::new(
+            "create_alert_target",
+            "Create alert target",
+            "Create an alert notification target.",
+            object_schema(
+                json!({ "spec": { "type": "object", "additionalProperties": true } }),
+                &["spec"],
+            ),
+        ),
         ToolSpec::new(
             "update_alert",
             "Update alert",
@@ -745,8 +751,19 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
+/// Canonical OSS catalog used by internal agents and imported by Enterprise.
+pub fn oss_tool_specs() -> Vec<ToolSpec> {
+    let mut tools = oss_read_tool_specs();
+    tools.extend(oss_action_tool_specs());
+    tools
+}
+
 pub fn is_oss_tool(name: &str) -> bool {
     oss_tool_specs().iter().any(|tool| tool.name == name)
+}
+
+pub fn is_oss_read_tool(name: &str) -> bool {
+    oss_read_tool_specs().iter().any(|tool| tool.name == name)
 }
 
 pub fn registry_http_response(request: &HttpRequest, tools: Vec<Value>) -> HttpResponse {
@@ -775,7 +792,7 @@ pub fn registry_http_response(request: &HttpRequest, tools: Vec<Value>) -> HttpR
 
 /// `GET /api/prism/v1/llm/tools/list`
 pub async fn list_tool_registry(request: HttpRequest) -> HttpResponse {
-    let tools = oss_tool_specs()
+    let tools = oss_read_tool_specs()
         .into_iter()
         .map(|tool| {
             json!({
@@ -797,7 +814,10 @@ mod tests {
     use actix_web::{App, http::header, test, web};
     use serde_json::Value;
 
-    use super::{ToolCallRequest, ToolCallResult, list_tool_registry, oss_tool_specs};
+    use super::{
+        ToolCallRequest, ToolCallResult, ToolEffect, is_oss_read_tool, list_tool_registry,
+        oss_action_tool_specs, oss_read_tool_specs, oss_tool_specs,
+    };
 
     #[actix_web::test]
     async fn oss_catalog_has_unique_names() {
@@ -819,9 +839,42 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response["tools"].as_array().unwrap().len(), 47);
+        assert_eq!(
+            response["tools"].as_array().unwrap().len(),
+            oss_read_tool_specs().len()
+        );
         assert_eq!(response["tools"][0]["name"], "list_datasets");
         assert_eq!(response["tools"][0]["inputSchema"]["type"], "object");
+        assert!(oss_read_tool_specs().iter().all(|tool| matches!(
+            tool.effect(),
+            ToolEffect::ReadOnly | ToolEffect::ExpensiveRead
+        )));
+        assert!(
+            response["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|tool| tool["name"] != "create_alert")
+        );
+    }
+
+    #[actix_web::test]
+    async fn read_and_action_catalogs_are_structurally_separated() {
+        let read_tools = oss_read_tool_specs();
+        let action_tools = oss_action_tool_specs();
+
+        assert_eq!(read_tools.len(), 34);
+        assert_eq!(action_tools.len(), 13);
+        assert!(read_tools.iter().all(|tool| matches!(
+            tool.effect(),
+            ToolEffect::ReadOnly | ToolEffect::ExpensiveRead
+        )));
+        assert!(action_tools.iter().all(|tool| matches!(
+            tool.effect(),
+            ToolEffect::Mutation | ToolEffect::ExternalSideEffect
+        )));
+        assert!(read_tools.iter().all(|tool| is_oss_read_tool(tool.name)));
+        assert!(action_tools.iter().all(|tool| !is_oss_read_tool(tool.name)));
     }
 
     #[actix_web::test]

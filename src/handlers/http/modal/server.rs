@@ -210,8 +210,11 @@ impl Server {
                 ),
             )
             .service(
-                web::resource("/tools/call")
-                    .route(web::post().to(crate::tool_executor::call_tool_registry)),
+                web::resource("/tools/call").route(
+                    web::post()
+                        .to(crate::tool_executor::call_tool_registry)
+                        .authorize(Action::Query),
+                ),
             )
     }
 
