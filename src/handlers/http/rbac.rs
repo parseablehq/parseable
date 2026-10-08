@@ -142,11 +142,11 @@ pub async fn post_user(
     validator::user_role_name(&userid)?;
     let mut metadata = get_metadata(&tenant_id).await?;
 
-    let user_roles: HashSet<String> = if let Some(body) = body {
-        serde_json::from_value(body.into_inner())?
-    } else {
-        HashSet::new()
-    };
+    let (user_roles, provided_password) = body
+        .map(|body| serde_json::from_value::<user::CreateUserRequest>(body.into_inner()))
+        .transpose()?
+        .map(user::CreateUserRequest::split_request)
+        .unwrap_or_default();
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
@@ -171,7 +171,15 @@ pub async fn post_user(
         return Err(RBACError::UserExists(userid));
     }
 
-    let (user, password) = user::User::new_basic(userid.clone(), tenant_id.clone(), false);
+    let (user, password) = match provided_password {
+        Some(password) => user::User::new_basic_with_provided_password(
+            userid.clone(),
+            tenant_id.clone(),
+            false,
+            password,
+        )?,
+        None => user::User::new_basic(userid.clone(), tenant_id.clone(), false),
+    };
 
     metadata.users.push(user.clone());
 
@@ -552,6 +560,8 @@ pub enum RBACError {
     ProtectedUser,
     #[error("Role is protected")]
     ProtectedRole,
+    #[error("providedPassword must be 8-256 bytes with no control characters")]
+    InvalidProvidedPassword,
     #[error("{0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Failed to connect to storage: {0}")]
@@ -590,6 +600,7 @@ impl actix_web::ResponseError for RBACError {
             Self::UserExists(_) => StatusCode::BAD_REQUEST,
             Self::ProtectedUser => StatusCode::BAD_REQUEST,
             Self::ProtectedRole => StatusCode::BAD_REQUEST,
+            Self::InvalidProvidedPassword => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist => StatusCode::NOT_FOUND,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::ValidationError(_) => StatusCode::BAD_REQUEST,

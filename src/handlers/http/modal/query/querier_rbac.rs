@@ -53,11 +53,11 @@ pub async fn post_user(
     validator::user_role_name(&username)?;
     let mut metadata = get_metadata(&tenant_id).await?;
 
-    let user_roles: HashSet<String> = if let Some(body) = body {
-        serde_json::from_value(body.into_inner())?
-    } else {
-        HashSet::new()
-    };
+    let (user_roles, provided_password) = body
+        .map(|body| serde_json::from_value::<user::CreateUserRequest>(body.into_inner()))
+        .transpose()?
+        .map(user::CreateUserRequest::split_request)
+        .unwrap_or_default();
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
@@ -83,7 +83,15 @@ pub async fn post_user(
         return Err(RBACError::UserExists(username));
     }
 
-    let (mut user, password) = user::User::new_basic(username.clone(), tenant_id.clone(), false);
+    let (mut user, password) = match provided_password {
+        Some(password) => user::User::new_basic_with_provided_password(
+            username.clone(),
+            tenant_id.clone(),
+            false,
+            password,
+        )?,
+        None => user::User::new_basic(username.clone(), tenant_id.clone(), false),
+    };
     // add user roles
     user.roles.clone_from(&user_roles);
     metadata.users.push(user.clone());
