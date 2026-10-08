@@ -749,6 +749,21 @@ pub fn is_oss_tool(name: &str) -> bool {
     oss_tool_specs().iter().any(|tool| tool.name == name)
 }
 
+/// OSS tools safe to expose through the generic external invocation endpoint.
+/// Effectful tools remain in the canonical catalog for internal use, but are
+/// excluded until external calls have server-verifiable confirmation.
+pub fn oss_external_tool_specs() -> Vec<ToolSpec> {
+    oss_tool_specs()
+        .into_iter()
+        .filter(|tool| {
+            matches!(
+                tool.effect(),
+                ToolEffect::ReadOnly | ToolEffect::ExpensiveRead
+            )
+        })
+        .collect()
+}
+
 pub fn registry_http_response(request: &HttpRequest, tools: Vec<Value>) -> HttpResponse {
     let payload = json!({ "tools": tools });
     let body = serde_json::to_string(&payload).expect("tool registry is JSON serializable");
@@ -775,7 +790,7 @@ pub fn registry_http_response(request: &HttpRequest, tools: Vec<Value>) -> HttpR
 
 /// `GET /api/prism/v1/llm/tools/list`
 pub async fn list_tool_registry(request: HttpRequest) -> HttpResponse {
-    let tools = oss_tool_specs()
+    let tools = oss_external_tool_specs()
         .into_iter()
         .map(|tool| {
             json!({
@@ -797,7 +812,10 @@ mod tests {
     use actix_web::{App, http::header, test, web};
     use serde_json::Value;
 
-    use super::{ToolCallRequest, ToolCallResult, list_tool_registry, oss_tool_specs};
+    use super::{
+        ToolCallRequest, ToolCallResult, ToolEffect, list_tool_registry, oss_external_tool_specs,
+        oss_tool_specs,
+    };
 
     #[actix_web::test]
     async fn oss_catalog_has_unique_names() {
@@ -819,9 +837,23 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response["tools"].as_array().unwrap().len(), 47);
+        assert_eq!(
+            response["tools"].as_array().unwrap().len(),
+            oss_external_tool_specs().len()
+        );
         assert_eq!(response["tools"][0]["name"], "list_datasets");
         assert_eq!(response["tools"][0]["inputSchema"]["type"], "object");
+        assert!(oss_external_tool_specs().iter().all(|tool| matches!(
+            tool.effect(),
+            ToolEffect::ReadOnly | ToolEffect::ExpensiveRead
+        )));
+        assert!(
+            response["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|tool| tool["name"] != "create_alert")
+        );
     }
 
     #[actix_web::test]

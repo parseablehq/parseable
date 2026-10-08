@@ -18,7 +18,7 @@ use crate::{
     parseable::PARSEABLE,
     prism::logstream::get_prism_logstream_info,
     rbac::{Response, Users, map::SessionKey, role::Action},
-    tool_catalog::{ToolCallRequest, ToolCallResult, oss_tool_specs},
+    tool_catalog::{ToolCallRequest, ToolCallResult, oss_external_tool_specs},
     utils::{actix::extract_session_key_from_req, get_tenant_id_from_request, time::TimeRange},
 };
 
@@ -897,7 +897,7 @@ pub async fn call_tool_registry(
             "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
         ));
     }
-    let Some(spec) = oss_tool_specs()
+    let Some(spec) = oss_external_tool_specs()
         .into_iter()
         .find(|tool| tool.name == call.name)
     else {

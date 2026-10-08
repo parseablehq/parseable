@@ -39,8 +39,8 @@ matching `If-None-Match` receives `304 Not Modified`.
 
 The catalog is edition-specific:
 
-- OSS returns OSS-supported tools.
-- Enterprise returns OSS tools plus Enterprise tools.
+- OSS returns externally callable OSS read tools.
+- Enterprise returns OSS read tools plus Enterprise read tools.
 - Parseable Cloud uses the Enterprise server catalog and exposes the tools
   enabled by that deployment.
 
@@ -60,9 +60,10 @@ Request:
 }
 ```
 
-`arguments` must satisfy the tool's `inputSchema`. For mutation and
-external-side-effect tools, the MCP host or another trusted caller is
-responsible for applying its confirmation policy before calling this endpoint.
+`arguments` must satisfy the tool's `inputSchema`. The external registry
+currently exposes only read-only and expensive-read tools. Mutation and
+external-side-effect tools remain unavailable until Parseable supports a
+server-verifiable confirmation flow bound to the session, tool, and arguments.
 
 Successful and failed executions use the MCP `CallToolResult` shape:
 
