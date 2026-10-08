@@ -56,15 +56,13 @@ Request:
 ```json
 {
   "name": "get_dataset_schema",
-  "arguments": { "dataset": "application-logs" },
-  "confirmed": false
+  "arguments": { "dataset": "application-logs" }
 }
 ```
 
-`arguments` must satisfy the tool's `inputSchema`. `confirmed` defaults to
-`false`; mutation and external-side-effect tools reject execution until an
-MCP host or another trusted caller obtains user confirmation and sets it to
-`true`.
+`arguments` must satisfy the tool's `inputSchema`. For mutation and
+external-side-effect tools, the MCP host or another trusted caller is
+responsible for applying its confirmation policy before calling this endpoint.
 
 Successful and failed executions use the MCP `CallToolResult` shape:
 
@@ -84,8 +82,8 @@ Tool failures set `isError` to `true`, include a text error content item, and
 put the message under `structuredContent.error.message`. A completed tool call
 returns HTTP 200 even when the tool reports `isError: true`, matching MCP
 `tools/call` semantics. REST status codes distinguish failures that prevent a
-call from starting, such as malformed input, authentication, confirmation, or
-an unknown tool.
+call from starting, such as malformed input, authentication, or an unknown
+tool.
 
 The REST API is not itself an MCP transport. An MCP adapter maps the registry
 response to `tools/list`, forwards calls to this endpoint, and returns the

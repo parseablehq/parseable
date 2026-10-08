@@ -13,8 +13,6 @@ pub struct ToolCallRequest {
     pub name: String,
     #[serde(default = "empty_arguments")]
     pub arguments: Value,
-    #[serde(default)]
-    pub confirmed: bool,
 }
 
 fn empty_arguments() -> Value {
@@ -102,7 +100,6 @@ impl ToolSpec {
             | "sample_events"
             | "get_log_context"
             | "query_sql"
-            | "query_promql"
             | "get_cluster_metrics"
             | "explain_query"
             | "discover_datasets"
@@ -418,25 +415,6 @@ pub fn oss_tool_specs() -> Vec<ToolSpec> {
                     "endTime": string_property("End of time window."),
                 }),
                 &["query", "startTime", "endTime"],
-            ),
-        ),
-        ToolSpec::new(
-            "query_promql",
-            "Run PromQL query",
-            "Execute a PromQL instant or range query.",
-            object_schema(
-                json!({
-                    "query": string_property("PromQL expression."),
-                    "stream": string_property("Metrics dataset name."),
-                    "start": { "type": "string" },
-                    "end": { "type": "string" },
-                    "step": { "type": "string" },
-                    "time": { "type": "string" },
-                    "timeout": { "type": "number", "minimum": 0 },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 500 },
-                    "timestamp_format": { "type": "string", "enum": ["rfc3339", "unix"] },
-                }),
-                &["query", "stream"],
             ),
         ),
         ToolSpec::new(
@@ -826,7 +804,7 @@ mod tests {
         let tools = oss_tool_specs();
         let names = tools.iter().map(|tool| tool.name).collect::<HashSet<_>>();
 
-        assert_eq!(tools.len(), 48);
+        assert_eq!(tools.len(), 47);
         assert_eq!(tools.len(), names.len());
     }
 
@@ -841,7 +819,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response["tools"].as_array().unwrap().len(), 48);
+        assert_eq!(response["tools"].as_array().unwrap().len(), 47);
         assert_eq!(response["tools"][0]["name"], "list_datasets");
         assert_eq!(response["tools"][0]["inputSchema"]["type"], "object");
     }
@@ -874,28 +852,22 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn promql_execution_limits_use_numeric_schema_types() {
-        let tools = oss_tool_specs();
-        let promql = tools
-            .iter()
-            .find(|tool| tool.name == "query_promql")
-            .unwrap();
-        let properties = &promql.input_schema["properties"];
-
-        assert_eq!(properties["timeout"]["type"], "number");
-        assert_eq!(properties["limit"]["type"], "integer");
-        assert_eq!(properties["limit"]["maximum"], 500);
+    async fn oss_catalog_excludes_enterprise_promql_tool() {
+        assert!(
+            oss_tool_specs()
+                .iter()
+                .all(|tool| tool.name != "query_promql")
+        );
     }
 
     #[actix_web::test]
-    async fn tool_call_defaults_to_empty_arguments_without_confirmation() {
+    async fn tool_call_defaults_to_empty_arguments() {
         let call: ToolCallRequest = serde_json::from_value(serde_json::json!({
             "name": "list_datasets"
         }))
         .unwrap();
 
         assert_eq!(call.arguments, serde_json::json!({}));
-        assert!(!call.confirmed);
     }
 
     #[actix_web::test]

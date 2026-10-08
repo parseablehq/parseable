@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Instant};
+use std::collections::HashMap;
 
 use actix_web::{HttpRequest, HttpResponse, body::to_bytes_limited, http::header::HeaderMap, web};
 use chrono::{DateTime, Duration, Utc};
@@ -6,17 +6,20 @@ use serde_json::{Value, json};
 use ulid::Ulid;
 
 use crate::{
-    handlers::http::{
-        alerts, cluster, health_check, logstream,
-        modal::query::querier_logstream,
-        query, rbac, role, targets,
-        users::{dashboards, filters},
+    handlers::{
+        TelemetryType,
+        http::{
+            alerts, cluster, health_check, logstream,
+            modal::query::querier_logstream,
+            query, rbac, role, targets,
+            users::{dashboards, filters},
+        },
     },
     parseable::PARSEABLE,
     prism::logstream::get_prism_logstream_info,
     rbac::{Response, Users, map::SessionKey, role::Action},
-    tool_catalog::{ToolCallRequest, ToolCallResult, ToolEffect, oss_tool_specs},
-    utils::{actix::extract_session_key_from_req, get_tenant_id_from_request},
+    tool_catalog::{ToolCallRequest, ToolCallResult, oss_tool_specs},
+    utils::{actix::extract_session_key_from_req, get_tenant_id_from_request, time::TimeRange},
 };
 
 fn required_string<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, String> {
@@ -168,43 +171,6 @@ fn authorize(
             Err(format!("Caller is not authorized to perform {action:?}"))
         }
     }
-}
-
-#[tracing::instrument(
-    name = "llm.tool.execute",
-    skip_all,
-    fields(
-        otel.name = %format!("execute_tool {name}"),
-        otel.kind = "internal",
-        gen_ai.operation.name = "execute_tool",
-        gen_ai.tool.name = %name,
-        gen_ai.tool.type = "function",
-        gen_ai.tool.call.arguments = %arguments,
-        gen_ai.tool.call.result = tracing::field::Empty,
-        error.type = tracing::field::Empty,
-        otel.status_code = tracing::field::Empty,
-    )
-)]
-async fn execute_oss_tool(
-    name: &str,
-    arguments: &Value,
-    session_key: &SessionKey,
-    tenant_id: &Option<String>,
-    request_headers: &HeaderMap,
-) -> Result<Value, String> {
-    let result =
-        execute_oss_tool_inner(name, arguments, session_key, tenant_id, request_headers).await;
-    let span = tracing::Span::current();
-    match &result {
-        Ok(result) => {
-            span.record("gen_ai.tool.call.result", result.to_string());
-        }
-        Err(_) => {
-            span.record("error.type", "_OTHER");
-            span.record("otel.status_code", "ERROR");
-        }
-    }
-    result
 }
 
 #[derive(Clone, Copy)]
@@ -380,11 +346,10 @@ async fn sample_events(arguments: &Value, context: OssToolContext<'_>) -> Result
     response_value(response).await
 }
 
-async fn get_log_context(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
-    let dataset = required_string(arguments, "dataset")?;
-    authorize(context.session_key, Action::Query, Some(dataset), None)?;
-    let anchor = DateTime::parse_from_rfc3339(required_string(arguments, "pTimestamp")?)
-        .map_err(|error| error.to_string())?;
+fn normalized_log_context_bounds(
+    arguments: &Value,
+    anchor: DateTime<Utc>,
+) -> Result<(String, String), String> {
     let start_time = arguments
         .get("contextStartTime")
         .and_then(Value::as_str)
@@ -395,6 +360,18 @@ async fn get_log_context(arguments: &Value, context: OssToolContext<'_>) -> Resu
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| (anchor + Duration::minutes(5)).to_rfc3339());
+    let time_range = TimeRange::parse_human_time(&start_time, &end_time)
+        .map_err(|error| format!("invalid log context time range: {error}"))?;
+    Ok((time_range.start.to_rfc3339(), time_range.end.to_rfc3339()))
+}
+
+async fn get_log_context(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
+    let dataset = required_string(arguments, "dataset")?;
+    authorize(context.session_key, Action::Query, Some(dataset), None)?;
+    let anchor = DateTime::parse_from_rfc3339(required_string(arguments, "pTimestamp")?)
+        .map_err(|error| error.to_string())?
+        .with_timezone(&Utc);
+    let (start_time, end_time) = normalized_log_context_bounds(arguments, anchor)?;
     let limit = bounded_integer(arguments, "pageSize", 100, 1, 500);
     let schema = logstream::get_schema_internal(dataset, context.tenant_id)
         .await
@@ -597,6 +574,15 @@ fn trace_datasets(arguments: &Value, context: OssToolContext<'_>) -> Vec<String>
         .unwrap_or_else(|| {
             visible_datasets(context.tenant_id, context.session_key)
                 .into_iter()
+                .filter(|dataset| {
+                    PARSEABLE
+                        .get_stream(dataset, context.tenant_id)
+                        .is_ok_and(|stream| {
+                            stream.metadata.read().is_ok_and(|metadata| {
+                                metadata.telemetry_type == TelemetryType::Traces
+                            })
+                        })
+                })
                 .take(10)
                 .collect()
         })
@@ -614,7 +600,10 @@ async fn execute_trace_tool(
     let mut results = Vec::new();
     let mut errors = Vec::new();
     for dataset in datasets {
-        authorize(context.session_key, Action::Query, Some(&dataset), None)?;
+        if let Err(message) = authorize(context.session_key, Action::Query, Some(&dataset), None) {
+            errors.push(json!({ "dataset": dataset, "message": message }));
+            continue;
+        }
         let response = if name == "get_trace" {
             crate::handlers::http::traces::get_trace_detail_internal(
                 crate::handlers::http::traces::TraceDetailRequest {
@@ -917,18 +906,8 @@ pub async fn call_tool_registry(
     if let Err(error) = spec.validate_arguments(&call.arguments) {
         return HttpResponse::BadRequest().json(ToolCallResult::error(error));
     }
-    if matches!(
-        spec.effect(),
-        ToolEffect::Mutation | ToolEffect::ExternalSideEffect
-    ) && !call.confirmed
-    {
-        return HttpResponse::Conflict().json(ToolCallResult::error(
-            "tool execution requires explicit confirmation",
-        ));
-    }
     let tenant_id = get_tenant_id_from_request(&req);
-    let started = Instant::now();
-    match execute_oss_tool(
+    match execute_oss_tool_inner(
         spec.name,
         &call.arguments,
         &session_key,
@@ -937,34 +916,34 @@ pub async fn call_tool_registry(
     )
     .await
     {
-        Ok(result) => {
-            tracing::info!(
-                target: "parseable::llm::tools",
-                tool = spec.name,
-                duration_ms = started.elapsed().as_millis(),
-                "tool execution completed"
-            );
-            HttpResponse::Ok().json(ToolCallResult::success(result))
-        }
-        Err(message) => {
-            tracing::warn!(
-                target: "parseable::llm::tools",
-                tool = spec.name,
-                duration_ms = started.elapsed().as_millis(),
-                error = %message,
-                "tool execution failed"
-            );
-            HttpResponse::Ok().json(ToolCallResult::error(message))
-        }
+        Ok(result) => HttpResponse::Ok().json(ToolCallResult::success(result)),
+        Err(message) => HttpResponse::Ok().json(ToolCallResult::error(message)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use actix_web::{App, http::StatusCode, test, web};
+    use chrono::{DateTime, Duration, Utc};
     use serde_json::{Value, json};
 
-    use super::call_tool_registry;
+    use super::{call_tool_registry, normalized_log_context_bounds};
+
+    #[actix_web::test]
+    async fn log_context_bounds_normalize_relative_times() {
+        let (start, end) = normalized_log_context_bounds(
+            &json!({
+                "contextStartTime": "now-15m",
+                "contextEndTime": "now",
+            }),
+            Utc::now(),
+        )
+        .expect("relative bounds must be accepted");
+        let start = start.parse::<DateTime<Utc>>().expect("valid start time");
+        let end = end.parse::<DateTime<Utc>>().expect("valid end time");
+
+        assert_eq!(end - start, Duration::minutes(15));
+    }
 
     #[actix_web::test]
     async fn invocation_endpoint_requires_authentication() {
