@@ -135,102 +135,134 @@ pub fn validate_tool_arguments(schema: &Value, arguments: &Value) -> Result<(), 
 }
 
 fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
-    if let Some(variants) = schema.get("anyOf").and_then(Value::as_array) {
-        if variants
-            .iter()
-            .any(|variant| validate_schema_value(variant, value, path).is_ok())
-        {
-            return Ok(());
-        }
-        return Err(format!("{path} does not match any allowed schema"));
+    if let Some(result) = validate_any_of(schema, value, path) {
+        return result;
     }
 
+    validate_enum(schema, value, path)?;
+    validate_type(schema, value, path)?;
+    validate_object(schema, value, path)?;
+    validate_array(schema, value, path)?;
+    validate_string(schema, value, path)?;
+    validate_number(schema, value, path)
+}
+
+fn validate_any_of(schema: &Value, value: &Value, path: &str) -> Option<Result<(), String>> {
+    schema
+        .get("anyOf")
+        .and_then(Value::as_array)
+        .map(|variants| {
+            variants
+                .iter()
+                .any(|variant| validate_schema_value(variant, value, path).is_ok())
+                .then_some(())
+                .ok_or_else(|| format!("{path} does not match any allowed schema"))
+        })
+}
+
+fn validate_enum(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
     if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
         && !allowed.contains(value)
     {
         return Err(format!("{path} must be one of {allowed:?}"));
     }
+    Ok(())
+}
 
-    let expected_type = schema.get("type").and_then(Value::as_str);
-    let type_matches = match expected_type {
-        Some("object") => value.is_object(),
-        Some("array") => value.is_array(),
-        Some("string") => value.is_string(),
-        Some("integer") => value.as_i64().is_some() || value.as_u64().is_some(),
-        Some("number") => value.is_number(),
-        Some("boolean") => value.is_boolean(),
-        Some("null") => value.is_null(),
-        Some(_) | None => true,
+fn validate_type(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
+    let Some(expected_type) = schema.get("type").and_then(Value::as_str) else {
+        return Ok(());
     };
-    if !type_matches {
-        return Err(format!(
-            "{path} must be a {}",
-            expected_type.unwrap_or("valid JSON value")
-        ));
+    let type_matches = match expected_type {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        _ => true,
+    };
+    match type_matches {
+        true => Ok(()),
+        false => Err(format!("{path} must be a {expected_type}")),
     }
+}
 
-    if let Some(object) = value.as_object() {
-        let properties = schema.get("properties").and_then(Value::as_object);
-        if let Some(required) = schema.get("required").and_then(Value::as_array) {
-            for name in required.iter().filter_map(Value::as_str) {
-                if !object.contains_key(name) {
-                    return Err(format!("{path}.{name} is required"));
-                }
-            }
-        }
-        if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false)
-            && let Some(properties) = properties
-            && let Some(name) = object.keys().find(|name| !properties.contains_key(*name))
-        {
-            return Err(format!("{path}.{name} is not allowed"));
-        }
-        if let Some(properties) = properties {
-            for (name, value) in object {
-                if let Some(property_schema) = properties.get(name) {
-                    validate_schema_value(property_schema, value, &format!("{path}.{name}"))?;
-                }
-            }
-        }
-    }
-
-    if let Some(array) = value.as_array() {
-        if let Some(minimum) = schema.get("minItems").and_then(Value::as_u64)
-            && array.len() < minimum as usize
-        {
-            return Err(format!("{path} must contain at least {minimum} items"));
-        }
-        if let Some(maximum) = schema.get("maxItems").and_then(Value::as_u64)
-            && array.len() > maximum as usize
-        {
-            return Err(format!("{path} must contain at most {maximum} items"));
-        }
-        if let Some(item_schema) = schema.get("items") {
-            for (index, item) in array.iter().enumerate() {
-                validate_schema_value(item_schema, item, &format!("{path}[{index}]"))?;
+fn validate_object(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+    let properties = schema.get("properties").and_then(Value::as_object);
+    if let Some(required) = schema.get("required").and_then(Value::as_array) {
+        for name in required.iter().filter_map(Value::as_str) {
+            if !object.contains_key(name) {
+                return Err(format!("{path}.{name} is required"));
             }
         }
     }
+    if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false)
+        && let Some(properties) = properties
+        && let Some(name) = object.keys().find(|name| !properties.contains_key(*name))
+    {
+        return Err(format!("{path}.{name} is not allowed"));
+    }
+    if let Some(properties) = properties {
+        for (name, value) in object {
+            if let Some(property_schema) = properties.get(name) {
+                validate_schema_value(property_schema, value, &format!("{path}.{name}"))?;
+            }
+        }
+    }
+    Ok(())
+}
 
+fn validate_array(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
+    let Some(array) = value.as_array() else {
+        return Ok(());
+    };
+    if let Some(minimum) = schema.get("minItems").and_then(Value::as_u64)
+        && array.len() < minimum as usize
+    {
+        return Err(format!("{path} must contain at least {minimum} items"));
+    }
+    if let Some(maximum) = schema.get("maxItems").and_then(Value::as_u64)
+        && array.len() > maximum as usize
+    {
+        return Err(format!("{path} must contain at most {maximum} items"));
+    }
+    if let Some(item_schema) = schema.get("items") {
+        for (index, item) in array.iter().enumerate() {
+            validate_schema_value(item_schema, item, &format!("{path}[{index}]"))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_string(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
     if let Some(string) = value.as_str()
         && let Some(minimum) = schema.get("minLength").and_then(Value::as_u64)
         && string.chars().count() < minimum as usize
     {
         return Err(format!("{path} must contain at least {minimum} characters"));
     }
+    Ok(())
+}
 
-    if let Some(number) = value.as_f64() {
-        if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64)
-            && number < minimum
-        {
-            return Err(format!("{path} must be at least {minimum}"));
-        }
-        if let Some(maximum) = schema.get("maximum").and_then(Value::as_f64)
-            && number > maximum
-        {
-            return Err(format!("{path} must be at most {maximum}"));
-        }
+fn validate_number(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
+    let Some(number) = value.as_f64() else {
+        return Ok(());
+    };
+    if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64)
+        && number < minimum
+    {
+        return Err(format!("{path} must be at least {minimum}"));
     }
-
+    if let Some(maximum) = schema.get("maximum").and_then(Value::as_f64)
+        && number > maximum
+    {
+        return Err(format!("{path} must be at most {maximum}"));
+    }
     Ok(())
 }
 
@@ -904,6 +936,10 @@ mod tests {
             result["structuredContent"]["result"]["rows"],
             serde_json::json!([])
         );
-        assert_eq!(result["isError"], false);
+        assert!(
+            !result["isError"]
+                .as_bool()
+                .expect("isError must be a boolean")
+        );
     }
 }

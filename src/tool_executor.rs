@@ -103,7 +103,7 @@ fn resolve_time_range(arguments: &Value) -> Result<Value, String> {
             let duration = normalized
                 .strip_prefix("last ")
                 .or_else(|| normalized.strip_prefix("past "))
-                .unwrap_or(normalized.as_str());
+                .unwrap_or(&normalized);
             let duration = if duration.chars().any(|character| character.is_ascii_digit()) {
                 duration.to_owned()
             } else {
@@ -991,7 +991,11 @@ mod tests {
             .to_request();
         let response: Value = test::call_and_read_body_json(&app, request).await;
 
-        assert_eq!(response["isError"], true);
+        assert!(
+            response["isError"]
+                .as_bool()
+                .expect("isError must be a boolean")
+        );
         assert_eq!(response["content"][0]["type"], "text");
         assert_eq!(
             response["content"][0]["text"],
