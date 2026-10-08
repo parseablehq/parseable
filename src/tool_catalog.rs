@@ -183,9 +183,10 @@ fn validate_type(schema: &Value, value: &Value, path: &str) -> Result<(), String
         "null" => value.is_null(),
         _ => true,
     };
-    match type_matches {
-        true => Ok(()),
-        false => Err(format!("{path} must be a {expected_type}")),
+    if type_matches {
+        Ok(())
+    } else {
+        Err(format!("{path} must be a {expected_type}"))
     }
 }
 
