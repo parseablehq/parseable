@@ -49,7 +49,7 @@ use crate::{
 use super::{
     ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
     PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
-    TOMBSTONE_ROOT_DIRECTORY,
+    TOMBSTONE_ROOT_DIRECTORY, object_storage::stream_prefix,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -491,7 +491,7 @@ impl ObjectStorage for LocalFS {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
-        let path = self.root.join(stream_name);
+        let path = self.root.join(stream_prefix(stream_name, tenant_id));
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let result = fs::remove_dir_all(path).await;
@@ -683,7 +683,7 @@ impl ObjectStorage for LocalFS {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
-        let path = self.root.join(stream_name);
+        let path = self.root.join(stream_prefix(stream_name, tenant_id));
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let result = fs::read_dir(&path).await;
@@ -717,9 +717,12 @@ impl ObjectStorage for LocalFS {
         &self,
         stream_name: &str,
         date: &str,
-        _tenant_id: &Option<String>,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
-        let path = self.root.join(stream_name).join(date);
+        let path = self
+            .root
+            .join(stream_prefix(stream_name, tenant_id))
+            .join(date);
         let directories = ReadDirStream::new(fs::read_dir(&path).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries.into_iter().map(dir_name);
@@ -736,9 +739,13 @@ impl ObjectStorage for LocalFS {
         stream_name: &str,
         date: &str,
         hour: &str,
-        _tenant_id: &Option<String>,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
-        let path = self.root.join(stream_name).join(date).join(hour);
+        let path = self
+            .root
+            .join(stream_prefix(stream_name, tenant_id))
+            .join(date)
+            .join(hour);
         // Propagate any read_dir errors instead of swallowing them
         let directories = ReadDirStream::new(fs::read_dir(&path).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
@@ -914,5 +921,87 @@ async fn dir_name(entry: DirEntry) -> Result<Option<String>, ObjectStorageError>
 impl From<fs_extra::error::Error> for ObjectStorageError {
     fn from(e: fs_extra::error::Error) -> Self {
         ObjectStorageError::UnhandledError(Box::new(e))
+    }
+}
+
+#[cfg(test)]
+mod tenant_path_tests {
+    //! Regression tests for tenant-scoped object paths.
+    //!
+    //! Regression tests for the centralized tenant-scoped path construction
+    //! (`stream_prefix`/`tenant_prefix`) and the backend list/delete paths.
+    //! They cover issues/0001 (retention deletes the wrong prefix) and
+    //! issues/0002 (list APIs ignore the tenant) at the LocalFS layer, without
+    //! needing the global `PARSEABLE` server bootstrap.
+
+    use super::*;
+
+    fn make_dir(root: &Path, rel: &str) {
+        std::fs::create_dir_all(root.join(rel)).unwrap();
+    }
+
+    /// `list_dates` must list the requested tenant's prefix, not the bucket root.
+    #[tokio::test]
+    async fn list_dates_must_be_tenant_scoped() {
+        let tmp = temp_dir::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Same-named stream under two tenants, with distinguishable partitions.
+        make_dir(&root, "t1/logs/date=2024-01-01");
+        make_dir(&root, "logs/date=2024-03-03");
+
+        let store = LocalFS::new(root.clone());
+        let dates = store
+            .list_dates("logs", &Some("t1".to_owned()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            dates,
+            vec!["date=2024-01-01".to_owned()],
+            "list_dates for tenant t1 returned {dates:?}; it is listing the \
+             tenant-less prefix (see issues/0002)"
+        );
+    }
+
+    /// `stream_prefix` is the single source of truth for tenant path scoping.
+    #[test]
+    fn stream_prefix_is_tenant_scoped() {
+        assert_eq!(stream_prefix("logs", &None), "logs");
+        assert_eq!(stream_prefix("logs", &Some("t1".to_owned())), "t1/logs");
+        // The default-tenant sentinel is treated as "no tenant".
+        assert_eq!(
+            stream_prefix("logs", &Some(DEFAULT_TENANT.to_owned())),
+            "logs"
+        );
+    }
+
+    /// A retention delete for tenant `t1` must delete exactly `t1`'s expired
+    /// partition and must not touch the default tenant's same-named stream.
+    #[tokio::test]
+    async fn retention_delete_is_tenant_scoped() {
+        let tmp = temp_dir::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        make_dir(&root, "t1/logs/date=2024-01-01");
+        make_dir(&root, "logs/date=2024-01-01");
+
+        let store = LocalFS::new(root.clone());
+        let tenant = Some("t1".to_owned());
+        let date = "date=2024-01-01".to_owned();
+
+        // The path retention now builds (see `src/storage/retention.rs`).
+        let prefix = stream_prefix("logs", &tenant);
+        let path = RelativePathBuf::from_iter([prefix.as_str(), &date]);
+        store.delete_prefix(&path, &tenant).await.unwrap();
+
+        assert!(
+            !root.join("t1/logs/date=2024-01-01").exists(),
+            "tenant t1's expired partition should be deleted"
+        );
+        assert!(
+            root.join("logs/date=2024-01-01").exists(),
+            "the default tenant's same-named stream must not be touched"
+        );
     }
 }
