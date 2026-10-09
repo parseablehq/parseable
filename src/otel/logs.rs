@@ -47,26 +47,80 @@ pub const OTEL_LOG_KNOWN_FIELD_LIST: [&str; 17] = [
     "event_name",
     "p_log_category",
 ];
-/// otel log event has severity number
-/// there is a mapping of severity number to severity text provided in proto
-/// this function fetches the severity text from the severity number
-/// and adds it to the flattened json
-fn flatten_severity(severity_number: i32) -> Map<String, Value> {
+/// Derive whichever OTel severity field is absent from the other.
+fn normalize_severity(severity_number: i32, severity_text: &str) -> (i32, String) {
+    let severity_text_is_unspecified =
+        severity_text.trim().is_empty() || severity_text.trim().eq_ignore_ascii_case("UNSPECIFIED");
+    let severity_number = if severity_number == 0 {
+        severity_number_from_text(severity_text).unwrap_or(severity_number)
+    } else {
+        severity_number
+    };
+
+    let severity_text = if severity_text_is_unspecified {
+        SeverityNumber::try_from(severity_number)
+            .ok()
+            .map(|severity| {
+                let name = severity.as_str_name();
+                name.strip_prefix("SEVERITY_NUMBER_")
+                    .unwrap_or(name)
+                    .to_string()
+            })
+            .unwrap_or_else(|| "UNSPECIFIED".to_string())
+    } else {
+        severity_text.to_string()
+    };
+
+    (severity_number, severity_text)
+}
+
+/// Convert standard OTel severity names (and the common WARNING alias) to their
+/// lowest severity number in the corresponding range.
+fn severity_number_from_text(severity_text: &str) -> Option<i32> {
+    let severity_text = severity_text.trim().to_ascii_uppercase();
+    let severity_text = severity_text
+        .strip_prefix("SEVERITY_NUMBER_")
+        .unwrap_or(&severity_text);
+
+    match severity_text {
+        "TRACE" => Some(1),
+        "TRACE2" => Some(2),
+        "TRACE3" => Some(3),
+        "TRACE4" => Some(4),
+        "DEBUG" => Some(5),
+        "DEBUG2" => Some(6),
+        "DEBUG3" => Some(7),
+        "DEBUG4" => Some(8),
+        "INFO" => Some(9),
+        "INFO2" => Some(10),
+        "INFO3" => Some(11),
+        "INFO4" => Some(12),
+        "WARN" | "WARNING" => Some(13),
+        "WARN2" => Some(14),
+        "WARN3" => Some(15),
+        "WARN4" => Some(16),
+        "ERROR" => Some(17),
+        "ERROR2" => Some(18),
+        "ERROR3" => Some(19),
+        "ERROR4" => Some(20),
+        "FATAL" => Some(21),
+        "FATAL2" => Some(22),
+        "FATAL3" => Some(23),
+        "FATAL4" => Some(24),
+        _ => None,
+    }
+}
+
+/// Add the normalized severity fields to the flattened JSON.
+fn flatten_severity(severity_number: i32, severity_text: &str) -> Map<String, Value> {
     let mut severity_json: Map<String, Value> = Map::new();
     severity_json.insert(
         "severity_number".to_string(),
         Value::Number(severity_number.into()),
     );
-    let severity = SeverityNumber::try_from(severity_number).unwrap();
-    let severity_text = severity.as_str_name().to_string();
     severity_json.insert(
         "severity_text".to_string(),
-        Value::String(
-            severity_text
-                .strip_prefix("SEVERITY_NUMBER_")
-                .unwrap_or(&severity_text)
-                .to_string(),
-        ),
+        Value::String(severity_text.to_string()),
     );
     severity_json
 }
@@ -131,10 +185,12 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
         )),
     );
 
-    log_record_json.extend(flatten_severity(log_record.severity_number));
+    let (severity_number, severity_text) =
+        normalize_severity(log_record.severity_number, &log_record.severity_text);
+    log_record_json.extend(flatten_severity(severity_number, &severity_text));
 
-    // Primary: derive category from severity_number
-    let mut log_category = category_from_severity(log_record.severity_number);
+    // Primary: derive category from the normalized severity_number
+    let mut log_category = category_from_severity(severity_number);
 
     if log_record.body.is_some() {
         let body = &log_record.body;
@@ -303,4 +359,44 @@ pub fn flatten_otel_logs(message: &LogsData, tenant_id: &str) -> Vec<Value> {
         |record| &record.schema_url,
         tenant_id,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_severity;
+
+    #[test]
+    fn derives_severity_text_from_number_when_missing() {
+        assert_eq!(normalize_severity(17, ""), (17, "ERROR".to_string()));
+        assert_eq!(
+            normalize_severity(17, "UNSPECIFIED"),
+            (17, "ERROR".to_string())
+        );
+    }
+
+    #[test]
+    fn derives_severity_number_from_text_when_unspecified() {
+        assert_eq!(
+            normalize_severity(0, "warning"),
+            (13, "warning".to_string())
+        );
+        assert_eq!(
+            normalize_severity(0, "unspecified"),
+            (0, "UNSPECIFIED".to_string())
+        );
+        assert_eq!(
+            normalize_severity(0, "SEVERITY_NUMBER_FATAL4"),
+            (24, "SEVERITY_NUMBER_FATAL4".to_string())
+        );
+    }
+
+    #[test]
+    fn leaves_both_fields_unspecified_when_neither_is_present() {
+        assert_eq!(normalize_severity(0, ""), (0, "UNSPECIFIED".to_string()));
+    }
+
+    #[test]
+    fn preserves_provided_severity_fields() {
+        assert_eq!(normalize_severity(18, "error"), (18, "error".to_string()));
+    }
 }
