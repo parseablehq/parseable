@@ -192,8 +192,8 @@ pub struct SchemaQuery {
 
 /// Render a schema response for `GET /logstream/{logstream}/schema`.
 ///
-/// Use `?format=compact` for UTF-8 `text/plain` rows of `name`, `type`, and
-/// `nullable`; omitting `format` (or using `json`) preserves the Arrow JSON response.
+/// Use `?format=compact` for UTF-8 `text/plain` rows of `name`, `type`;
+/// omitting `format` (or using `json`) preserves the Arrow JSON response.
 /// Backslashes, tabs, carriage returns, and newlines in names and type displays are
 /// escaped as `\\`, `\t`, `\r`, and `\n` so every field remains one TSV row.
 fn schema_response(schema: &Schema, format: SchemaFormat) -> HttpResponse {
@@ -206,7 +206,7 @@ fn schema_response(schema: &Schema, format: SchemaFormat) -> HttpResponse {
 }
 
 fn compact_schema(schema: &Schema) -> String {
-    let mut output = String::from("name\ttype\tnullable\n");
+    let mut output = String::from("name\ttype\n");
     for field in schema.fields() {
         append_escaped_compact_field(&mut output, field.name());
         output.push('\t');
@@ -214,8 +214,6 @@ fn compact_schema(schema: &Schema) -> String {
             &mut output,
             &compact_data_type(field.data_type()).to_string(),
         );
-        output.push('\t');
-        output.push_str(if field.is_nullable() { "true" } else { "false" });
         output.push('\n');
     }
     output
@@ -284,8 +282,8 @@ fn append_escaped_compact_field(output: &mut String, value: &str) {
 }
 
 /// Fetch the full Arrow JSON schema, or request `?format=compact` for a smaller TSV response.
-/// Compact output includes all column names, type displays and nullability, but omits
-/// schema/field metadata and dictionary IPC attributes; it is not an Arrow interchange format.
+/// Compact output includes all column names, type displays, but omits
+/// schema/field metadata, nullability and dictionary IPC attributes; it is not an Arrow interchange format.
 pub async fn get_schema(
     req: HttpRequest,
     logstream: Path<String>,
@@ -1023,13 +1021,13 @@ mod tests {
             .to_owned();
         assert_eq!(
             compact,
-            "name\ttype\tnullable\n\
-             nested\tStruct(\"inner\": non-null Int64)\ttrue\n\
-             list\tList(non-null Utf8)\tfalse\n\
-             dictionary\tDictionary(Int32, Utf8)\ttrue\n\
-             dictionary_struct\tDictionary(Int32, Struct(\"dictionary_inner\": Utf8))\tfalse\n\
-             timestamp\tTimestamp(ns, \"UTC\")\tfalse\n\
-             awk\\\\ward\\tname\\r\\n\tUtf8\ttrue\n"
+            "name\ttype\n\
+             nested\tStruct(\"inner\": non-null Int64)\n\
+             list\tList(non-null Utf8)\n\
+             dictionary\tDictionary(Int32, Utf8)\n\
+             dictionary_struct\tDictionary(Int32, Struct(\"dictionary_inner\": Utf8))\n\
+             timestamp\tTimestamp(ns, \"UTC\")\n\
+             awk\\\\ward\\tname\\r\\n\tUtf8\n"
         );
         assert!(!compact.contains("schema-metadata"));
         assert!(!compact.contains("inner-metadata"));
@@ -1055,7 +1053,7 @@ mod tests {
 
     #[core::prelude::v1::test]
     fn compact_schema_handles_empty_schemas_and_reduces_500_column_payloads() {
-        assert_eq!(compact_schema(&Schema::empty()), "name\ttype\tnullable\n");
+        assert_eq!(compact_schema(&Schema::empty()), "name\ttype\n");
 
         let schema = Schema::new(
             (0..500)
