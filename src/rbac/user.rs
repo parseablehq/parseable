@@ -103,10 +103,65 @@ pub struct User {
     pub protected: bool,
 }
 
+/// Accept the UI's existing roles array or an object with a caller-supplied password.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum CreateUserOptions {
+    Roles(HashSet<String>),
+    Details(CreateUserDetails),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateUserDetails {
+    #[serde(default)]
+    roles: HashSet<String>,
+    password: Option<String>,
+}
+
+impl CreateUserOptions {
+    pub fn split_request(self) -> (HashSet<String>, Option<String>) {
+        match self {
+            Self::Roles(roles) => (roles, None),
+            Self::Details(details) => (details.roles, details.password),
+        }
+    }
+}
+
 impl User {
     // create a new User and return self with password generated for said user.
     pub fn new_basic(username: String, tenant: Option<String>, protected: bool) -> (Self, String) {
-        let PassCode { password, hash } = Basic::gen_new_password();
+        Self::new_basic_with_passcode(username, tenant, protected, Basic::gen_new_password())
+    }
+
+    pub fn new_basic_with_password(
+        username: String,
+        tenant: Option<String>,
+        protected: bool,
+        password: String,
+    ) -> Result<(Self, String), RBACError> {
+        if !(8..=256).contains(&password.len())
+            || password.trim() != password
+            || password.chars().any(char::is_control)
+        {
+            return Err(RBACError::InvalidPassword);
+        }
+
+        let hash = gen_hash(&password);
+        Ok(Self::new_basic_with_passcode(
+            username,
+            tenant,
+            protected,
+            PassCode { password, hash },
+        ))
+    }
+
+    fn new_basic_with_passcode(
+        username: String,
+        tenant: Option<String>,
+        protected: bool,
+        PassCode { password, hash }: PassCode,
+    ) -> (Self, String) {
         (
             Self {
                 ty: UserType::Native(Basic {
@@ -702,6 +757,47 @@ impl UserGroup {
             .collect();
 
         self.remove_users(users_to_remove)
+    }
+}
+
+#[cfg(test)]
+mod password_request_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_legacy_roles_array_and_new_password_object() {
+        let legacy: CreateUserOptions = serde_json::from_str(r#"["reader"]"#).unwrap();
+        let (roles, password) = legacy.split_request();
+        assert!(roles.contains("reader"));
+        assert!(password.is_none());
+
+        let modern: CreateUserOptions =
+            serde_json::from_str(r#"{"roles":["reader"],"password":"a_valid_password_123"}"#)
+                .unwrap();
+        let (roles, password) = modern.split_request();
+        assert!(roles.contains("reader"));
+        assert_eq!(password.as_deref(), Some("a_valid_password_123"));
+
+        assert!(
+            serde_json::from_str::<CreateUserOptions>(r#"{"providedPassword":"old"}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn supplied_password_is_hashed_and_invalid_values_are_rejected() {
+        let (user, returned) =
+            User::new_basic_with_password("alice".into(), None, false, "Pa$$w0rd".into()).unwrap();
+        assert_eq!(returned, "Pa$$w0rd");
+        let UserType::Native(basic) = &user.ty else {
+            panic!("expected native user")
+        };
+        assert!(basic.verify_password(&returned));
+        assert!(!serde_json::to_string(&user).unwrap().contains(&returned));
+
+        assert!(matches!(
+            User::new_basic_with_password("bob".into(), None, false, "short".into()),
+            Err(RBACError::InvalidPassword)
+        ));
     }
 }
 

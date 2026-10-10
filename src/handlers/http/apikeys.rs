@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::{
-    apikeys::{ApiKeyError, CreateApiKeyRequest},
+    apikeys::{ApiKeyError, CreateApiKeyRequest, validate_api_key as validate_api_key_value},
     handlers::http::{
         modal::utils::rbac_utils::{get_metadata, put_metadata},
         rbac::{RBACError, UPDATE_LOCK},
@@ -187,7 +187,19 @@ pub async fn create_api_key(
     }
 
     let key_id = Ulid::new();
-    let api_key_value = generate_api_key_value();
+    let api_key_value = if let Some(api_key) = body.api_key {
+        validate_api_key_value(&api_key)?;
+        api_key
+    } else {
+        generate_api_key_value()
+    };
+    if existing
+        .iter()
+        .filter_map(|user: &User| user.as_api_key())
+        .any(|key| key.api_key == api_key_value)
+    {
+        return Err(ApiKeyError::DuplicateApiKey);
+    }
     let user = User::new_api_key(
         key_id,
         api_key_value,
