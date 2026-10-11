@@ -6,14 +6,11 @@ use serde_json::{Value, json};
 use ulid::Ulid;
 
 use crate::{
-    handlers::{
-        TelemetryType,
-        http::{
-            alerts, cluster, health_check, logstream,
-            modal::query::querier_logstream,
-            query, rbac, role, targets,
-            users::{dashboards, filters},
-        },
+    handlers::http::{
+        alerts, cluster, health_check, logstream,
+        modal::query::querier_logstream,
+        query, rbac, role, targets,
+        users::{dashboards, filters},
     },
     parseable::PARSEABLE,
     prism::logstream::get_prism_logstream_info,
@@ -558,42 +555,12 @@ async fn execute_alert_target_tool(
     }
 }
 
-fn trace_datasets(arguments: &Value, context: OssToolContext<'_>) -> Vec<String> {
-    arguments
-        .get("datasets")
-        .and_then(Value::as_array)
-        .map(|datasets| {
-            datasets
-                .iter()
-                .filter_map(Value::as_str)
-                .take(10)
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .filter(|datasets| !datasets.is_empty())
-        .unwrap_or_else(|| {
-            visible_datasets(context.tenant_id, context.session_key)
-                .into_iter()
-                .filter(|dataset| {
-                    PARSEABLE
-                        .get_stream(dataset, context.tenant_id)
-                        .is_ok_and(|stream| {
-                            stream.metadata.read().is_ok_and(|metadata| {
-                                metadata.telemetry_type == TelemetryType::Traces
-                            })
-                        })
-                })
-                .take(10)
-                .collect()
-        })
-}
-
 async fn execute_trace_tool(
     name: &str,
     arguments: &Value,
     context: OssToolContext<'_>,
 ) -> Result<Value, String> {
-    let datasets = trace_datasets(arguments, context);
+    let datasets = [required_string(arguments, "dataset")?.to_owned()];
     let start_time = required_string(arguments, "startTime")?.to_owned();
     let end_time = required_string(arguments, "endTime")?.to_owned();
     let limit = bounded_integer(arguments, "limit", 100, 1, 500) as usize;
