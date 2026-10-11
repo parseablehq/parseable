@@ -448,16 +448,16 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
         ToolSpec::new(
             "get_traces",
             "Get traces",
-            "List bounded traces or spans from caller-visible trace datasets.",
+            "List bounded traces or spans from one caller-visible trace dataset.",
             object_schema(
                 json!({
-                    "datasets": { "type": "array", "minItems": 1, "maxItems": 10, "items": { "type": "string" } },
+                    "dataset": string_property("One trace dataset."),
                     "serviceName": { "type": "string" },
                     "startTime": string_property("RFC3339 range start."),
                     "endTime": string_property("RFC3339 range end."),
                     "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 }
                 }),
-                &["startTime", "endTime"],
+                &["dataset", "startTime", "endTime"],
             ),
         ),
         ToolSpec::new(
@@ -467,11 +467,11 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
             object_schema(
                 json!({
                     "traceId": string_property("Trace ID."),
-                    "datasets": { "type": "array", "minItems": 1, "maxItems": 10, "items": { "type": "string" } },
+                    "dataset": string_property("One trace dataset."),
                     "startTime": string_property("RFC3339 range start."),
                     "endTime": string_property("RFC3339 range end.")
                 }),
-                &["traceId", "startTime", "endTime"],
+                &["traceId", "dataset", "startTime", "endTime"],
             ),
         ),
         ToolSpec::new(
