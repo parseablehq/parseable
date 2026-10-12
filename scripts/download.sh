@@ -92,10 +92,12 @@ if [ -d "$INSTALL_DIR" ]; then
 fi
 mkdir -p "$BIN_DIR" || {
     printf 'Error: Could not create installation directory %s.\n' "$BIN_DIR" >&2
+    rmdir "$BIN_DIR" "$INSTALL_DIR" 2>/dev/null || :
     exit 1
 }
 
 TEMP_BIN="${BIN_NAME}.tmp"
+# Remove files and empty directories created by an incomplete installation.
 cleanup_install() {
     rm -f "$TEMP_BIN" "$BIN_NAME"
     rmdir "$BIN_DIR" "$INSTALL_DIR" 2>/dev/null || :
@@ -106,6 +108,7 @@ trap 'cleanup_install; exit 1' 1 2 15
 printf 'Downloading Parseable version %s, for OS: %s, CPU architecture: %s\n' "$release_tag" "$OS" "$CPU_ARCH"
 printf 'Download URL: %s\n\n' "$download_url"
 
+# Download the selected release asset to the temporary installation path.
 download_binary() {
     case "$DOWNLOADER" in
         curl)
@@ -141,17 +144,13 @@ case "$SHELL_NAME" in
         RC_FILE_PATH="${ZDOTDIR:-$HOME}/.zshrc"
         ;;
     bash)
-        if [ "$OS" = "darwin" ]; then
-            RC_FILE_PATH="${HOME}/.bash_profile"
-            for BASH_PROFILE in .bash_profile .bash_login .profile; do
-                if [ -f "${HOME}/${BASH_PROFILE}" ]; then
-                    RC_FILE_PATH="${HOME}/${BASH_PROFILE}"
-                    break
-                fi
-            done
-        else
-            RC_FILE_PATH="${HOME}/.bashrc"
-        fi
+        RC_FILE_PATH="${HOME}/.bash_profile"
+        for BASH_PROFILE in .bash_profile .bash_login .profile; do
+            if [ -f "${HOME}/${BASH_PROFILE}" ]; then
+                RC_FILE_PATH="${HOME}/${BASH_PROFILE}"
+                break
+            fi
+        done
         ;;
     sh|dash|ksh)
         RC_FILE_PATH="${HOME}/.profile"
