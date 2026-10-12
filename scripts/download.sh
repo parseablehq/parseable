@@ -166,7 +166,12 @@ append_path() {
     PROFILE_PATH=$1
     if grep -Fqx "$PATH_STR" "$PROFILE_PATH" 2>/dev/null; then
         printf 'Parseable is already configured in %s.\n' "$PROFILE_PATH"
-    elif printf '%s\n' "$PATH_STR" >> "$PROFILE_PATH"; then
+    elif {
+        if [ -s "$PROFILE_PATH" ] && ! tail -c 1 "$PROFILE_PATH" | grep -q '^$'; then
+            printf '\n'
+        fi
+        printf '%s\n' "$PATH_STR"
+    } >> "$PROFILE_PATH"; then
         printf 'Added Parseable to PATH in %s.\n' "$PROFILE_PATH"
     else
         printf 'Warning: Could not update %s.\n' "$PROFILE_PATH" >&2
