@@ -30,6 +30,7 @@ use crate::{
     handlers::http::users::{DASHBOARDS_DIR, USERS_ROOT_DIR, dashboards::DashboardError},
     metastore::metastore_traits::MetastoreObject,
     parseable::{DEFAULT_TENANT, PARSEABLE},
+    storage::object_storage::tenant_prefix,
 };
 
 pub static DASHBOARDS: Lazy<Dashboards> = Lazy::new(Dashboards::default);
@@ -75,7 +76,7 @@ pub struct Dashboard {
 
 impl MetastoreObject for Dashboard {
     fn get_object_path(&self) -> String {
-        let root = self.tenant_id.as_deref().unwrap_or("");
+        let root = tenant_prefix(&self.tenant_id);
         RelativePathBuf::from_iter([
             root,
             USERS_ROOT_DIR,
