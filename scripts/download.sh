@@ -161,14 +161,25 @@ case "$SHELL_NAME" in
 esac
 
 PATH_STR="export PATH=\"${BIN_DIR}:\$PATH\""
-if [ -n "$RC_FILE_PATH" ]; then
-    if grep -Fqx "$PATH_STR" "$RC_FILE_PATH" 2>/dev/null; then
-        printf 'Parseable is already configured in %s.\n' "$RC_FILE_PATH"
-    elif printf '%s\n' "$PATH_STR" >> "$RC_FILE_PATH"; then
-        printf 'Added Parseable to PATH in %s.\n' "$RC_FILE_PATH"
+# Add the PATH export to a shell profile unless it is already present.
+append_path() {
+    PROFILE_PATH=$1
+    if grep -Fqx "$PATH_STR" "$PROFILE_PATH" 2>/dev/null; then
+        printf 'Parseable is already configured in %s.\n' "$PROFILE_PATH"
+    elif printf '%s\n' "$PATH_STR" >> "$PROFILE_PATH"; then
+        printf 'Added Parseable to PATH in %s.\n' "$PROFILE_PATH"
     else
-        printf 'Warning: Could not update %s.\n' "$RC_FILE_PATH" >&2
+        printf 'Warning: Could not update %s.\n' "$PROFILE_PATH" >&2
     fi
+}
+
+if [ "$SHELL_NAME" = "bash" ]; then
+    append_path "${HOME}/.bashrc"
+    if [ "$RC_FILE_PATH" != "${HOME}/.bashrc" ]; then
+        append_path "$RC_FILE_PATH"
+    fi
+elif [ -n "$RC_FILE_PATH" ]; then
+    append_path "$RC_FILE_PATH"
 else
     printf 'No supported shell profile was detected.\n'
 fi
