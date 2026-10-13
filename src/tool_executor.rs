@@ -272,12 +272,10 @@ async fn execute_dataset_metadata_tool(
     match name {
         "get_dataset_schema" => {
             authorize(context.session_key, Action::GetSchema, Some(dataset), None)?;
-            serde_json::to_value(
-                logstream::get_schema_internal(dataset, context.tenant_id)
-                    .await
-                    .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())
+            let schema = logstream::get_schema_internal(dataset, context.tenant_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(Value::String(logstream::compact_schema(&schema)))
         }
         "get_dataset_info" => {
             authorize(

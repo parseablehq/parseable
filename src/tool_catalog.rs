@@ -356,7 +356,7 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
         ToolSpec::new(
             "get_dataset_schema",
             "Get dataset schema",
-            "Get columns and data types for a dataset.",
+            "Get all dataset columns and data types as compact tab-separated text with a name/type header.",
             dataset_schema(),
         ),
         ToolSpec::new(
