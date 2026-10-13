@@ -421,14 +421,15 @@ pub fn list_log_errors_query(
     fields: &[String],
     limit: u64,
 ) -> Result<String, String> {
-    let service = first_present_field(fields, &["service.name", "service_name"])
-        .map(|field| {
+    let service = first_present_field(fields, &["service.name", "service_name"]).map_or_else(
+        || "'unknown'".to_owned(),
+        |field| {
             format!(
                 "COALESCE(CAST({} AS VARCHAR), 'unknown')",
                 quote_identifier(&field)
             )
-        })
-        .unwrap_or_else(|| "'unknown'".to_owned());
+        },
+    );
     let severity_text = first_present_field(fields, &["severity_text", "severity_description"]);
     let exception_type = first_present_field(
         fields,
@@ -437,13 +438,15 @@ pub fn list_log_errors_query(
     let error_type = exception_type
         .as_ref()
         .or(severity_text.as_ref())
-        .map(|field| {
-            format!(
-                "COALESCE(CAST({} AS VARCHAR), 'error')",
-                quote_identifier(field)
-            )
-        })
-        .unwrap_or_else(|| "'error'".to_owned());
+        .map_or_else(
+            || "'error'".to_owned(),
+            |field| {
+                format!(
+                    "COALESCE(CAST({} AS VARCHAR), 'error')",
+                    quote_identifier(field)
+                )
+            },
+        );
     let message = first_present_field(
         fields,
         &[
@@ -455,13 +458,14 @@ pub fn list_log_errors_query(
             "log",
         ],
     );
-    let sample_message = message
-        .as_ref()
-        .map(|field| format!("MAX(CAST({} AS VARCHAR))", quote_identifier(field)))
-        .unwrap_or_else(|| "CAST(NULL AS VARCHAR)".to_owned());
-    let last_seen = first_present_field(fields, &["p_timestamp", "time_unix_nano"])
-        .map(|field| format!("MAX({})", quote_identifier(&field)))
-        .unwrap_or_else(|| "CAST(NULL AS VARCHAR)".to_owned());
+    let sample_message = message.as_ref().map_or_else(
+        || "CAST(NULL AS VARCHAR)".to_owned(),
+        |field| format!("MAX(CAST({} AS VARCHAR))", quote_identifier(field)),
+    );
+    let last_seen = first_present_field(fields, &["p_timestamp", "time_unix_nano"]).map_or_else(
+        || "CAST(NULL AS VARCHAR)".to_owned(),
+        |field| format!("MAX({})", quote_identifier(&field)),
+    );
 
     let mut predicates = Vec::new();
     if fields.iter().any(|field| field == "severity_number") {
