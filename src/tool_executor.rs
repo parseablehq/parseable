@@ -409,6 +409,148 @@ async fn get_log_context(arguments: &Value, context: OssToolContext<'_>) -> Resu
     response_value(response).await
 }
 
+fn first_present_field(fields: &[String], candidates: &[&str]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|candidate| fields.iter().any(|field| field == **candidate))
+        .map(|field| (*field).to_owned())
+}
+
+pub fn list_log_errors_query(
+    dataset: &str,
+    fields: &[String],
+    limit: u64,
+) -> Result<String, String> {
+    let service = first_present_field(fields, &["service.name", "service_name"])
+        .map(|field| {
+            format!(
+                "COALESCE(CAST({} AS VARCHAR), 'unknown')",
+                quote_identifier(&field)
+            )
+        })
+        .unwrap_or_else(|| "'unknown'".to_owned());
+    let severity_text = first_present_field(fields, &["severity_text", "severity_description"]);
+    let exception_type = first_present_field(
+        fields,
+        &["event_exception.type", "exception.type", "error.type"],
+    );
+    let error_type = exception_type
+        .as_ref()
+        .or(severity_text.as_ref())
+        .map(|field| {
+            format!(
+                "COALESCE(CAST({} AS VARCHAR), 'error')",
+                quote_identifier(field)
+            )
+        })
+        .unwrap_or_else(|| "'error'".to_owned());
+    let message = first_present_field(
+        fields,
+        &[
+            "event_exception.message",
+            "exception.message",
+            "error.message",
+            "body",
+            "message",
+            "log",
+        ],
+    );
+    let sample_message = message
+        .as_ref()
+        .map(|field| format!("MAX(CAST({} AS VARCHAR))", quote_identifier(field)))
+        .unwrap_or_else(|| "CAST(NULL AS VARCHAR)".to_owned());
+    let last_seen = first_present_field(fields, &["p_timestamp", "time_unix_nano"])
+        .map(|field| format!("MAX({})", quote_identifier(&field)))
+        .unwrap_or_else(|| "CAST(NULL AS VARCHAR)".to_owned());
+
+    let mut predicates = Vec::new();
+    if fields.iter().any(|field| field == "severity_number") {
+        predicates.push("CAST(\"severity_number\" AS BIGINT) >= 17".to_owned());
+    }
+    if let Some(field) = &severity_text {
+        predicates.push(format!(
+            "UPPER(CAST({} AS VARCHAR)) IN ('ERROR', 'FATAL', 'CRITICAL')",
+            quote_identifier(field)
+        ));
+    }
+    if let Some(field) = &exception_type {
+        predicates.push(format!(
+            "{} IS NOT NULL AND CAST({} AS VARCHAR) <> ''",
+            quote_identifier(field),
+            quote_identifier(field)
+        ));
+    }
+    if predicates.is_empty()
+        && let Some(field) = &message
+    {
+        let field = quote_identifier(field);
+        predicates.push(format!(
+            "(LOWER(CAST({field} AS VARCHAR)) LIKE '%error%' OR LOWER(CAST({field} AS VARCHAR)) LIKE '%exception%' OR LOWER(CAST({field} AS VARCHAR)) LIKE '%failed%' OR LOWER(CAST({field} AS VARCHAR)) LIKE '%fatal%' OR LOWER(CAST({field} AS VARCHAR)) LIKE '%panic%')"
+        ));
+    }
+    if predicates.is_empty() {
+        return Err(
+            "log dataset has no supported severity, exception, or message field".to_owned(),
+        );
+    }
+
+    Ok(format!(
+        "SELECT {service} AS \"serviceName\", {error_type} AS \"errorType\", {sample_message} AS \"sampleMessage\", COUNT(*) AS \"occurrences\", {last_seen} AS \"lastSeen\" FROM {} WHERE ({}) GROUP BY {service}, {error_type} ORDER BY \"occurrences\" DESC LIMIT {}",
+        quote_identifier(dataset),
+        predicates.join(" OR "),
+        limit.clamp(1, 500),
+    ))
+}
+
+async fn list_log_errors(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
+    let dataset = required_string(arguments, "dataset")?;
+    authorize(context.session_key, Action::Query, Some(dataset), None)?;
+    let info = serde_json::to_value(
+        get_prism_logstream_info(dataset, context.tenant_id)
+            .await
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if !nested_string(&info, "telemetryType").is_some_and(|value| value == "logs") {
+        return Err(format!(
+            "tool requires a logs dataset, but `{dataset}` is not logs telemetry"
+        ));
+    }
+    let schema = logstream::get_schema_internal(dataset, context.tenant_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let fields = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().to_owned())
+        .collect::<Vec<_>>();
+    let limit = bounded_integer(arguments, "limit", 50, 1, 500);
+    let query_text = bounded_select(&list_log_errors_query(dataset, &fields, limit)?)?;
+    let response = query::query_internal(
+        query::Query {
+            query: query_text,
+            start_time: required_string(arguments, "startTime")?.to_owned(),
+            end_time: required_string(arguments, "endTime")?.to_owned(),
+            send_null: true,
+            fields: false,
+            streaming: false,
+            filter_tags: None,
+        },
+        context.session_key,
+        context.tenant_id,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let records = response_value(response).await?;
+    let total = records.as_array().map_or(0, Vec::len);
+    Ok(json!({
+        "total": total,
+        "offset": 0,
+        "limit": limit,
+        "records": records,
+    }))
+}
+
 async fn execute_sql_tool(
     name: &str,
     arguments: &Value,
@@ -563,7 +705,8 @@ async fn execute_trace_tool(
     let datasets = [required_string(arguments, "dataset")?.to_owned()];
     let start_time = required_string(arguments, "startTime")?.to_owned();
     let end_time = required_string(arguments, "endTime")?.to_owned();
-    let limit = bounded_integer(arguments, "limit", 100, 1, 500) as usize;
+    let default_limit = if name == "list_trace_errors" { 50 } else { 100 };
+    let limit = bounded_integer(arguments, "limit", default_limit, 1, 500) as usize;
     let mut results = Vec::new();
     let mut errors = Vec::new();
     for dataset in datasets {
@@ -596,7 +739,8 @@ async fn execute_trace_tool(
                     end_time: end_time.clone(),
                     sort_by: None,
                     conditions: None,
-                    options: None,
+                    options: (name == "list_trace_errors")
+                        .then_some(crate::handlers::http::traces::TraceListOption::ErrorSpans),
                     limit: Some(limit),
                     offset: Some(0),
                 },
@@ -818,13 +962,16 @@ async fn execute_oss_tool_inner(
         }
         "sample_events" => sample_events(arguments, context).await,
         "get_log_context" => get_log_context(arguments, context).await,
+        "list_log_errors" => list_log_errors(arguments, context).await,
         "query_sql" | "explain_query" => execute_sql_tool(name, arguments, context).await,
         "list_alerts" | "get_alert" | "list_alert_tags" | "enable_alert" | "disable_alert"
         | "evaluate_alert" | "create_alert" => execute_alert_tool(name, arguments, context).await,
         "list_alert_targets" | "get_alert_target" | "create_alert_target" => {
             execute_alert_target_tool(name, arguments, context).await
         }
-        "get_traces" | "get_trace" => execute_trace_tool(name, arguments, context).await,
+        "get_traces" | "get_trace" | "list_trace_errors" => {
+            execute_trace_tool(name, arguments, context).await
+        }
         "ping"
         | "get_cluster_status"
         | "get_cluster_metrics"
@@ -894,7 +1041,27 @@ mod tests {
     use chrono::{DateTime, Duration, Utc};
     use serde_json::{Value, json};
 
-    use super::{call_tool_registry, normalized_log_context_bounds};
+    use super::{call_tool_registry, list_log_errors_query, normalized_log_context_bounds};
+
+    #[actix_web::test]
+    async fn log_error_query_uses_otel_severity_fields() {
+        let query = list_log_errors_query(
+            "app-logs",
+            &[
+                "p_timestamp".to_owned(),
+                "service.name".to_owned(),
+                "severity_number".to_owned(),
+                "severity_text".to_owned(),
+                "body".to_owned(),
+            ],
+            5,
+        )
+        .unwrap();
+
+        assert!(query.contains("CAST(\"severity_number\" AS BIGINT) >= 17"));
+        assert!(query.contains("'ERROR', 'FATAL', 'CRITICAL'"));
+        assert!(query.contains("LIMIT 5"));
+    }
 
     #[actix_web::test]
     async fn log_context_bounds_normalize_relative_times() {

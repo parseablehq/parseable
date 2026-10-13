@@ -104,7 +104,9 @@ impl ToolSpec {
             | "explain_query"
             | "discover_datasets"
             | "get_traces"
-            | "get_trace" => ToolEffect::ExpensiveRead,
+            | "get_trace"
+            | "list_log_errors"
+            | "list_trace_errors" => ToolEffect::ExpensiveRead,
             "create_alert"
             | "enable_alert"
             | "disable_alert"
@@ -400,6 +402,34 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
                     "pageSize": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
                 }),
                 &["dataset", "pTimestamp"],
+            ),
+        ),
+        ToolSpec::new(
+            "list_log_errors",
+            "List log errors",
+            "List grouped error, fatal, and exception log records from one logs dataset in a bounded time range.",
+            object_schema(
+                json!({
+                    "dataset": string_property("One logs dataset."),
+                    "startTime": string_property("RFC3339 range start."),
+                    "endTime": string_property("RFC3339 range end."),
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }
+                }),
+                &["dataset", "startTime", "endTime"],
+            ),
+        ),
+        ToolSpec::new(
+            "list_trace_errors",
+            "List trace errors",
+            "List failed and error spans from one traces dataset in a bounded time range.",
+            object_schema(
+                json!({
+                    "dataset": string_property("One traces dataset."),
+                    "startTime": string_property("RFC3339 range start."),
+                    "endTime": string_property("RFC3339 range end."),
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }
+                }),
+                &["dataset", "startTime", "endTime"],
             ),
         ),
         ToolSpec::new(
@@ -824,7 +854,7 @@ mod tests {
         let tools = oss_tool_specs();
         let names = tools.iter().map(|tool| tool.name).collect::<HashSet<_>>();
 
-        assert_eq!(tools.len(), 47);
+        assert_eq!(tools.len(), 49);
         assert_eq!(tools.len(), names.len());
     }
 
@@ -863,7 +893,7 @@ mod tests {
         let read_tools = oss_read_tool_specs();
         let action_tools = oss_action_tool_specs();
 
-        assert_eq!(read_tools.len(), 34);
+        assert_eq!(read_tools.len(), 36);
         assert_eq!(action_tools.len(), 13);
         assert!(read_tools.iter().all(|tool| matches!(
             tool.effect(),
@@ -910,6 +940,40 @@ mod tests {
             oss_tool_specs()
                 .iter()
                 .all(|tool| tool.name != "query_promql")
+        );
+    }
+
+    #[actix_web::test]
+    async fn oss_catalog_exposes_list_log_errors() {
+        let tool = oss_read_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "list_log_errors")
+            .expect("list_log_errors must be available in OSS");
+
+        assert_eq!(tool.effect(), ToolEffect::ExpensiveRead);
+        assert_eq!(tool.input_schema["properties"]["dataset"]["type"], "string");
+        assert!(
+            tool.input_schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("dataset"))
+        );
+    }
+
+    #[actix_web::test]
+    async fn oss_catalog_exposes_list_trace_errors() {
+        let tool = oss_read_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "list_trace_errors")
+            .expect("list_trace_errors must be available in OSS");
+
+        assert_eq!(tool.effect(), ToolEffect::ExpensiveRead);
+        assert_eq!(tool.input_schema["properties"]["dataset"]["type"], "string");
+        assert!(
+            tool.input_schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("dataset"))
         );
     }
 
