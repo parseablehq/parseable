@@ -21,14 +21,10 @@ use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
     path::PathBuf,
-    str::FromStr,
     sync::{Arc, LazyLock, RwLock},
 };
 
-use actix_web::http::{
-    StatusCode,
-    header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
-};
+use actix_web::http::{StatusCode, header::HeaderMap};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
@@ -53,12 +49,10 @@ use crate::{
         format::{LogSource, LogSourceEntry},
     },
     handlers::{
-        DatasetTag, STREAM_TYPE_KEY, TelemetryType,
+        DatasetTag, TelemetryType,
         http::{
-            cluster::{PMETA_STREAM_NAME, sync_streams_with_ingestors},
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
-            middleware::{CLUSTER_SECRET, CLUSTER_SECRET_HEADER},
             modal::{
                 ingest_server::INGESTOR_META,
                 utils::{logstream_utils::PutStreamHeaders, rbac_utils::get_metadata},
@@ -568,72 +562,6 @@ impl Parseable {
         commit_schema(stream_name, schema, tenant_id).map_err(|e| StreamError::Anyhow(e.into()))?;
 
         Ok(true)
-    }
-
-    pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
-        let log_source_entry = LogSourceEntry::new(LogSource::Pmeta, HashSet::new());
-        let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-            tenants.into_iter().map(Some).collect()
-        } else {
-            vec![None]
-        };
-        for tenant_id in tenants {
-            let internal_stream_result = self
-                .create_stream_if_not_exists(
-                    PMETA_STREAM_NAME,
-                    StreamType::Internal,
-                    None,
-                    vec![log_source_entry.clone()],
-                    TelemetryType::Logs,
-                    &tenant_id,
-                    vec![],
-                    vec![],
-                )
-                .await;
-
-            // Check if either stream creation failed
-            if let Err(e) = &internal_stream_result {
-                tracing::error!("Failed to create pmeta stream: {:?}", e);
-            }
-
-            // Check if both streams already existed
-            if matches!(internal_stream_result, Ok(true)) {
-                continue;
-            }
-
-            let mut header_map = HeaderMap::new();
-            header_map.insert(
-                HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
-                HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
-            );
-            header_map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-            if let Some((_, hash)) = CLUSTER_SECRET.get() {
-                header_map.insert(
-                    HeaderName::from_static(CLUSTER_SECRET_HEADER),
-                    HeaderValue::from_str(hash).unwrap(),
-                );
-                header_map.insert(
-                    HeaderName::from_static("intra-cluster-tenant"),
-                    HeaderValue::from_str(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)).unwrap(),
-                );
-            }
-
-            // Sync only the streams that were created successfully
-            if matches!(internal_stream_result, Ok(false))
-                && let Err(e) = sync_streams_with_ingestors(
-                    header_map.clone(),
-                    Bytes::new(),
-                    PMETA_STREAM_NAME,
-                    &tenant_id,
-                )
-                .await
-            {
-                tracing::error!("Failed to sync pmeta stream with ingestors: {:?}", e);
-            }
-        }
-
-        Ok(())
     }
 
     // Check if the stream exists and create a new stream if doesn't exist

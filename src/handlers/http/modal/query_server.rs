@@ -120,9 +120,6 @@ impl ParseableServer for QueryServer {
             .await;
         migration::run_migration(&PARSEABLE).await?;
 
-        // create internal stream at server start
-        // Multi-tenant mode is not allowed in OSS hence no need to have knowledge of tenant id
-        PARSEABLE.create_internal_stream_if_not_exists().await?;
         // load on init
         load_on_init().await?;
         // track all parquet files already in the data directory
