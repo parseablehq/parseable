@@ -205,7 +205,9 @@ fn schema_response(schema: &Schema, format: SchemaFormat) -> HttpResponse {
     }
 }
 
-fn compact_schema(schema: &Schema) -> String {
+/// Render the token-efficient schema representation used by the compact HTTP
+/// response and by agent-facing schema tools.
+pub fn compact_schema(schema: &Schema) -> String {
     let mut output = String::from("name\ttype\n");
     for field in schema.fields() {
         append_escaped_compact_field(&mut output, field.name());
