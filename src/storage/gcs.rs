@@ -590,10 +590,6 @@ impl Gcs {
 
 #[async_trait]
 impl ObjectStorage for Gcs {
-    fn supports_conditional_writes(&self) -> bool {
-        true
-    }
-
     async fn parallel_chunked_download(
         &self,
         path: &RelativePath,
@@ -832,12 +828,12 @@ impl ObjectStorage for Gcs {
         &self,
         path: &RelativePath,
         data: Bytes,
-        expected: Option<object_store::UpdateVersion>,
+        expected: Option<u64>,
         tenant_id: &Option<String>,
     ) -> Result<bool, ObjectStorageError> {
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let date = Utc::now().date_naive().to_string();
-        let result = crate::storage::put_object_if(
+        let result = crate::storage::put_schema_if(
             &*self.client,
             &to_object_store_path(path),
             data,

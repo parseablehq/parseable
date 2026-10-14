@@ -1184,7 +1184,8 @@ impl Metastore for ObjectStoreMetastore {
         tenant_id: &Option<String>,
     ) -> Result<Bytes, MetastoreError> {
         if let Some(global_schema) = self.get_global_schema(stream_name, tenant_id).await? {
-            return Ok(global_schema.schema);
+            let schema = to_bytes(&global_schema.schema);
+            return Ok(schema);
         }
 
         Ok(self
@@ -1214,24 +1215,23 @@ impl Metastore for ObjectStoreMetastore {
     ) -> Result<Option<GlobalSchema>, MetastoreError> {
         // LocalFS does not participate in the shared registry. Only bypass
         // explicitly unsupported backends; propagate errors from cloud stores.
-        if !self.storage.supports_conditional_writes() {
-            return Ok(None);
-        }
         let path = global_schema_path(stream_name, tenant_id);
+        let global_schema =
+            serde_json::from_slice(&self.storage.get_object(&path, tenant_id).await?)?;
         let Some((schema, version)) = self.storage.get_object_versioned(&path, tenant_id).await?
         else {
             return Ok(None);
         };
-        Ok(Some(GlobalSchema::new(schema, version)))
+        Ok(Some(global_schema))
     }
 
     /// Atomically create a missing global schema or compare-and-swap an existing one.
     async fn put_global_schema(
         &self,
-        obj: Schema,
+        obj: GlobalSchema,
         stream_name: &str,
         tenant_id: &Option<String>,
-        expected: Option<UpdateVersion>,
+        expected: Option<u64>,
     ) -> Result<bool, MetastoreError> {
         let path = global_schema_path(stream_name, tenant_id);
         Ok(self

@@ -23,7 +23,6 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use erased_serde::Serialize as ErasedSerialize;
-use object_store::UpdateVersion;
 use tonic::async_trait;
 use ulid::Ulid;
 
@@ -304,10 +303,10 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     ) -> Result<Option<GlobalSchema>, MetastoreError>;
     async fn put_global_schema(
         &self,
-        obj: Schema,
+        obj: GlobalSchema,
         stream_name: &str,
         tenant_id: &Option<String>,
-        expected: Option<UpdateVersion>,
+        expected: Option<u64>,
     ) -> Result<bool, MetastoreError>;
 
     /// parseable metadata

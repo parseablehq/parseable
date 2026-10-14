@@ -823,10 +823,6 @@ impl S3 {
 
 #[async_trait]
 impl ObjectStorage for S3 {
-    fn supports_conditional_writes(&self) -> bool {
-        true
-    }
-
     async fn get_buffered_reader(
         &self,
         path: &RelativePath,
@@ -1084,12 +1080,12 @@ impl ObjectStorage for S3 {
         &self,
         path: &RelativePath,
         data: Bytes,
-        expected: Option<object_store::UpdateVersion>,
+        expected: Option<u64>,
         tenant_id: &Option<String>,
     ) -> Result<bool, ObjectStorageError> {
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let date = Utc::now().date_naive().to_string();
-        let result = crate::storage::put_object_if(
+        let result = crate::storage::put_schema_if(
             &*self.client,
             &to_object_store_path(path),
             data,

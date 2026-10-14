@@ -144,7 +144,7 @@ pub async fn fetch_schema(
         .get_global_schema(stream_name, tenant_id)
         .await?
     {
-        return Ok(serde_json::from_slice(&global.schema)?);
+        return Ok(global.schema);
     }
     let res: Vec<Schema> = PARSEABLE
         .metastore
