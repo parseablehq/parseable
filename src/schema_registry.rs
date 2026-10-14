@@ -30,7 +30,6 @@ use std::{
 
 use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::{ArrowError, DataType, Field, FieldRef, Schema};
-use bytes::Bytes;
 use tonic::async_trait;
 
 use crate::{
@@ -49,8 +48,8 @@ trait RegistryBackend: Send + Sync {
     async fn read_legacy_schemas(&self) -> Result<Vec<Schema>, MetastoreError>;
     async fn compare_and_swap(
         &self,
-        schema: Schema,
-        expected: Option<object_store::UpdateVersion>,
+        global_schema: GlobalSchema,
+        expected: Option<u64>,
     ) -> Result<bool, MetastoreError>;
 }
 
@@ -76,11 +75,11 @@ impl RegistryBackend for MetastoreRegistryBackend<'_> {
 
     async fn compare_and_swap(
         &self,
-        schema: Schema,
-        expected: Option<object_store::UpdateVersion>,
+        global_schema: GlobalSchema,
+        expected: Option<u64>,
     ) -> Result<bool, MetastoreError> {
         self.metastore
-            .put_global_schema(schema, self.stream_name, self.tenant_id, expected)
+            .put_global_schema(global_schema, self.stream_name, self.tenant_id, expected)
             .await
     }
 }
@@ -264,7 +263,7 @@ async fn resolve_backend(
         let global = backend.read_global().await?;
         let (canonical, original_schema) = match global.as_ref() {
             Some(global) => {
-                let original = parse_global_schema(&global.schema)?;
+                let original = global.schema.to_owned();
                 let normalized = normalize_registry(&original).map_err(schema_error)?;
                 (normalized, Some(original))
             }
@@ -290,8 +289,11 @@ async fn resolve_backend(
 
         // `None` is explicitly create-only; a snapshot version is an
         // update-only CAS. A failed CAS invalidates this whole resolution.
-        let expected = global.as_ref().map(|snapshot| snapshot.version.clone());
-        if backend.compare_and_swap(proposed, expected).await? {
+        let expected = global.as_ref().map(|snapshot| snapshot.hash.clone());
+        if backend
+            .compare_and_swap(GlobalSchema::from_schema(proposed), expected)
+            .await?
+        {
             return Ok(resolution);
         }
 
@@ -304,10 +306,6 @@ async fn resolve_backend(
     Err(schema_error(format!(
         "global schema compare-and-swap did not converge after {MAX_CAS_ATTEMPTS} attempts for stream '{stream_name}'"
     )))
-}
-
-fn parse_global_schema(bytes: &Bytes) -> Result<Schema, MetastoreError> {
-    serde_json::from_slice(bytes).map_err(MetastoreError::from)
 }
 
 fn schema_error(message: impl Into<String>) -> MetastoreError {

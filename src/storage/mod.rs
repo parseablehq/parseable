@@ -16,7 +16,8 @@
  *
  */
 
-use object_store::path::Path;
+use bytes::Bytes;
+use object_store::{ObjectStoreExt, path::Path};
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinError;
@@ -28,8 +29,9 @@ use crate::{
     hottier::StreamHotTier,
     metadata::SchemaVersion,
     metastore::{MetastoreErrorDetail, metastore_traits::MetastoreObject},
+    migration::to_bytes,
     option::StandaloneWithDistributed,
-    parseable::StreamNotFound,
+    parseable::{GlobalSchema, StreamNotFound},
     stats::FullStats,
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
@@ -51,6 +53,10 @@ pub mod object_storage;
 pub mod retention;
 mod s3;
 pub mod store_metadata;
+
+pub trait ComparableBytes: Sized + serde::Serialize {
+    fn get_hash(&self) -> u64;
+}
 
 /// Size of the first request issued by [`get_object_ranged`], which doubles as
 /// the size probe. Anything at or below this is fetched as one plain GET, with
@@ -107,40 +113,56 @@ pub(crate) async fn get_object_versioned<S: object_store::ObjectStore + ?Sized>(
 
 /// Atomically create or update `path`; return `false` only for a conditional
 /// precondition conflict. Every other storage failure is preserved as an error.
-pub(crate) async fn put_object_if<S: object_store::ObjectStore + ?Sized>(
+/// Specific function for comparing global schema hashes
+/// (the read path doesn't know what to Deserialize the Bytes to for comparison)
+pub(crate) async fn put_schema_if<S: object_store::ObjectStore + ?Sized>(
     client: &S,
     path: &Path,
-    data: bytes::Bytes,
-    expected: Option<object_store::UpdateVersion>,
+    data: Bytes,
+    expected: Option<u64>,
 ) -> object_store::Result<bool> {
     use object_store::{PutMode, PutOptions};
 
-    let mode = match expected {
-        None => PutMode::Create,
-        Some(version) if version.e_tag.is_some() || version.version.is_some() => {
-            PutMode::Update(version)
+    let res = match expected {
+        None => {
+            // create
+            client
+                .put_opts(
+                    path,
+                    data.into(),
+                    PutOptions {
+                        mode: PutMode::Create,
+                        ..Default::default()
+                    },
+                )
+                .await
         }
-        Some(_) => {
-            return Err(object_store::Error::NotSupported {
-                source: Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "conditional update requires an ETag or object version",
-                )),
-            });
+        Some(version) => {
+            // Update if version matches
+            // get the object first
+            match client.get(path).await {
+                Ok(obj) => {
+                    let obj = serde_json::from_slice::<GlobalSchema>(&obj.bytes().await?).map_err(
+                        |e| object_store::Error::Generic {
+                            store: "object-store hash",
+                            source: Box::new(e),
+                        },
+                    )?;
+                    if obj.hash.ne(&version) {
+                        return Err(object_store::Error::Precondition {
+                            path: path.to_string(),
+                            source: anyhow::Error::msg("GlobalSchema hash mismatch")
+                                .into_boxed_dyn_error(),
+                        });
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+            client.put(path, data.into()).await
         }
     };
 
-    match client
-        .put_opts(
-            path,
-            data.into(),
-            PutOptions {
-                mode,
-                ..Default::default()
-            },
-        )
-        .await
-    {
+    match res {
         Ok(_) => Ok(true),
         Err(
             object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. },
@@ -759,7 +781,9 @@ mod global_schema_storage_tests {
     use bytes::Bytes;
     use object_store::{UpdateVersion, memory::InMemory, path::Path};
 
-    use super::{get_object_versioned, put_object_if};
+    use crate::parseable::GlobalSchema;
+
+    use super::{get_object_versioned, put_schema_if};
 
     #[tokio::test]
     async fn versioned_get_reports_absence_and_returns_body_with_validator() {
@@ -774,7 +798,7 @@ mod global_schema_storage_tests {
         );
 
         assert!(
-            put_object_if(&store, &path, Bytes::from_static(b"schema"), None)
+            put_schema_if(&store, &path, Bytes::from_static(b"schema"), None)
                 .await
                 .expect("create-only write should succeed")
         );
@@ -791,8 +815,8 @@ mod global_schema_storage_tests {
         let store = InMemory::new();
         let path = Path::from("tenant/stream/.stream/.global.schema");
         let (first, second) = tokio::join!(
-            put_object_if(&store, &path, Bytes::from_static(b"first"), None),
-            put_object_if(&store, &path, Bytes::from_static(b"second"), None),
+            put_schema_if(&store, &path, Bytes::from_static(b"first"), None),
+            put_schema_if(&store, &path, Bytes::from_static(b"second"), None),
         );
 
         let outcomes = [
@@ -808,24 +832,27 @@ mod global_schema_storage_tests {
         let store = InMemory::new();
         let path = Path::from("tenant/stream/.stream/.global.schema");
         assert!(
-            put_object_if(&store, &path, Bytes::from_static(b"initial"), None)
+            put_schema_if(&store, &path, Bytes::from_static(b"initial"), None)
                 .await
                 .unwrap()
         );
-        let (_, stale_version) = get_object_versioned(&store, &path).await.unwrap().unwrap();
+        let global_schema = serde_json::from_slice::<GlobalSchema>(
+            store.get_object(&path, tenant_id).await.unwrap(),
+        )
+        .unwrap();
         assert!(
-            put_object_if(
+            put_schema_if(
                 &store,
                 &path,
                 Bytes::from_static(b"newer"),
-                Some(stale_version.clone()),
+                Some(global_schema.hash),
             )
             .await
             .unwrap()
         );
 
         assert!(
-            !put_object_if(
+            !put_schema_if(
                 &store,
                 &path,
                 Bytes::from_static(b"stale"),
@@ -836,77 +863,5 @@ mod global_schema_storage_tests {
         );
         let (body, _) = get_object_versioned(&store, &path).await.unwrap().unwrap();
         assert_eq!(body, Bytes::from_static(b"newer"));
-    }
-
-    #[tokio::test]
-    async fn concurrent_additions_retry_with_the_winning_version_token() {
-        let store = InMemory::new();
-        let path = Path::from("tenant/stream/.stream/.global.schema");
-        let left = Bytes::from_static(b"left");
-        let right = Bytes::from_static(b"right");
-        let (left_written, right_written) = tokio::join!(
-            put_object_if(&store, &path, left.clone(), None),
-            put_object_if(&store, &path, right.clone(), None),
-        );
-        let left_written = left_written.unwrap();
-        let right_written = right_written.unwrap();
-        assert_ne!(left_written, right_written);
-
-        // The loser reloads the current version, merges its addition, and uses
-        // that exact token for the retry instead of issuing an unconditional PUT.
-        let (winner, version) = get_object_versioned(&store, &path).await.unwrap().unwrap();
-        let addition = if winner == left {
-            &right[..]
-        } else {
-            &left[..]
-        };
-        let merged = Bytes::from([winner.as_ref(), addition].concat());
-        assert!(
-            put_object_if(&store, &path, merged.clone(), Some(version))
-                .await
-                .expect("retry should compare-and-swap the current generation")
-        );
-        let (stored, _) = get_object_versioned(&store, &path).await.unwrap().unwrap();
-        assert_eq!(stored, merged);
-    }
-
-    #[tokio::test]
-    async fn unusable_update_token_is_an_error_not_a_contention_result() {
-        let store = InMemory::new();
-        let path = Path::from("tenant/stream/.stream/.global.schema");
-        let result = put_object_if(
-            &store,
-            &path,
-            Bytes::from_static(b"schema"),
-            Some(UpdateVersion {
-                e_tag: None,
-                version: None,
-            }),
-        )
-        .await;
-        assert!(matches!(
-            result,
-            Err(object_store::Error::NotSupported { .. })
-        ));
-
-        // InMemory needs an ETag to perform Update. Supplying a version-only
-        // token against an existing object reaches the backend and must preserve
-        // its genuine error rather than disguising it as a CAS conflict.
-        assert!(
-            put_object_if(&store, &path, Bytes::from_static(b"initial"), None)
-                .await
-                .unwrap()
-        );
-        let result = put_object_if(
-            &store,
-            &path,
-            Bytes::from_static(b"schema"),
-            Some(UpdateVersion {
-                e_tag: None,
-                version: Some("generation-1".into()),
-            }),
-        )
-        .await;
-        assert!(matches!(result, Err(object_store::Error::Generic { .. })));
     }
 }

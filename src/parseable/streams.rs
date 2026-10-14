@@ -23,7 +23,6 @@ use arrow::{
 };
 use arrow_array::{ArrayRef, RecordBatch, UInt32Array};
 use arrow_schema::{ArrowError, Field, Fields, Schema, SortOptions};
-use bytes::Bytes;
 use chrono::{NaiveDate, NaiveDateTime, Timelike, Utc};
 use derive_more::derive::{Deref, DerefMut};
 use itertools::Itertools;
@@ -52,7 +51,8 @@ use rayon::{
     slice::ParallelSliceMut,
 };
 use relative_path::RelativePathBuf;
-use std::sync::PoisonError;
+use rustc_hash::FxHasher;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions, remove_file, write},
@@ -61,6 +61,10 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use std::{
+    hash::{Hash, Hasher},
+    sync::PoisonError,
 };
 use tokio::task::JoinSet;
 use tracing::{error, info, info_span, instrument, trace, warn};
@@ -80,7 +84,7 @@ use crate::{
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE},
     schema_registry::Resolution,
-    storage::{StreamType, object_storage::to_bytes, retention::Retention},
+    storage::{ComparableBytes, StreamType, object_storage::to_bytes, retention::Retention},
     sync::FLUSH_AND_CONVERT_RUNTIME,
     utils::{
         arrow::adapt_batch,
@@ -374,15 +378,24 @@ fn minute_from_system_time(time: SystemTime) -> u128 {
         / 60000
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GlobalSchema {
-    pub schema: Bytes,
-    pub version: object_store::UpdateVersion,
+    pub schema: Schema,
+    pub hash: u64,
 }
 
 impl GlobalSchema {
-    pub fn new(schema: Bytes, version: object_store::UpdateVersion) -> Self {
-        Self { schema, version }
+    pub fn from_schema(schema: Schema) -> Self {
+        let mut hasher = FxHasher::with_seed(0);
+        schema.hash(&mut hasher);
+        let hash = hasher.finish();
+        Self { schema, hash }
+    }
+}
+
+impl ComparableBytes for GlobalSchema {
+    fn get_hash(&self) -> u64 {
+        self.hash
     }
 }
 
@@ -1179,7 +1192,7 @@ impl Stream {
         {
             // The registry is authoritative. Raw schemas staged before the
             // first coordinated conversion may contain the losing field type.
-            schema = global.as_ref().clone();
+            schema = global.as_ref().to_owned();
         } else {
             let staging_schemas = self.get_schemas_if_present()?;
             if !staging_schemas.is_empty() {
@@ -1876,12 +1889,11 @@ impl Stream {
     }
 
     fn can_use_global_schema(&self) -> bool {
-        self.options.mode == Mode::Ingest
-            && !self.get_static_schema_flag()
-            && PARSEABLE
-                .storage
-                .get_object_store()
-                .supports_conditional_writes()
+        self.options.mode == Mode::Ingest && !self.get_static_schema_flag()
+        // && PARSEABLE
+        //     .storage
+        //     .get_object_store()
+        //     .supports_conditional_writes()
     }
 
     fn uses_global_schema(&self) -> bool {
@@ -1973,7 +1985,7 @@ impl Stream {
                         "global schema disappeared after resolution".to_owned(),
                     )
                 })?;
-            let canonical = serde_json::from_slice::<Schema>(&global.schema)?;
+            let canonical = global.schema;
             Ok::<_, StagingError>((resolution, Arc::new(canonical)))
         })?;
         resolution.include_identity_schema(&canonical);
@@ -2146,6 +2158,7 @@ impl Stream {
 
     /// Converts one Parquet output group and removes its Arrow sources only
     /// after the final Parquet rename succeeds.
+    #[allow(clippy::too_many_arguments)]
     fn convert_arrow_group(
         &self,
         parquet_path: PathBuf,
@@ -2225,6 +2238,7 @@ impl Stream {
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     /// Writes one conversion group to a temporary Parquet file.
+    #[allow(clippy::too_many_arguments)]
     fn write_parquet_part_file(
         &self,
         part_path: &Path,
@@ -2287,6 +2301,7 @@ impl Stream {
 
     /// Writes a metric conversion group with pipelined row-group preparation
     /// and encoding while preserving row-group output order.
+    #[allow(clippy::too_many_arguments)]
     fn write_metric_parquet_part_file(
         &self,
         part_path: &Path,
@@ -2632,7 +2647,7 @@ impl Stream {
             .ok_or_else(|| {
                 StagingError::GlobalSchema("global schema disappeared during startup".to_owned())
             })?;
-        let canonical = serde_json::from_slice::<Schema>(&global.schema)?;
+        let canonical = global.schema;
         resolution.include_identity_schema(&canonical);
         *self.global_schema.write().expect(LOCK_EXPECT) =
             Some((Arc::new(canonical.clone()), Arc::new(resolution)));

@@ -332,13 +332,6 @@ pub trait ObjectStorageProvider: std::fmt::Debug + Send + Sync {
 
 #[async_trait]
 pub trait ObjectStorage: Debug + Send + Sync + 'static {
-    /// Whether this backend provides atomic create/update and versioned reads.
-    /// Unsupported stores keep their existing schema behavior; CAS never falls
-    /// back to an unconditional write.
-    fn supports_conditional_writes(&self) -> bool {
-        false
-    }
-
     async fn get_buffered_reader(
         &self,
         path: &RelativePath,
@@ -381,7 +374,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         &self,
         _path: &RelativePath,
         _data: Bytes,
-        _expected: Option<object_store::UpdateVersion>,
+        _expected: Option<u64>,
         _tenant_id: &Option<String>,
     ) -> Result<bool, ObjectStorageError> {
         Err(ObjectStorageError::Custom(
@@ -1474,7 +1467,7 @@ pub async fn commit_schema_to_storage(
         // The global schema already contains canonical names and resolved types.
         // Do not merge it with this ingestor's raw schema: equal field names may
         // intentionally have different raw types before registry resolution.
-        let canonical_schema = serde_json::from_slice::<Schema>(&global_schema.schema)?;
+        let canonical_schema = global_schema.schema;
         return PARSEABLE
             .metastore
             .put_schema(canonical_schema, stream_name, tenant_id)
