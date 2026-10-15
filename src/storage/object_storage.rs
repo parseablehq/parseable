@@ -1517,22 +1517,29 @@ pub fn schema_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePat
     }
 }
 
+/// Shared directory for global-schema data and lock files.
+///
+/// `None` and `Some(DEFAULT_TENANT)` both represent the legacy global tenant,
+/// whose objects intentionally have no tenant prefix.
+fn global_schema_directory_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
+    match tenant_id
+        .as_deref()
+        .filter(|tenant| *tenant != DEFAULT_TENANT)
+    {
+        Some(tenant) => RelativePathBuf::from_iter([tenant, stream_name, STREAM_ROOT_DIRECTORY]),
+        None => RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]),
+    }
+}
+
 pub fn global_schema_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
-    let tenant = tenant_id.as_deref().unwrap_or("");
-    RelativePathBuf::from_iter([
-        tenant,
-        stream_name,
-        STREAM_ROOT_DIRECTORY,
-        GLOBAL_SCHEMA_FILE_NAME,
-    ])
+    global_schema_directory_path(stream_name, tenant_id).join(GLOBAL_SCHEMA_FILE_NAME)
 }
 
 pub fn global_schema_lock_file_path(
     stream_name: &str,
     tenant_id: &Option<String>,
 ) -> RelativePathBuf {
-    let tenant = tenant_id.as_deref().unwrap_or("");
-    RelativePathBuf::from_iter([tenant, stream_name, STREAM_ROOT_DIRECTORY])
+    global_schema_directory_path(stream_name, tenant_id)
 }
 
 #[inline(always)]
