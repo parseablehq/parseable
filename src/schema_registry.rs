@@ -45,6 +45,7 @@ use crate::{
 
 const MAX_CAS_ATTEMPTS: usize = 16;
 const MAX_NAME_ATTEMPTS: usize = 64;
+static P_CANONICAL_SCHEMA_ENV_KEY: &str = "P_CANONICAL_SCHEMA";
 
 #[async_trait]
 trait RegistryBackend: Send + Sync {
@@ -126,17 +127,17 @@ pub struct Resolution {
 
 impl Default for Resolution {
     fn default() -> Self {
-        Self::identity()
+        Self {
+            targets: HashMap::new(),
+            identity: true,
+        }
     }
 }
 
 impl Resolution {
     /// A passthrough resolution. The original schema and batch are retained.
     pub fn identity() -> Self {
-        Self {
-            targets: HashMap::new(),
-            identity: true,
-        }
+        Self::default()
     }
 
     /// Construct a resolution from the mapping maintained by the stream layer.
@@ -261,9 +262,8 @@ impl Resolution {
 /// The caller remains responsible for applying this only to the staging path.
 pub fn enabled() -> bool {
     PARSEABLE.options.mode == Mode::Ingest
-        && !std::env::var("P_CANONICAL_SCHEMA")
-            .map(|value| value.trim().eq_ignore_ascii_case("false"))
-            .unwrap_or(false)
+        && !std::env::var(P_CANONICAL_SCHEMA_ENV_KEY)
+            .is_ok_and(|value| value.trim().eq_ignore_ascii_case("false"))
 }
 
 /// Resolve all schemas in one operation against an append-only global schema.
@@ -474,8 +474,7 @@ fn legacy_seed(schemas: &[Schema]) -> Schema {
         }
         let replace = chosen
             .get(field.name())
-            .map(|current| legacy_type_precedes(field.data_type(), current.data_type()))
-            .unwrap_or(true);
+            .is_none_or(|current| legacy_type_precedes(field.data_type(), current.data_type()));
         if replace {
             chosen.insert(field.name().clone(), canonical_field(field));
         }
@@ -506,31 +505,44 @@ fn build_resolution(
     pinned: &HashSet<String>,
 ) -> Result<(Resolution, Schema), String> {
     let normalized = normalize_registry(canonical)?;
-    let mut fields: BTreeMap<String, FieldRef> = normalized
+    let mut fields = normalized
         .fields()
         .iter()
         .map(|field| (field.name().clone(), field.clone()))
         .collect();
+    let keys = source_keys(schemas);
+    let cooccurring_names = cooccurring_source_names(schemas);
 
-    let mut keys = HashSet::<(String, DataType)>::new();
-    for schema in schemas {
-        for field in schema.fields() {
-            if !field.data_type().is_null() {
-                keys.insert((field.name().clone(), field.data_type().clone()));
-            }
-        }
-    }
-    let mut keys: Vec<_> = keys.into_iter().collect();
+    reserve_original_names(&mut fields, &keys, pinned)?;
+    let targets = resolve_targets(&mut fields, &keys, &cooccurring_names, pinned)?;
+    validate_unique_targets(schemas, &targets)?;
+
+    let canonical = Schema::new(fields.into_values().collect::<Vec<_>>());
+    Ok((Resolution::from_targets(targets), canonical))
+}
+
+fn source_keys(schemas: &[Schema]) -> Vec<(String, DataType)> {
+    let mut keys: Vec<_> = schemas
+        .iter()
+        .flat_map(|schema| schema.fields())
+        .filter(|field| !field.data_type().is_null())
+        .map(|field| (field.name().clone(), field.data_type().clone()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
     keys.sort_by(|left, right| {
         left.0
             .cmp(&right.0)
             .then_with(|| format!("{:?}", left.1).cmp(&format!("{:?}", right.1)))
     });
+    keys
+}
 
-    // Record only names of distinct columns that co-occur with each exact
-    // source key. Schemas that are processed separately must not reserve names
-    // from one another, since compatible canonical suffix fields are reusable.
-    let mut cooccurring_source_names = HashMap::<(String, DataType), HashSet<String>>::new();
+// Record only names of distinct columns that co-occur with each exact source
+// key. Schemas processed separately must not reserve names from one another,
+// since compatible canonical suffix fields are reusable.
+fn cooccurring_source_names(schemas: &[Schema]) -> HashMap<(String, DataType), HashSet<String>> {
+    let mut cooccurring_names = HashMap::<(String, DataType), HashSet<String>>::new();
     for schema in schemas {
         let fields: Vec<_> = schema
             .fields()
@@ -538,30 +550,39 @@ fn build_resolution(
             .filter(|field| !field.data_type().is_null())
             .collect();
         for (index, field) in fields.iter().enumerate() {
-            let key = (field.name().clone(), field.data_type().clone());
-            let other_names = cooccurring_source_names.entry(key).or_default();
+            let names = cooccurring_names
+                .entry((field.name().clone(), field.data_type().clone()))
+                .or_default();
             for (other_index, other) in fields.iter().enumerate() {
                 if index != other_index {
-                    other_names.insert(other.name().clone());
+                    names.insert(other.name().clone());
                 }
             }
         }
     }
+    cooccurring_names
+}
 
-    // Reserve free source names first so conflict suffixes do not capture
-    // fields that require their original canonical names.
-    let mut by_name = BTreeMap::<String, Vec<DataType>>::new();
-    for (name, data_type) in &keys {
-        by_name
+// Reserve free source names first so conflict suffixes do not capture fields
+// that require their original canonical names.
+fn reserve_original_names(
+    fields: &mut BTreeMap<String, FieldRef>,
+    keys: &[(String, DataType)],
+    pinned: &HashSet<String>,
+) -> Result<(), String> {
+    let mut types_by_name = BTreeMap::<String, Vec<DataType>>::new();
+    for (name, data_type) in keys {
+        types_by_name
             .entry(name.clone())
             .or_default()
             .push(data_type.clone());
     }
-    for (name, types) in &by_name {
-        if fields.contains_key(name) {
+
+    for (name, types) in types_by_name {
+        if fields.contains_key(&name) {
             continue;
         }
-        if pinned.contains(name) && types.len() > 1 {
+        if pinned.contains(&name) && types.len() > 1 {
             return Err(format!(
                 "pinned field '{name}' has incompatible local datatypes"
             ));
@@ -569,76 +590,98 @@ fn build_resolution(
         if let Some(data_type) = types.first() {
             fields.insert(
                 name.clone(),
-                Arc::new(Field::new(name, data_type.clone(), true)),
+                Arc::new(Field::new(&name, data_type.clone(), true)),
             );
         }
     }
+    Ok(())
+}
 
+fn resolve_targets(
+    fields: &mut BTreeMap<String, FieldRef>,
+    keys: &[(String, DataType)],
+    cooccurring_names: &HashMap<(String, DataType), HashSet<String>>,
+    pinned: &HashSet<String>,
+) -> Result<HashMap<(String, DataType), FieldRef>, String> {
     let mut targets = HashMap::with_capacity(keys.len());
-    for (name, data_type) in &keys {
-        let direct_match = fields
-            .get(name)
-            .is_some_and(|field| field.data_type() == data_type);
-        if direct_match {
-            targets.insert(
-                (name.clone(), data_type.clone()),
-                fields.get(name).expect("checked above").clone(),
-            );
-            continue;
-        }
-
-        if pinned.contains(name) {
-            let established_type = fields
-                .get(name)
-                .map(|field| field.data_type().clone())
-                .unwrap_or_else(|| data_type.clone());
-            return Err(format!(
-                "pinned field '{name}' has local datatype {data_type} but canonical datatype {established_type}"
-            ));
-        }
-
-        let suffix = get_datatype_suffix(data_type);
-        let mut candidate = format!("{name}_{suffix}");
-        let mut target = None;
-        let source_key = (name.clone(), data_type.clone());
-        for _ in 0..MAX_NAME_ATTEMPTS {
-            let conflicts_with_local_column = cooccurring_source_names
-                .get(&source_key)
-                .is_some_and(|names| names.contains(&candidate));
-            if pinned.contains(&candidate) || conflicts_with_local_column {
-                candidate.push_str(&format!("_{suffix}"));
-                continue;
-            }
-            match fields.get(&candidate) {
-                Some(field) if field.data_type() == data_type => {
-                    target = Some(field.clone());
-                    break;
-                }
-                Some(_) => candidate.push_str(&format!("_{suffix}")),
-                None => {
-                    let field = Arc::new(Field::new(&candidate, data_type.clone(), true));
-                    fields.insert(candidate.clone(), field.clone());
-                    target = Some(field);
-                    break;
-                }
-            }
-        }
-        let target = target.ok_or_else(|| {
-            format!(
-                "could not find an available canonical name for '{name}' after {MAX_NAME_ATTEMPTS} suffix attempts"
-            )
-        })?;
+    for (name, data_type) in keys {
+        let target = choose_canonical_target(fields, name, data_type, cooccurring_names, pinned)?;
         targets.insert((name.clone(), data_type.clone()), target);
     }
+    Ok(targets)
+}
 
-    // Ensure each input schema remains lossless: every retained source column
-    // must have a unique target name in that schema.
+fn choose_canonical_target(
+    fields: &mut BTreeMap<String, FieldRef>,
+    name: &str,
+    data_type: &DataType,
+    cooccurring_names: &HashMap<(String, DataType), HashSet<String>>,
+    pinned: &HashSet<String>,
+) -> Result<FieldRef, String> {
+    if let Some(field) = fields
+        .get(name)
+        .filter(|field| field.data_type() == data_type)
+    {
+        return Ok(field.clone());
+    }
+
+    if pinned.contains(name) {
+        let established_type = fields
+            .get(name)
+            .map_or_else(|| data_type.clone(), |field| field.data_type().clone());
+        return Err(format!(
+            "pinned field '{name}' has local datatype {data_type} but canonical datatype {established_type}"
+        ));
+    }
+
+    choose_suffix_target(fields, name, data_type, cooccurring_names, pinned)
+}
+
+fn choose_suffix_target(
+    fields: &mut BTreeMap<String, FieldRef>,
+    name: &str,
+    data_type: &DataType,
+    cooccurring_names: &HashMap<(String, DataType), HashSet<String>>,
+    pinned: &HashSet<String>,
+) -> Result<FieldRef, String> {
+    let suffix = get_datatype_suffix(data_type);
+    let mut candidate = format!("{name}_{suffix}");
+    let source_key = (name.to_owned(), data_type.clone());
+    for _ in 0..MAX_NAME_ATTEMPTS {
+        let conflicts_with_local_column = cooccurring_names
+            .get(&source_key)
+            .is_some_and(|names| names.contains(&candidate));
+        if !pinned.contains(&candidate) && !conflicts_with_local_column {
+            match fields.get(&candidate) {
+                Some(field) if field.data_type() == data_type => return Ok(field.clone()),
+                None => {
+                    let field = Arc::new(Field::new(&candidate, data_type.clone(), true));
+                    fields.insert(candidate, field.clone());
+                    return Ok(field);
+                }
+                Some(_) => {}
+            }
+        }
+        candidate.push_str(&format!("_{suffix}"));
+    }
+    Err(format!(
+        "could not find an available canonical name for '{name}' after {MAX_NAME_ATTEMPTS} suffix attempts"
+    ))
+}
+
+// Ensure each input schema remains lossless: every retained source column must
+// have a unique target name in that schema.
+fn validate_unique_targets(
+    schemas: &[Schema],
+    targets: &HashMap<(String, DataType), FieldRef>,
+) -> Result<(), String> {
     for schema in schemas {
         let mut names = HashSet::with_capacity(schema.fields().len());
-        for field in schema.fields() {
-            if field.data_type().is_null() {
-                continue;
-            }
+        for field in schema
+            .fields()
+            .iter()
+            .filter(|field| !field.data_type().is_null())
+        {
             let key = (field.name().clone(), field.data_type().clone());
             let target = targets.get(&key).ok_or_else(|| {
                 format!(
@@ -655,9 +698,7 @@ fn build_resolution(
             }
         }
     }
-
-    let canonical = Schema::new(fields.into_values().collect::<Vec<_>>());
-    Ok((Resolution::from_targets(targets), canonical))
+    Ok(())
 }
 
 #[cfg(test)]
