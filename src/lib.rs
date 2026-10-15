@@ -50,6 +50,7 @@ pub mod prism;
 pub mod query;
 pub mod rbac;
 mod response;
+pub mod schema_registry;
 pub mod sse;
 mod static_schema;
 mod stats;
