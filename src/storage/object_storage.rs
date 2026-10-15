@@ -1527,6 +1527,14 @@ pub fn global_schema_path(stream_name: &str, tenant_id: &Option<String>) -> Rela
     ])
 }
 
+pub fn global_schema_lock_file_path(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> RelativePathBuf {
+    let tenant = tenant_id.as_deref().unwrap_or("");
+    RelativePathBuf::from_iter([tenant, stream_name, STREAM_ROOT_DIRECTORY])
+}
+
 #[inline(always)]
 pub fn stream_json_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
     let tenant = tenant_id.as_deref().unwrap_or("");

@@ -29,7 +29,6 @@ use crate::{
     hottier::StreamHotTier,
     metadata::SchemaVersion,
     metastore::{MetastoreErrorDetail, metastore_traits::MetastoreObject},
-    migration::to_bytes,
     option::StandaloneWithDistributed,
     parseable::{GlobalSchema, StreamNotFound},
     stats::FullStats,

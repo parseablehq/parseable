@@ -30,13 +30,18 @@ use std::{
 
 use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::{ArrowError, DataType, Field, FieldRef, Schema};
+use chrono::{DateTime, Utc};
+use futures::stream::FuturesUnordered;
+use itertools::Itertools;
 use tonic::async_trait;
 
 use crate::{
     event::format::get_datatype_suffix,
+    handlers::http::modal::ingest_server::INGESTOR_META,
     metastore::{MetastoreError, metastore_traits::Metastore},
     option::Mode,
     parseable::{GlobalSchema, PARSEABLE},
+    storage::object_storage::global_schema_lock_file_path,
 };
 
 const MAX_CAS_ATTEMPTS: usize = 16;
@@ -250,7 +255,101 @@ pub async fn resolve(
         stream_name,
         tenant_id,
     };
-    resolve_backend(&backend, stream_name, schemas, pinned).await
+    // before beginning, acquire lock
+    // lock file will be- `tenant/stream/.stream/<nodename>-<timestamp>.lock`
+    let locks = backend
+        .metastore
+        .get_global_schema_locks(stream_name, tenant_id)
+        .await?;
+    if locks.len() == 0 {
+        // proceed with writing lock file
+    } else if locks.len() == 1 {
+        // only one lock file
+        // check the time of the existing lock file
+        // and decide whether to backoff or not
+        let timestamp = DateTime::from_timestamp_micros(
+            *&locks[0].rsplit("-").collect_vec()[0]
+                .split_once(".lock")
+                .unwrap()
+                .0
+                .parse::<i64>()
+                .unwrap(),
+        )
+        .unwrap();
+
+        let mut slept_already = false;
+        loop {
+            // if delta > 3 minutes then delete and proceed
+            if (Utc::now() - timestamp).num_seconds() > 180 {
+                tracing::warn!(
+                    "delta between lock file- {} and now is greater than 3 minutes, deleting and proceeding",
+                    locks[0]
+                );
+                let lock_file =
+                    global_schema_lock_file_path(stream_name, tenant_id).join(&locks[0]);
+                backend
+                    .metastore
+                    .delete_global_schema_lock(lock_file, tenant_id)
+                    .await;
+                break;
+            } else if !slept_already {
+                // sleep for 5 seconds and try again
+                // if lock file still present, skip cycle
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                slept_already = true;
+            } else {
+                // delta is < 180s and slept already
+                // check if lock file exists
+                let locks = backend
+                    .metastore
+                    .get_global_schema_locks(stream_name, tenant_id)
+                    .await?;
+                if locks.is_empty() {
+                    // proceed normally
+                    break;
+                } else {
+                    // skip current cycle
+                    return Err(MetastoreError::LockFileFailure {
+                        message: "Unable to obtain a clean lock file state".into(),
+                    });
+                }
+            }
+        }
+    } else {
+        // multiple lock files present, self healing required here
+        // multiple lock files should only be present in case of multiple failures
+        // safe to assume that conflict resolution can fail now
+        // delete all of them maybe?
+        tracing::warn!("Found {} lock files for global schema", locks.len());
+        let tasks = FuturesUnordered::new();
+        for file in locks {
+            let path = global_schema_lock_file_path(stream_name, tenant_id).join(file);
+            let deletion = backend.metastore.delete_global_schema_lock(path, tenant_id);
+            tasks.push(deletion);
+        }
+        tasks.iter().for_each(|_| {});
+    }
+    let lock_file_path = global_schema_lock_file_path(stream_name, tenant_id).join(format!(
+        "{}-{}.lock",
+        INGESTOR_META
+            .get()
+            .expect("Ingestor node metadata should exist")
+            .node_id,
+        Utc::now().timestamp_micros()
+    ));
+    backend
+        .metastore
+        .put_global_schema_lock(lock_file_path.clone(), tenant_id)
+        .await?;
+
+    // proceed with resolution
+    let res = resolve_backend(&backend, stream_name, schemas, pinned).await;
+
+    backend
+        .metastore
+        .delete_global_schema_lock(lock_file_path, tenant_id)
+        .await;
+    res
 }
 
 async fn resolve_backend(
@@ -309,7 +408,7 @@ async fn resolve_backend(
 }
 
 fn schema_error(message: impl Into<String>) -> MetastoreError {
-    MetastoreError::JsonSchemaError {
+    MetastoreError::CASConvergenceFailure {
         message: message.into(),
     }
 }
