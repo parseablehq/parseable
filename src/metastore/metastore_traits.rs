@@ -23,6 +23,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use erased_serde::Serialize as ErasedSerialize;
+use relative_path::RelativePathBuf;
 use tonic::async_trait;
 use ulid::Ulid;
 
@@ -292,7 +293,17 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
-
+    async fn get_global_schema_locks(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, MetastoreError>;
+    async fn put_global_schema_lock(
+        &self,
+        lock_file_path: RelativePathBuf,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_global_schema_lock(&self, path: RelativePathBuf, tenant_id: &Option<String>);
     /// Global schema operations used to detect and resolve schema conflicts.
     /// A missing expected version creates the record; a version updates it with
     /// an atomic compare-and-swap. `false` indicates only a version conflict.

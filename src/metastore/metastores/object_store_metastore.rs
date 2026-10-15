@@ -27,7 +27,6 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::{StreamExt, TryStreamExt};
-use object_store::UpdateVersion;
 use relative_path::RelativePathBuf;
 use tonic::async_trait;
 use tracing::{info, warn};
@@ -1206,7 +1205,48 @@ impl Metastore for ObjectStoreMetastore {
             .put_object(&path, to_bytes(&obj), tenant_id)
             .await?)
     }
-
+    async fn get_global_schema_locks(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, MetastoreError> {
+        let path = if let Some(tenant) = tenant_id {
+            object_store::path::Path::from(format!(
+                "{}/{}/{}",
+                tenant, stream_name, STREAM_ROOT_DIRECTORY
+            ))
+        } else {
+            object_store::path::Path::from(format!("{}/{}", stream_name, STREAM_ROOT_DIRECTORY))
+        };
+        let mut result_file_list = Vec::new();
+        let resp = self.storage.list_with_delimiter(Some(path)).await?;
+        for obj in resp.objects.iter() {
+            let name = obj.location.filename();
+            if let Some(name) = name
+                && name.ends_with(".lock")
+            {
+                result_file_list.push(name.to_owned());
+            }
+        }
+        Ok(result_file_list)
+    }
+    async fn put_global_schema_lock(
+        &self,
+        lock_file_path: RelativePathBuf,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError> {
+        let data = to_bytes(&String::new());
+        self.storage
+            .put_object(&lock_file_path, data, tenant_id)
+            .await?;
+        Ok(())
+    }
+    async fn delete_global_schema_lock(&self, path: RelativePathBuf, tenant_id: &Option<String>) {
+        // lock file deletion is unconditional
+        if let Err(e) = self.storage.delete_object(&path, tenant_id).await {
+            tracing::error!("Error while deleting lock file- {e}");
+        }
+    }
     /// Retrieve a global schema and the validator from the same object-store GET.
     async fn get_global_schema(
         &self,
@@ -1216,11 +1256,15 @@ impl Metastore for ObjectStoreMetastore {
         // LocalFS does not participate in the shared registry. Only bypass
         // explicitly unsupported backends; propagate errors from cloud stores.
         let path = global_schema_path(stream_name, tenant_id);
-        let global_schema =
-            serde_json::from_slice(&self.storage.get_object(&path, tenant_id).await?)?;
-        let Some((schema, version)) = self.storage.get_object_versioned(&path, tenant_id).await?
-        else {
-            return Ok(None);
+        let global_schema = match self.storage.get_object(&path, tenant_id).await {
+            Ok(obj) => serde_json::from_slice(&obj)?,
+            Err(ObjectStorageError::NoSuchKey(_) | ObjectStorageError::PathError(_)) => {
+                return Ok(None);
+            }
+            Err(e) => {
+                tracing::error!("{e}");
+                return Err(MetastoreError::ObjectStorageError(e));
+            }
         };
         Ok(Some(global_schema))
     }
