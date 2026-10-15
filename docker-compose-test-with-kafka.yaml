@@ -44,6 +44,7 @@ services:
       - P_USERNAME=parseableadmin
       - P_PASSWORD=parseableadmin
       - P_CHECK_UPDATE=false
+      - P_SEND_ANONYMOUS_USAGE_DATA=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_KAFKA_CONSUMER_TOPICS=test-logs-stream
       - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092

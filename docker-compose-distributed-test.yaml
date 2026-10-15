@@ -43,6 +43,7 @@ services:
       - P_USERNAME=parseableadmin
       - P_PASSWORD=parseableadmin
       - P_CHECK_UPDATE=false
+      - P_SEND_ANONYMOUS_USAGE_DATA=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=query
       - RUST_LOG=warn
@@ -80,6 +81,7 @@ services:
       - P_USERNAME=parseableadmin
       - P_PASSWORD=parseableadmin
       - P_CHECK_UPDATE=false
+      - P_SEND_ANONYMOUS_USAGE_DATA=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
