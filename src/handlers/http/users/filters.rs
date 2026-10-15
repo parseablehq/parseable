@@ -22,7 +22,7 @@ use crate::{
     parseable::PARSEABLE,
     rbac::{Users, map::SessionKey},
     storage::{ObjectStorageError, StreamType},
-    users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
+    users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter, FilterType},
     utils::{
         actix::extract_session_key_from_req, get_hash, get_user_and_tenant_from_request, is_admin,
         is_admin_for_session,
@@ -37,6 +37,8 @@ use actix_web::{
 };
 use serde_json::Error as SerdeError;
 use ulid::Ulid;
+
+const SQL_FILTER_STREAM_NAME: &str = "sql";
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     let key =
@@ -82,7 +84,7 @@ pub async fn post(
     req: HttpRequest,
     Json(mut filter): Json<Filter>,
 ) -> Result<impl Responder, FiltersError> {
-    validate_stream_name(&filter.stream_name)?;
+    validate_stream_name(&mut filter.stream_name, &filter.query.filter_type)?;
 
     let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
@@ -102,7 +104,7 @@ pub async fn update(
     filter_id: Path<String>,
     Json(mut filter): Json<Filter>,
 ) -> Result<impl Responder, FiltersError> {
-    validate_stream_name(&filter.stream_name)?;
+    validate_stream_name(&mut filter.stream_name, &filter.query.filter_type)?;
 
     let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
@@ -153,7 +155,15 @@ pub async fn delete(
     Ok(HttpResponse::Ok().finish())
 }
 
-fn validate_stream_name(stream_name: &str) -> Result<(), FiltersError> {
+fn validate_stream_name(
+    stream_name: &mut String,
+    filter_type: &FilterType,
+) -> Result<(), FiltersError> {
+    if matches!(filter_type, FilterType::SQL) {
+        SQL_FILTER_STREAM_NAME.clone_into(stream_name);
+        return Ok(());
+    }
+
     validator::stream_name(stream_name, StreamType::UserDefined)
         .map_err(FiltersError::InvalidStreamName)
 }
@@ -205,20 +215,31 @@ impl actix_web::ResponseError for FiltersError {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_stream_name;
+    use super::{SQL_FILTER_STREAM_NAME, validate_stream_name};
+    use crate::users::filters::FilterType;
     use crate::validator::error::StreamNameValidationError;
 
     #[test]
     fn accepts_flat_stream_names() {
-        assert!(validate_stream_name("team1").is_ok());
-        assert!(validate_stream_name("orders-prod").is_ok());
-        assert!(validate_stream_name("user_events_v2").is_ok());
+        for stream_name in ["team1", "orders-prod", "user_events_v2"] {
+            let mut stream_name = stream_name.to_owned();
+            assert!(validate_stream_name(&mut stream_name, &FilterType::Filter).is_ok());
+        }
+    }
+
+    #[test]
+    fn normalizes_sql_filter_stream_name() {
+        let mut stream_name = "../../unsafe-path".to_owned();
+
+        assert!(validate_stream_name(&mut stream_name, &FilterType::SQL).is_ok());
+        assert_eq!(stream_name, SQL_FILTER_STREAM_NAME);
     }
 
     #[test]
     fn rejects_path_like_stream_names() {
-        let err =
-            validate_stream_name("team1/serviceA").expect_err("path-like names must be rejected");
+        let mut stream_name = "team1/serviceA".to_owned();
+        let err = validate_stream_name(&mut stream_name, &FilterType::Search)
+            .expect_err("path-like names must be rejected");
         assert!(matches!(
             err,
             super::FiltersError::InvalidStreamName(StreamNameValidationError::NameSpecialChar {
