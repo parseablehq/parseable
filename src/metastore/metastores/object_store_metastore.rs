@@ -1229,7 +1229,7 @@ impl Metastore for ObjectStoreMetastore {
         lock_file_path: RelativePathBuf,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let data = to_bytes(&String::new());
+        let data = to_bytes("");
         self.storage
             .put_object(&lock_file_path, data, tenant_id)
             .await?;

@@ -1890,10 +1890,6 @@ impl Stream {
 
     fn can_use_global_schema(&self) -> bool {
         self.options.mode == Mode::Ingest && !self.get_static_schema_flag()
-        // && PARSEABLE
-        //     .storage
-        //     .get_object_store()
-        //     .supports_conditional_writes()
     }
 
     fn uses_global_schema(&self) -> bool {
