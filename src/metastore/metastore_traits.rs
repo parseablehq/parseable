@@ -303,10 +303,15 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         lock_file_path: RelativePathBuf,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
-    async fn delete_global_schema_lock(&self, path: RelativePathBuf, tenant_id: &Option<String>);
+    async fn delete_global_schema_lock(
+        &self,
+        path: RelativePathBuf,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
     /// Global schema operations used to detect and resolve schema conflicts.
-    /// A missing expected version creates the record; a version updates it with
-    /// an atomic compare-and-swap. `false` indicates only a version conflict.
+    /// A missing expected hash creates the record; an existing hash is checked
+    /// before updating. Callers coordinate updates with global-schema lock files;
+    /// the hash check and write are not atomic. `false` indicates a conflict.
     async fn get_global_schema(
         &self,
         stream_name: &str,

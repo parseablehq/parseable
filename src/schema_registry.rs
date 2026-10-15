@@ -31,8 +31,7 @@ use std::{
 use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::{ArrowError, DataType, Field, FieldRef, Schema};
 use chrono::{DateTime, Utc};
-use futures::stream::FuturesUnordered;
-use itertools::Itertools;
+use tokio::time::sleep;
 use tonic::async_trait;
 
 use crate::{
@@ -62,6 +61,35 @@ struct MetastoreRegistryBackend<'a> {
     metastore: &'a dyn Metastore,
     stream_name: &'a str,
     tenant_id: &'a Option<String>,
+}
+
+#[async_trait]
+trait GlobalSchemaLockBackend: Send + Sync {
+    async fn list_locks(&self) -> Result<Vec<String>, MetastoreError>;
+    async fn delete_lock(&self, lock: &str) -> Result<(), MetastoreError>;
+    async fn wait_for_lock_release(&self);
+}
+
+#[async_trait]
+impl GlobalSchemaLockBackend for MetastoreRegistryBackend<'_> {
+    async fn list_locks(&self) -> Result<Vec<String>, MetastoreError> {
+        self.metastore
+            .get_global_schema_locks(self.stream_name, self.tenant_id)
+            .await
+    }
+
+    async fn delete_lock(&self, lock: &str) -> Result<(), MetastoreError> {
+        self.metastore
+            .delete_global_schema_lock(
+                global_schema_lock_file_path(self.stream_name, self.tenant_id).join(lock),
+                self.tenant_id,
+            )
+            .await
+    }
+
+    async fn wait_for_lock_release(&self) {
+        sleep(Duration::from_secs(5)).await;
+    }
 }
 
 #[async_trait]
@@ -255,80 +283,9 @@ pub async fn resolve(
         stream_name,
         tenant_id,
     };
-    // before beginning, acquire lock
-    // lock file will be- `tenant/stream/.stream/<nodename>-<timestamp>.lock`
-    let locks = backend
-        .metastore
-        .get_global_schema_locks(stream_name, tenant_id)
-        .await?;
-    if locks.len() == 0 {
-        // proceed with writing lock file
-    } else if locks.len() == 1 {
-        // only one lock file
-        // check the time of the existing lock file
-        // and decide whether to backoff or not
-        let timestamp = DateTime::from_timestamp_micros(
-            *&locks[0].rsplit("-").collect_vec()[0]
-                .split_once(".lock")
-                .unwrap()
-                .0
-                .parse::<i64>()
-                .unwrap(),
-        )
-        .unwrap();
-
-        let mut slept_already = false;
-        loop {
-            // if delta > 3 minutes then delete and proceed
-            if (Utc::now() - timestamp).num_seconds() > 180 {
-                tracing::warn!(
-                    "delta between lock file- {} and now is greater than 3 minutes, deleting and proceeding",
-                    locks[0]
-                );
-                let lock_file =
-                    global_schema_lock_file_path(stream_name, tenant_id).join(&locks[0]);
-                backend
-                    .metastore
-                    .delete_global_schema_lock(lock_file, tenant_id)
-                    .await;
-                break;
-            } else if !slept_already {
-                // sleep for 5 seconds and try again
-                // if lock file still present, skip cycle
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                slept_already = true;
-            } else {
-                // delta is < 180s and slept already
-                // check if lock file exists
-                let locks = backend
-                    .metastore
-                    .get_global_schema_locks(stream_name, tenant_id)
-                    .await?;
-                if locks.is_empty() {
-                    // proceed normally
-                    break;
-                } else {
-                    // skip current cycle
-                    return Err(MetastoreError::LockFileFailure {
-                        message: "Unable to obtain a clean lock file state".into(),
-                    });
-                }
-            }
-        }
-    } else {
-        // multiple lock files present, self healing required here
-        // multiple lock files should only be present in case of multiple failures
-        // safe to assume that conflict resolution can fail now
-        // delete all of them maybe?
-        tracing::warn!("Found {} lock files for global schema", locks.len());
-        let tasks = FuturesUnordered::new();
-        for file in locks {
-            let path = global_schema_lock_file_path(stream_name, tenant_id).join(file);
-            let deletion = backend.metastore.delete_global_schema_lock(path, tenant_id);
-            tasks.push(deletion);
-        }
-        tasks.iter().for_each(|_| {});
-    }
+    // Before beginning, clear only stale locks. Fresh locks are never deleted by
+    // another resolver; after one bounded wait they must have disappeared.
+    ensure_clean_lock_state(&backend).await?;
     let lock_file_path = global_schema_lock_file_path(stream_name, tenant_id).join(format!(
         "{}-{}.lock",
         INGESTOR_META
@@ -342,14 +299,80 @@ pub async fn resolve(
         .put_global_schema_lock(lock_file_path.clone(), tenant_id)
         .await?;
 
-    // proceed with resolution
-    let res = resolve_backend(&backend, stream_name, schemas, pinned).await;
-
-    backend
+    // Always attempt release after resolution. Preserve the resolution error if
+    // both resolution and cleanup fail; otherwise surface a cleanup failure.
+    let resolution = resolve_backend(&backend, stream_name, schemas, pinned).await;
+    let cleanup = backend
         .metastore
         .delete_global_schema_lock(lock_file_path, tenant_id)
         .await;
-    res
+    finish_resolution(resolution, cleanup)
+}
+
+async fn ensure_clean_lock_state(
+    backend: &dyn GlobalSchemaLockBackend,
+) -> Result<(), MetastoreError> {
+    let locks = backend.list_locks().await?;
+    let now = Utc::now();
+    let parsed_locks = locks
+        .iter()
+        .map(|lock| parse_lock_timestamp(lock).map(|timestamp| (lock, timestamp)))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut fresh_lock_exists = false;
+    for (lock, timestamp) in parsed_locks {
+        if now.signed_duration_since(timestamp).num_seconds() > 180 {
+            tracing::warn!("removing stale global schema lock file {lock}");
+            backend.delete_lock(lock).await?;
+        } else {
+            fresh_lock_exists = true;
+        }
+    }
+
+    if fresh_lock_exists {
+        backend.wait_for_lock_release().await;
+        if !backend.list_locks().await?.is_empty() {
+            return Err(lock_file_failure(
+                "Unable to obtain a clean lock file state",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_lock_timestamp(lock: &str) -> Result<DateTime<Utc>, MetastoreError> {
+    let timestamp = lock
+        .strip_suffix(".lock")
+        .and_then(|name| name.rsplit_once('-'))
+        .filter(|(node, timestamp)| !node.is_empty() && !timestamp.is_empty())
+        .and_then(|(_, timestamp)| timestamp.parse::<i64>().ok())
+        .and_then(DateTime::from_timestamp_micros)
+        .ok_or_else(|| lock_file_failure(format!("Malformed global schema lock file '{lock}'")))?;
+    Ok(timestamp)
+}
+
+fn lock_file_failure(message: impl Into<String>) -> MetastoreError {
+    MetastoreError::LockFileFailure {
+        message: message.into(),
+    }
+}
+
+fn finish_resolution<T>(
+    resolution: Result<T, MetastoreError>,
+    cleanup: Result<(), MetastoreError>,
+) -> Result<T, MetastoreError> {
+    match (resolution, cleanup) {
+        (Err(resolution), Err(cleanup)) => {
+            tracing::error!(
+                "failed to release global schema lock after resolution error: {cleanup}"
+            );
+            Err(resolution)
+        }
+        (Err(resolution), Ok(())) => Err(resolution),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Ok(resolution), Ok(())) => Ok(resolution),
+    }
 }
 
 async fn resolve_backend(
@@ -388,7 +411,7 @@ async fn resolve_backend(
 
         // `None` is explicitly create-only; a snapshot version is an
         // update-only CAS. A failed CAS invalidates this whole resolution.
-        let expected = global.as_ref().map(|snapshot| snapshot.hash.clone());
+        let expected = global.as_ref().map(|snapshot| snapshot.hash);
         if backend
             .compare_and_swap(GlobalSchema::from_schema(proposed), expected)
             .await?
@@ -649,16 +672,16 @@ mod tests {
 
     use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, FieldRef, Schema, TimeUnit};
-    use bytes::Bytes;
-    use object_store::UpdateVersion;
+    use chrono::Utc;
     use tokio::sync::Barrier;
     use tonic::async_trait;
 
     use crate::{metastore::MetastoreError, parseable::GlobalSchema};
 
     use super::{
-        MAX_CAS_ATTEMPTS, RegistryBackend, Resolution, build_resolution, canonical_field,
-        legacy_seed, normalize_registry, resolve_backend,
+        GlobalSchemaLockBackend, MAX_CAS_ATTEMPTS, RegistryBackend, Resolution, build_resolution,
+        canonical_field, ensure_clean_lock_state, finish_resolution, legacy_seed,
+        normalize_registry, resolve_backend,
     };
 
     fn field(name: &str, data_type: DataType) -> FieldRef {
@@ -676,7 +699,6 @@ mod tests {
 
     struct MemoryState {
         schema: Option<Schema>,
-        version: u64,
         legacy: Vec<Schema>,
     }
 
@@ -695,11 +717,7 @@ mod tests {
     impl InMemoryBackend {
         fn new(schema: Option<Schema>, legacy: Vec<Schema>, barrier_readers: usize) -> Self {
             Self {
-                state: Mutex::new(MemoryState {
-                    version: if schema.is_some() { 1 } else { 0 },
-                    schema,
-                    legacy,
-                }),
+                state: Mutex::new(MemoryState { schema, legacy }),
                 initial_read_barrier: (barrier_readers > 0)
                     .then(|| Arc::new(Barrier::new(barrier_readers))),
                 barrier_readers,
@@ -744,13 +762,6 @@ mod tests {
         }
     }
 
-    fn memory_version(version: u64) -> UpdateVersion {
-        UpdateVersion {
-            e_tag: Some(format!("memory-{version}")),
-            version: None,
-        }
-    }
-
     fn injected_storage_error() -> MetastoreError {
         MetastoreError::Error {
             status_code: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -777,10 +788,7 @@ mod tests {
 
             let snapshot = {
                 let state = self.state.lock().unwrap();
-                state.schema.as_ref().map(|schema| {
-                    let bytes = serde_json::to_vec(schema).expect("serialize in-memory schema");
-                    GlobalSchema::new(Bytes::from(bytes), memory_version(state.version))
-                })
+                state.schema.clone().map(GlobalSchema::from_schema)
             };
             if read_number < self.barrier_readers {
                 self.initial_read_barrier
@@ -799,8 +807,8 @@ mod tests {
 
         async fn compare_and_swap(
             &self,
-            schema: Schema,
-            expected: Option<UpdateVersion>,
+            global_schema: GlobalSchema,
+            expected: Option<u64>,
         ) -> Result<bool, MetastoreError> {
             self.cas_attempts.fetch_add(1, Ordering::SeqCst);
             if self.fail_write {
@@ -813,23 +821,174 @@ mod tests {
             let mut state = self.state.lock().unwrap();
             let matches_expected = match (&state.schema, expected) {
                 (None, None) => true,
-                (Some(_), Some(expected)) => expected == memory_version(state.version),
+                (Some(schema), Some(expected)) => {
+                    expected == GlobalSchema::from_schema(schema.clone()).hash
+                }
                 _ => false,
             };
             if !matches_expected {
                 return Ok(false);
             }
 
-            state.schema = Some(schema);
-            state.version += 1;
+            state.schema = Some(global_schema.schema);
             Ok(true)
         }
+    }
+
+    struct InMemoryLockBackend {
+        locks: Mutex<Vec<String>>,
+        deleted: Mutex<Vec<String>>,
+        delete_fails: bool,
+        clear_on_wait: bool,
+        waits: AtomicUsize,
+    }
+
+    impl InMemoryLockBackend {
+        fn new(locks: impl IntoIterator<Item = String>) -> Self {
+            Self {
+                locks: Mutex::new(locks.into_iter().collect()),
+                deleted: Mutex::new(Vec::new()),
+                delete_fails: false,
+                clear_on_wait: false,
+                waits: AtomicUsize::new(0),
+            }
+        }
+
+        fn with_delete_failure(mut self) -> Self {
+            self.delete_fails = true;
+            self
+        }
+
+        fn clear_on_wait(mut self) -> Self {
+            self.clear_on_wait = true;
+            self
+        }
+    }
+
+    #[async_trait]
+    impl GlobalSchemaLockBackend for InMemoryLockBackend {
+        async fn list_locks(&self) -> Result<Vec<String>, MetastoreError> {
+            Ok(self.locks.lock().unwrap().clone())
+        }
+
+        async fn delete_lock(&self, lock: &str) -> Result<(), MetastoreError> {
+            if self.delete_fails {
+                return Err(injected_storage_error());
+            }
+            self.deleted.lock().unwrap().push(lock.to_owned());
+            self.locks.lock().unwrap().retain(|entry| entry != lock);
+            Ok(())
+        }
+
+        async fn wait_for_lock_release(&self) {
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            if self.clear_on_wait {
+                self.locks.lock().unwrap().clear();
+            }
+        }
+    }
+
+    fn lock_name(node: &str, timestamp_micros: i64) -> String {
+        format!("{node}-{timestamp_micros}.lock")
     }
 
     fn assert_schemas_merge_into(canonical: &Schema, resolved: impl IntoIterator<Item = Schema>) {
         let mut schemas = vec![canonical.clone()];
         schemas.extend(resolved);
         assert_eq!(Schema::try_merge(schemas).unwrap(), canonical.clone());
+    }
+
+    #[tokio::test]
+    async fn lock_cleanup_accepts_zero_locks_and_removes_all_stale_locks() {
+        let empty = InMemoryLockBackend::new([]);
+        ensure_clean_lock_state(&empty).await.unwrap();
+        assert_eq!(empty.waits.load(Ordering::SeqCst), 0);
+
+        let first_stale = lock_name("first-node", Utc::now().timestamp_micros() - 181_000_000);
+        let second_stale = lock_name("second-node", Utc::now().timestamp_micros() - 182_000_000);
+        let backend = InMemoryLockBackend::new([first_stale.clone(), second_stale.clone()]);
+        ensure_clean_lock_state(&backend).await.unwrap();
+        assert_eq!(
+            *backend.deleted.lock().unwrap(),
+            vec![first_stale, second_stale]
+        );
+        assert!(backend.locks.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn lock_cleanup_deletes_only_stale_locks_and_rejects_fresh_contention() {
+        let stale = lock_name("stale-node", Utc::now().timestamp_micros() - 181_000_000);
+        let fresh = lock_name("fresh-node", Utc::now().timestamp_micros());
+        let backend = InMemoryLockBackend::new([stale.clone(), fresh.clone()]);
+
+        let error = ensure_clean_lock_state(&backend).await.unwrap_err();
+        assert!(matches!(error, MetastoreError::LockFileFailure { .. }));
+        assert_eq!(*backend.deleted.lock().unwrap(), vec![stale]);
+        assert_eq!(*backend.locks.lock().unwrap(), vec![fresh]);
+        assert_eq!(backend.waits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn lock_cleanup_allows_a_fresh_lock_that_is_released_during_wait() {
+        let fresh = lock_name("node", Utc::now().timestamp_micros());
+        let backend = InMemoryLockBackend::new([fresh]).clear_on_wait();
+
+        ensure_clean_lock_state(&backend).await.unwrap();
+        assert!(backend.deleted.lock().unwrap().is_empty());
+        assert_eq!(backend.waits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn lock_cleanup_rejects_malformed_locks_without_deleting_anything() {
+        for malformed in [
+            "not-a-lock",
+            "node-invalid.lock",
+            "node-999999999999999999999.lock",
+            "node-9223372036854775807.lock",
+            "-123.lock",
+        ] {
+            let stale = lock_name("stale-node", Utc::now().timestamp_micros() - 181_000_000);
+            let backend = InMemoryLockBackend::new([stale, malformed.to_owned()]);
+
+            let error = ensure_clean_lock_state(&backend).await.unwrap_err();
+            assert!(matches!(error, MetastoreError::LockFileFailure { .. }));
+            assert!(backend.deleted.lock().unwrap().is_empty());
+            assert_eq!(backend.waits.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn lock_cleanup_stops_when_stale_lock_deletion_fails() {
+        let stale = lock_name("node", Utc::now().timestamp_micros() - 181_000_000);
+        let backend = InMemoryLockBackend::new([stale]).with_delete_failure();
+
+        let error = ensure_clean_lock_state(&backend).await.unwrap_err();
+        assert!(is_injected_storage_error(&error));
+        assert_eq!(backend.locks.lock().unwrap().len(), 1);
+        assert_eq!(backend.waits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn resolution_error_is_preserved_when_lock_release_also_fails() {
+        let result = finish_resolution::<()>(
+            Err(injected_storage_error()),
+            Err(MetastoreError::LockFileFailure {
+                message: "injected release failure".to_owned(),
+            }),
+        );
+        assert!(is_injected_storage_error(&result.unwrap_err()));
+
+        let release_error = finish_resolution::<()>(
+            Ok(()),
+            Err(MetastoreError::LockFileFailure {
+                message: "injected release failure".to_owned(),
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            release_error,
+            MetastoreError::LockFileFailure { .. }
+        ));
     }
 
     #[test]
@@ -1263,7 +1422,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            MetastoreError::JsonSchemaError { message }
+            MetastoreError::CASConvergenceFailure { message }
                 if message.contains("did not converge")
         ));
         assert_eq!(backend.cas_attempt_count(), MAX_CAS_ATTEMPTS);

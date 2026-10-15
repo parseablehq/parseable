@@ -925,6 +925,7 @@ mod tests {
         metastore::{
             metastore_traits::Metastore, metastores::object_store_metastore::ObjectStoreMetastore,
         },
+        parseable::GlobalSchema,
         storage::{
             ObjectStorage, SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
             object_storage::{global_schema_path, to_bytes},
@@ -936,6 +937,36 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
+    async fn global_schema_lock_deletion_is_idempotent_and_propagates_failures() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(LocalFS::new(temp_dir.path().to_path_buf()));
+        let metastore = ObjectStoreMetastore { storage };
+        let lock = RelativePathBuf::from("events/.stream/node-1.lock");
+
+        metastore
+            .put_global_schema_lock(lock.clone(), &None)
+            .await
+            .unwrap();
+        metastore
+            .delete_global_schema_lock(lock.clone(), &None)
+            .await
+            .unwrap();
+        metastore
+            .delete_global_schema_lock(lock, &None)
+            .await
+            .expect("deleting an absent lock is idempotent");
+
+        let blocked = RelativePathBuf::from("events/.stream/blocked.lock");
+        let directory = temp_dir.path().join(blocked.as_str());
+        std::fs::create_dir_all(&directory).unwrap();
+        metastore
+            .delete_global_schema_lock(blocked, &None)
+            .await
+            .expect_err("a failed lock deletion must not be swallowed");
+        assert!(directory.is_dir());
+    }
+
+    #[tokio::test]
     async fn localfs_skips_global_schema_and_discovers_legacy_schema() {
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Arc::new(LocalFS::new(temp_dir.path().to_path_buf()));
@@ -945,7 +976,6 @@ mod tests {
         let tenant_id = None;
         let stream_name = "events";
 
-        assert!(!storage.supports_conditional_writes());
         assert!(
             metastore
                 .get_global_schema(stream_name, &tenant_id)
@@ -980,11 +1010,19 @@ mod tests {
             vec![schema.clone()]
         );
 
+        let error = metastore
+            .put_global_schema(
+                GlobalSchema::from_schema(schema),
+                stream_name,
+                &tenant_id,
+                None,
+            )
+            .await
+            .expect_err("LocalFS must reject unsupported conditional global-schema writes");
         assert!(
-            metastore
-                .put_global_schema(schema, stream_name, &tenant_id, None)
-                .await
-                .is_err()
+            error
+                .to_string()
+                .contains("conditional object writes are not supported")
         );
         assert!(
             storage

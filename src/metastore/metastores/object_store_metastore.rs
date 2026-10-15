@@ -57,10 +57,11 @@ use crate::{
         PARSEABLE_ROOT_DIRECTORY, SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME,
         STREAM_ROOT_DIRECTORY, TARGETS_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
         object_storage::{
-            alert_json_path, alert_state_json_path, filter_path, global_schema_path, manifest_path,
-            mttr_json_path, outbound_http_policy_json_path, parseable_json_path, schema_path,
-            stream_json_path, to_bytes,
+            alert_json_path, alert_state_json_path, filter_path, global_schema_lock_file_path,
+            global_schema_path, manifest_path, mttr_json_path, outbound_http_policy_json_path,
+            parseable_json_path, schema_path, stream_json_path, to_bytes,
         },
+        to_object_store_path,
     },
     users::filters::{Filter, migrate_v1_v2},
 };
@@ -1210,14 +1211,7 @@ impl Metastore for ObjectStoreMetastore {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<Vec<String>, MetastoreError> {
-        let path = if let Some(tenant) = tenant_id {
-            object_store::path::Path::from(format!(
-                "{}/{}/{}",
-                tenant, stream_name, STREAM_ROOT_DIRECTORY
-            ))
-        } else {
-            object_store::path::Path::from(format!("{}/{}", stream_name, STREAM_ROOT_DIRECTORY))
-        };
+        let path = to_object_store_path(&global_schema_lock_file_path(stream_name, tenant_id));
         let mut result_file_list = Vec::new();
         let resp = self.storage.list_with_delimiter(Some(path)).await?;
         for obj in resp.objects.iter() {
@@ -1241,13 +1235,22 @@ impl Metastore for ObjectStoreMetastore {
             .await?;
         Ok(())
     }
-    async fn delete_global_schema_lock(&self, path: RelativePathBuf, tenant_id: &Option<String>) {
-        // lock file deletion is unconditional
-        if let Err(e) = self.storage.delete_object(&path, tenant_id).await {
-            tracing::error!("Error while deleting lock file- {e}");
+    async fn delete_global_schema_lock(
+        &self,
+        path: RelativePathBuf,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError> {
+        match self.storage.delete_object(&path, tenant_id).await {
+            Ok(()) | Err(ObjectStorageError::NoSuchKey(_)) => Ok(()),
+            Err(ObjectStorageError::IoError(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
         }
     }
-    /// Retrieve a global schema and the validator from the same object-store GET.
+    /// Retrieve the persisted global schema and its stored content hash.
     async fn get_global_schema(
         &self,
         stream_name: &str,
@@ -1269,7 +1272,8 @@ impl Metastore for ObjectStoreMetastore {
         Ok(Some(global_schema))
     }
 
-    /// Atomically create a missing global schema or compare-and-swap an existing one.
+    /// Create a missing global schema or update one whose stored hash matches.
+    /// Callers coordinate the non-atomic hash check and update with lock files.
     async fn put_global_schema(
         &self,
         obj: GlobalSchema,
@@ -1558,14 +1562,35 @@ mod tests {
     }
 
     #[test]
-    fn global_schema_path_is_tenant_scoped_and_distinct_from_legacy_schema() {
+    fn global_schema_paths_normalize_default_tenant_and_isolate_real_tenants() {
+        let no_tenant = None;
+        let default_tenant = Some(DEFAULT_TENANT.to_owned());
+        let tenant_a = Some("tenant-a".to_owned());
+        let tenant_b = Some("tenant-b".to_owned());
+
         assert_eq!(
-            global_schema_path("events", &Some("tenant-a".to_string())).as_str(),
-            "tenant-a/events/.stream/.global.schema"
+            global_schema_path("events", &no_tenant).as_str(),
+            "events/.stream/.global.schema"
         );
         assert_eq!(
-            global_schema_path("events", &None).as_str(),
-            "events/.stream/.global.schema"
+            global_schema_path("events", &default_tenant),
+            global_schema_path("events", &no_tenant)
+        );
+        assert_eq!(
+            global_schema_lock_file_path("events", &default_tenant),
+            global_schema_lock_file_path("events", &no_tenant)
+        );
+        assert_eq!(
+            global_schema_path("events", &tenant_a).as_str(),
+            "tenant-a/events/.stream/.global.schema"
+        );
+        assert_ne!(
+            global_schema_path("events", &tenant_a),
+            global_schema_path("events", &tenant_b)
+        );
+        assert_ne!(
+            global_schema_lock_file_path("events", &tenant_a),
+            global_schema_lock_file_path("events", &tenant_b)
         );
         assert!(is_legacy_schema_file(".schema"));
         assert!(is_legacy_schema_file(".ingestor.node-1.schema"));

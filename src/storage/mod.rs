@@ -148,13 +148,10 @@ pub(crate) async fn put_schema_if<S: object_store::ObjectStore + ?Sized>(
                         },
                     )?;
                     if obj.hash.ne(&version) {
-                        return Err(object_store::Error::Precondition {
-                            path: path.to_string(),
-                            source: anyhow::Error::msg("GlobalSchema hash mismatch")
-                                .into_boxed_dyn_error(),
-                        });
+                        return Ok(false);
                     }
                 }
+                Err(object_store::Error::NotFound { .. }) => return Ok(false),
                 Err(error) => return Err(error),
             }
             client.put(path, data.into()).await
@@ -777,8 +774,9 @@ mod tests {
 
 #[cfg(test)]
 mod global_schema_storage_tests {
+    use arrow_schema::{DataType, Field, Schema};
     use bytes::Bytes;
-    use object_store::{UpdateVersion, memory::InMemory, path::Path};
+    use object_store::{ObjectStoreExt, memory::InMemory, path::Path};
 
     use crate::parseable::GlobalSchema;
 
@@ -827,40 +825,80 @@ mod global_schema_storage_tests {
     }
 
     #[tokio::test]
-    async fn stale_update_is_rejected_without_overwriting_newer_bytes() {
+    async fn stale_update_is_rejected_without_overwriting_newer_schema() {
         let store = InMemory::new();
         let path = Path::from("tenant/stream/.stream/.global.schema");
-        assert!(
-            put_schema_if(&store, &path, Bytes::from_static(b"initial"), None)
-                .await
-                .unwrap()
-        );
-        let global_schema = serde_json::from_slice::<GlobalSchema>(
-            store.get_object(&path, tenant_id).await.unwrap(),
-        )
-        .unwrap();
+        let initial =
+            GlobalSchema::from_schema(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
+        let newer = GlobalSchema::from_schema(Schema::new(vec![
+            Field::new("value", DataType::Utf8, true),
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                true,
+            ),
+        ]));
+
         assert!(
             put_schema_if(
                 &store,
                 &path,
-                Bytes::from_static(b"newer"),
-                Some(global_schema.hash),
+                Bytes::from(serde_json::to_vec(&initial).unwrap()),
+                None,
+            )
+            .await
+            .unwrap()
+        );
+        let stored_initial: GlobalSchema =
+            serde_json::from_slice(&store.get(&path).await.unwrap().bytes().await.unwrap())
+                .unwrap();
+        assert_eq!(stored_initial.hash, initial.hash);
+
+        assert!(
+            put_schema_if(
+                &store,
+                &path,
+                Bytes::from(serde_json::to_vec(&newer).unwrap()),
+                Some(stored_initial.hash),
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !put_schema_if(
+                &store,
+                &path,
+                Bytes::from(serde_json::to_vec(&initial).unwrap()),
+                Some(initial.hash),
             )
             .await
             .unwrap()
         );
 
+        let actual: GlobalSchema =
+            serde_json::from_slice(&store.get(&path).await.unwrap().bytes().await.unwrap())
+                .unwrap();
+        assert_eq!(actual.hash, newer.hash);
+        assert_eq!(actual.schema, newer.schema);
+    }
+
+    #[tokio::test]
+    async fn update_with_expected_hash_for_missing_schema_is_a_conflict() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+        let schema =
+            GlobalSchema::from_schema(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
+
         assert!(
             !put_schema_if(
                 &store,
                 &path,
-                Bytes::from_static(b"stale"),
-                Some(stale_version),
+                Bytes::from(serde_json::to_vec(&schema).unwrap()),
+                Some(schema.hash),
             )
             .await
             .unwrap()
         );
-        let (body, _) = get_object_versioned(&store, &path).await.unwrap().unwrap();
-        assert_eq!(body, Bytes::from_static(b"newer"));
+        assert!(store.get(&path).await.is_err());
     }
 }
