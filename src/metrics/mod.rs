@@ -292,9 +292,12 @@ pub static PROCESS_MEMORY_LIMIT_BYTES: Lazy<Gauge> = Lazy::new(|| {
 });
 
 pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64)> = OnceLock::new();
+const CPU_USAGE_CORES_WINDOW_SAMPLES: usize = 12;
+
 pub struct ProcessMetricsAccumulator {
     cpu_usage_avg: AtomicF64,
     memory_bytes_avg: AtomicF64,
+    cpu_usage_cores_samples: Mutex<VecDeque<f64>>,
 }
 
 impl Default for ProcessMetricsAccumulator {
@@ -304,6 +307,9 @@ impl Default for ProcessMetricsAccumulator {
         Self {
             cpu_usage_avg: AtomicF64::new(cpu),
             memory_bytes_avg: AtomicF64::new(mem as f64),
+            cpu_usage_cores_samples: Mutex::new(VecDeque::with_capacity(
+                CPU_USAGE_CORES_WINDOW_SAMPLES,
+            )),
         }
     }
 }
@@ -329,6 +335,11 @@ impl ProcessMetricsAccumulator {
         (s_cpu_new, s_mem_new)
     }
 
+    fn record_cpu_usage_cores(&self, cpu_usage_cores: f64) -> f64 {
+        let mut samples = self.cpu_usage_cores_samples.lock().unwrap();
+        update_cpu_usage_cores_average(&mut samples, cpu_usage_cores)
+    }
+
     pub fn get_cpu(&self) -> f64 {
         self.cpu_usage_avg.get()
     }
@@ -341,10 +352,6 @@ impl ProcessMetricsAccumulator {
 pub static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
     Lazy::new(ProcessMetricsAccumulator::default);
 
-const CPU_USAGE_CORES_WINDOW_SAMPLES: usize = 12;
-static CPU_USAGE_CORES_SAMPLES: Lazy<Mutex<VecDeque<f64>>> =
-    Lazy::new(|| Mutex::new(VecDeque::with_capacity(CPU_USAGE_CORES_WINDOW_SAMPLES)));
-
 fn update_cpu_usage_cores_average(samples: &mut VecDeque<f64>, sample: f64) -> f64 {
     if samples.len() == CPU_USAGE_CORES_WINDOW_SAMPLES {
         samples.pop_front();
@@ -355,8 +362,7 @@ fn update_cpu_usage_cores_average(samples: &mut VecDeque<f64>, sample: f64) -> f
 }
 
 pub fn record_process_cpu_usage_cores(cpu_usage_cores: f64) {
-    let mut samples = CPU_USAGE_CORES_SAMPLES.lock().unwrap();
-    let average = update_cpu_usage_cores_average(&mut samples, cpu_usage_cores);
+    let average = PROCESS_METRICS_ACCUMULATOR.record_cpu_usage_cores(cpu_usage_cores);
     PROCESS_CPU_USAGE_CORES.set(average);
 }
 
