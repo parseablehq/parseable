@@ -1889,7 +1889,12 @@ impl Stream {
     }
 
     fn can_use_global_schema(&self) -> bool {
-        self.options.mode == Mode::Ingest && !self.get_static_schema_flag()
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        crate::schema_registry::eligible_for_stream(
+            self.options.mode,
+            metadata.static_schema_flag,
+            metadata.stream_type,
+        )
     }
 
     fn uses_global_schema(&self) -> bool {
@@ -1927,6 +1932,9 @@ impl Stream {
         local_schema: &Schema,
         tenant_id: &Option<String>,
     ) -> Result<Arc<Resolution>, StagingError> {
+        if !self.can_use_global_schema() {
+            return Ok(Arc::new(Resolution::identity()));
+        }
         let tenant_id = if let Some(tenant) = tenant_id
             && tenant.eq(DEFAULT_TENANT)
         {
@@ -2614,6 +2622,9 @@ impl Stream {
         time_partition: Option<&String>,
         custom_partition: Option<&String>,
     ) -> Result<Schema, StagingError> {
+        if self.get_stream_type() == StreamType::Internal {
+            return Ok(self.updated_schema(current_schema));
+        }
         let reader = MergedReverseRecordReader::try_new(&self.arrow_files());
         let mut schemas = vec![current_schema];
         if !reader.readers.is_empty() {
@@ -3334,6 +3345,119 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+
+    #[test]
+    fn internal_streams_bypass_registry_during_conversion() {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        let temp = TempDir::new().unwrap();
+        let local = Schema::new(vec![
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            ),
+            Field::new("value", DataType::Int32, true),
+        ]);
+        let metadata = LogStreamMetadata {
+            stream_type: StreamType::Internal,
+            schema: local
+                .fields()
+                .iter()
+                .map(|field| (field.name().clone(), field.clone()))
+                .collect(),
+            ..Default::default()
+        };
+        let stream = Stream::new(
+            Arc::new(Options {
+                mode: Mode::Ingest,
+                local_staging_path: temp.path().to_path_buf(),
+                row_group_size: 2,
+                ..Default::default()
+            }),
+            "internal-registry-bypass",
+            metadata,
+            None,
+            &None,
+        );
+        assert!(!stream.can_use_global_schema());
+        assert!(!stream.uses_global_schema());
+        assert_eq!(*stream.get_schema(), local);
+        // No runtime or ingestor identity is initialized: the resolver must not
+        // even reach its metastore/lock path for an internal stream.
+        let resolution = stream.resolve_global_schema(&local, &None).unwrap();
+        assert_eq!(resolution.rename_schema(&local).unwrap(), local);
+
+        fs::create_dir_all(&stream.data_path).unwrap();
+        let source = stream.data_path.join("internal.arrows");
+        let batch = RecordBatch::try_new(
+            Arc::new(local.clone()),
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![1, 2])),
+                Arc::new(Int32Array::from(vec![11, 22])),
+            ],
+        )
+        .unwrap();
+        {
+            let mut writer = stream.writer.lock().unwrap();
+            writer.mem = Some(Default::default());
+            writer
+                .mem
+                .as_mut()
+                .unwrap()
+                .push("internal", &batch)
+                .unwrap();
+        }
+        let records = stream
+            .recordbatches_cloned(&Arc::new(local.clone()))
+            .unwrap();
+        assert_eq!(records.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.schema().field_with_name("value_int32").is_err())
+        );
+        let mut writer =
+            ArrowStreamWriter::try_new(File::create(&source).unwrap(), &local).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(
+            futures::executor::block_on(stream.restore_global_schema(
+                local.clone(),
+                &None,
+                None,
+                None
+            ))
+            .unwrap(),
+            local
+        );
+        let output = stream.data_path.join("internal.parquet");
+        let outcome = stream
+            .convert_arrow_file_groups_to_parquet(
+                vec![(output.clone(), vec![source])],
+                None,
+                None,
+                &None,
+                ArrowGroupExecution::Sequential,
+            )
+            .unwrap();
+        assert!(outcome.first_error.is_none());
+        let mut reader = ParquetRecordBatchReaderBuilder::try_new(File::open(output).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert!(batch.schema().field_with_name("value_int32").is_err());
+        let values = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let mut values = values.values().to_vec();
+        values.sort_unstable();
+        assert_eq!(values, vec![11, 22]);
+    }
 
     #[test]
     fn resolved_conversion_preserves_conflicting_columns_for_logs_and_metrics() {

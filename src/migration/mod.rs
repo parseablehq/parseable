@@ -492,13 +492,15 @@ pub async fn setup_logstream_metadata(
     // directly into the canonical schema during recovery.
     // Disabling bootstrap must not revert an already canonical dataset to raw
     // conversion: existing coordinated streams still require their mappings.
-    let schema = if PARSEABLE.options.mode == Mode::Ingest
-        && !static_schema_flag
-        && PARSEABLE
-            .metastore
-            .get_global_schema(stream, tenant_id)
-            .await?
-            .is_some()
+    let schema = if crate::schema_registry::eligible_for_stream(
+        PARSEABLE.options.mode,
+        static_schema_flag,
+        stream_type,
+    ) && PARSEABLE
+        .metastore
+        .get_global_schema(stream, tenant_id)
+        .await?
+        .is_some()
     {
         stream_ref
             .restore_global_schema(

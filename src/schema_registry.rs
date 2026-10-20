@@ -40,7 +40,7 @@ use crate::{
     metastore::{MetastoreError, metastore_traits::Metastore},
     option::Mode,
     parseable::{GlobalSchema, PARSEABLE},
-    storage::object_storage::global_schema_lock_file_path,
+    storage::{StreamType, object_storage::global_schema_lock_file_path},
 };
 
 const MAX_CAS_ATTEMPTS: usize = 16;
@@ -252,6 +252,15 @@ impl Resolution {
                 ))
             })
     }
+}
+
+/// Only dynamic user-defined streams on ingest nodes participate.
+pub(crate) fn eligible_for_stream(
+    mode: Mode,
+    static_schema_flag: bool,
+    stream_type: StreamType,
+) -> bool {
+    mode == Mode::Ingest && !static_schema_flag && stream_type != StreamType::Internal
 }
 
 /// Whether staging may bootstrap a new global canonical schema registry.
@@ -724,6 +733,31 @@ mod tests {
         canonical_field, ensure_clean_lock_state, finish_resolution, legacy_seed,
         normalize_registry, resolve_backend,
     };
+
+    #[test]
+    fn internal_streams_are_never_eligible_for_schema_resolution() {
+        use crate::{option::Mode, storage::StreamType};
+
+        for mode in [
+            Mode::All,
+            Mode::Ingest,
+            Mode::Query,
+            Mode::Index,
+            Mode::Prism,
+        ] {
+            for static_schema in [false, true] {
+                assert!(!super::eligible_for_stream(
+                    mode,
+                    static_schema,
+                    StreamType::Internal
+                ));
+                assert_eq!(
+                    super::eligible_for_stream(mode, static_schema, StreamType::UserDefined),
+                    mode == Mode::Ingest && !static_schema
+                );
+            }
+        }
+    }
 
     fn field(name: &str, data_type: DataType) -> FieldRef {
         Arc::new(Field::new(name, data_type, true))
