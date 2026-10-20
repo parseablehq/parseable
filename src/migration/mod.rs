@@ -28,7 +28,6 @@ use bytes::Bytes;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
 use serde_json::Value;
-use tracing::warn;
 
 use crate::{
     metadata::{LogStreamMetadata, load_daily_metrics, update_data_type_time_partition},
@@ -232,12 +231,9 @@ pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
                     }
                     Ok(None) => Ok(()),
                     Err(e) => {
-                        // Optionally log error but continue with other streams
-                        warn!(
-                            "Error migrating stream {}: tenant: {:?} {:?}",
-                            stream_name, id, e
-                        );
-                        Err(e)
+                        let error = migration_error(&stream_name, &id, e);
+                        tracing::error!("{error:#}");
+                        Err(error)
                     }
                 }
             }
@@ -254,12 +250,42 @@ pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
     if errors.is_empty() {
         Ok(())
     } else {
-        // Return the first error, or aggregate them if needed
+        let details = errors
+            .iter()
+            .map(|error| format!("{error:#}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         Err(anyhow::anyhow!(
-            "Migration errors occurred: {} failures",
+            "Server startup aborted: migration failed for {} dataset(s).\n{details}",
             errors.len()
         ))
     }
+}
+
+fn migration_error(
+    stream: &str,
+    tenant_id: &Option<String>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    let conflict = error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<arrow_schema::ArrowError>(),
+            Some(arrow_schema::ArrowError::SchemaError(_))
+        )
+    });
+    let context = if conflict {
+        format!(
+            "Cannot migrate dataset '{stream}' (tenant '{tenant}'): an existing schema conflict \
+             was detected. Existing Parquet files are immutable, and automatic repair of \
+             historical schema conflicts is not supported. No dataset has been deleted. \
+             The user must resolve the conflict or explicitly delete the affected dataset \
+             before restarting the server"
+        )
+    } else {
+        format!("Cannot migrate dataset '{stream}' (tenant '{tenant}')")
+    };
+    error.context(context)
 }
 
 async fn migration_stream(
@@ -511,7 +537,7 @@ pub async fn setup_logstream_metadata(
             )
             .await?
     } else {
-        stream_ref.updated_schema(arrow_schema.clone())
+        stream_ref.updated_schema(arrow_schema.clone())?
     };
     let schema = HashMap::from_iter(
         schema
@@ -599,4 +625,51 @@ pub fn put_staging_metadata(
         .open(path)?;
     serde_json::to_writer(&mut file, metadata)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_schema::{ArrowError, DataType, Field};
+
+    use super::*;
+    use crate::{parseable::StagingError, storage::ObjectStorageError};
+
+    #[test]
+    fn migration_conflict_message_preserves_cause_and_requires_user_action() {
+        let conflict = || {
+            Schema::try_merge([
+                Schema::new(vec![Field::new("value", DataType::Int32, true)]),
+                Schema::new(vec![Field::new("value", DataType::Utf8, true)]),
+            ])
+            .unwrap_err()
+        };
+        for error in [
+            anyhow::Error::new(StagingError::from(conflict())),
+            anyhow::Error::new(ObjectStorageError::from(anyhow::Error::new(conflict()))),
+        ] {
+            let error = migration_error("events", &Some("customer".to_owned()), error);
+            let message = format!("{error:#}");
+            assert!(message.contains("dataset 'events' (tenant 'customer')"));
+            assert!(message.contains("existing schema conflict"));
+            assert!(message.contains("Parquet files are immutable"));
+            assert!(message.contains("automatic repair"));
+            assert!(message.contains("No dataset has been deleted"));
+            assert!(message.contains("user must"));
+            assert!(message.contains("value"));
+            assert!(error.chain().any(|cause| cause.is::<ArrowError>()));
+        }
+    }
+
+    #[test]
+    fn migration_storage_failure_does_not_recommend_dataset_deletion() {
+        let error = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "storage access denied",
+        ));
+        let message = format!("{:#}", migration_error("events", &None, error));
+        assert!(message.contains(DEFAULT_TENANT));
+        assert!(message.contains("storage access denied"));
+        assert!(!message.contains("schema conflict"));
+        assert!(!message.contains("delete"));
+    }
 }

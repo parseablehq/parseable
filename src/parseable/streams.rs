@@ -2623,15 +2623,11 @@ impl Stream {
         custom_partition: Option<&String>,
     ) -> Result<Schema, StagingError> {
         if self.get_stream_type() == StreamType::Internal {
-            return Ok(self.updated_schema(current_schema));
+            return self.updated_schema(current_schema);
         }
-        let reader = MergedReverseRecordReader::try_new(&self.arrow_files());
-        let mut schemas = vec![current_schema];
-        if !reader.readers.is_empty() {
-            // Raw Arrow files must agree locally before they can be resolved
-            // alongside persisted canonical metadata.
-            schemas.insert(0, reader.merged_schema()?);
-        }
+        // Canonical names may differ from raw staging names. Only raw files
+        // must agree locally before their fields reach registry resolution.
+        let schemas = vec![self.recovery_raw_schema()?];
         let mut pinned = HashSet::from([DEFAULT_TIMESTAMP_KEY.to_owned()]);
         pinned.extend(time_partition.cloned());
         if let Some(custom) = custom_partition {
@@ -2661,16 +2657,21 @@ impl Stream {
         Ok(canonical)
     }
 
-    pub fn updated_schema(&self, current_schema: Schema) -> Schema {
+    pub(crate) fn recovery_raw_schema(&self) -> Result<Schema, StagingError> {
+        let reader = MergedReverseRecordReader::try_new(&self.arrow_files());
+        Ok(reader.merged_schema()?)
+    }
+
+    pub fn updated_schema(&self, current_schema: Schema) -> Result<Schema, StagingError> {
         let staging_files = self.arrow_files();
         let record_reader = MergedReverseRecordReader::try_new(&staging_files);
         if record_reader.readers.is_empty() {
-            return current_schema;
+            return Ok(current_schema);
         }
 
-        let schema = record_reader.merged_schema().unwrap();
+        let schema = record_reader.merged_schema()?;
 
-        Schema::try_merge(vec![schema, current_schema]).unwrap()
+        Ok(Schema::try_merge(vec![schema, current_schema])?)
     }
 
     /// Stores the provided stream metadata in memory mapping
@@ -3345,6 +3346,85 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+    use crate::parseable::staging::writer::MemWriter;
+
+    #[tokio::test]
+    async fn migration_raw_schema_recovery_preserves_files_and_internal_merge_checks() {
+        for raw_conflict in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let stream = Stream::new(
+                Arc::new(Options {
+                    mode: Mode::Ingest,
+                    local_staging_path: temp.path().to_path_buf(),
+                    ..Default::default()
+                }),
+                "migration-conflict",
+                LogStreamMetadata::default(),
+                None,
+                &None,
+            );
+            fs::create_dir_all(&stream.data_path).unwrap();
+            let integer_schema = Schema::new(vec![Field::new("value", DataType::Int32, true)]);
+            assert_eq!(
+                stream.updated_schema(integer_schema.clone()).unwrap(),
+                integer_schema
+            );
+            let mut paths = Vec::new();
+            for index in 0..if raw_conflict { 2 } else { 1 } {
+                let (schema, values): (Schema, ArrayRef) = if index == 0 {
+                    (integer_schema.clone(), Arc::new(Int32Array::from(vec![1])))
+                } else {
+                    (
+                        Schema::new(vec![Field::new("value", DataType::Utf8, true)]),
+                        Arc::new(StringArray::from(vec!["one"])),
+                    )
+                };
+                let path = stream.data_path.join(format!("migration-{index}.arrows"));
+                let mut writer =
+                    ArrowStreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+                writer
+                    .write(&RecordBatch::try_new(Arc::new(schema), vec![values]).unwrap())
+                    .unwrap();
+                writer.finish().unwrap();
+                paths.push(path);
+            }
+            if !raw_conflict {
+                let compatible = Schema::new(vec![Field::new("other", DataType::Utf8, true)]);
+                let recovered = stream.updated_schema(compatible).unwrap();
+                assert!(recovered.field_with_name("value").is_ok());
+                assert!(recovered.field_with_name("other").is_ok());
+            }
+            let persisted = if raw_conflict {
+                Schema::empty()
+            } else {
+                Schema::new(vec![Field::new("value", DataType::Utf8, true)])
+            };
+            assert!(matches!(
+                stream.updated_schema(persisted.clone()),
+                Err(StagingError::Arrow(ArrowError::SchemaError(_)))
+            ));
+            if raw_conflict {
+                // Incompatible raw files still fail before registry access.
+                assert!(matches!(
+                    stream
+                        .restore_global_schema(persisted.clone(), &None, None, None)
+                        .await,
+                    Err(StagingError::Arrow(ArrowError::SchemaError(_)))
+                ));
+            } else {
+                assert_eq!(stream.recovery_raw_schema().unwrap(), integer_schema);
+            }
+            stream.metadata.write().unwrap().stream_type = StreamType::Internal;
+            assert!(matches!(
+                stream
+                    .restore_global_schema(persisted, &None, None, None)
+                    .await,
+                Err(StagingError::Arrow(ArrowError::SchemaError(_)))
+            ));
+            assert!(paths.iter().all(|path| path.exists()));
+            assert!(stream.global_schema.read().unwrap().is_none());
+        }
+    }
 
     #[test]
     fn internal_streams_bypass_registry_during_conversion() {
@@ -3400,7 +3480,7 @@ mod tests {
         .unwrap();
         {
             let mut writer = stream.writer.lock().unwrap();
-            writer.mem = Some(Default::default());
+            writer.mem = Some(MemWriter::default());
             writer
                 .mem
                 .as_mut()

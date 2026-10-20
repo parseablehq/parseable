@@ -69,6 +69,8 @@ trait GlobalSchemaLockBackend: Send + Sync {
     async fn list_locks(&self) -> Result<Vec<String>, MetastoreError>;
     async fn delete_lock(&self, lock: &str) -> Result<(), MetastoreError>;
     async fn wait_for_lock_release(&self);
+    async fn create_lock(&self) -> Result<String, MetastoreError>;
+    async fn release_lock(&self, lock: &str) -> Result<(), MetastoreError>;
 }
 
 #[async_trait]
@@ -90,6 +92,33 @@ impl GlobalSchemaLockBackend for MetastoreRegistryBackend<'_> {
 
     async fn wait_for_lock_release(&self) {
         sleep(Duration::from_secs(5)).await;
+    }
+
+    async fn create_lock(&self) -> Result<String, MetastoreError> {
+        let lock = format!(
+            "{}-{}.lock",
+            INGESTOR_META
+                .get()
+                .expect("Ingestor node metadata should exist")
+                .node_id,
+            Utc::now().timestamp_micros()
+        );
+        self.metastore
+            .put_global_schema_lock(
+                global_schema_lock_file_path(self.stream_name, self.tenant_id).join(&lock),
+                self.tenant_id,
+            )
+            .await?;
+        Ok(lock)
+    }
+
+    async fn release_lock(&self, lock: &str) -> Result<(), MetastoreError> {
+        self.metastore
+            .delete_global_schema_lock(
+                global_schema_lock_file_path(self.stream_name, self.tenant_id).join(lock),
+                self.tenant_id,
+            )
+            .await
     }
 }
 
@@ -292,35 +321,60 @@ pub async fn resolve(
         stream_name,
         tenant_id,
     };
+    resolve_with_lock(&backend, stream_name, schemas, pinned).await
+}
+
+async fn resolve_with_lock<B>(
+    backend: &B,
+    stream_name: &str,
+    schemas: &[Schema],
+    pinned: &HashSet<String>,
+) -> Result<Resolution, MetastoreError>
+where
+    B: RegistryBackend + GlobalSchemaLockBackend + ?Sized,
+{
+    // An existing immutable registry can resolve already-published fields without
+    // serializing. Do not retain this snapshot after deciding publication is
+    // needed: resolve_backend re-reads it under the existing lock protocol.
+    if let Some(resolution) = resolve_without_lock(backend, schemas, pinned).await? {
+        return Ok(resolution);
+    }
+
     // Before beginning, clear only stale locks. Fresh locks are never deleted by
     // another resolver; after one bounded wait they must have disappeared.
-    ensure_clean_lock_state(&backend).await?;
-    let lock_file_path = global_schema_lock_file_path(stream_name, tenant_id).join(format!(
-        "{}-{}.lock",
-        INGESTOR_META
-            .get()
-            .expect("Ingestor node metadata should exist")
-            .node_id,
-        Utc::now().timestamp_micros()
-    ));
-    backend
-        .metastore
-        .put_global_schema_lock(lock_file_path.clone(), tenant_id)
-        .await?;
+    ensure_clean_lock_state(backend).await?;
+    let lock = backend.create_lock().await?;
 
     // Always attempt release after resolution. Preserve the resolution error if
     // both resolution and cleanup fail; otherwise surface a cleanup failure.
-    let resolution = resolve_backend(&backend, stream_name, schemas, pinned).await;
-    let cleanup = backend
-        .metastore
-        .delete_global_schema_lock(lock_file_path, tenant_id)
-        .await;
+    let resolution = resolve_backend(backend, stream_name, schemas, pinned).await;
+    let cleanup = backend.release_lock(&lock).await;
     finish_resolution(resolution, cleanup)
 }
 
-async fn ensure_clean_lock_state(
-    backend: &dyn GlobalSchemaLockBackend,
-) -> Result<(), MetastoreError> {
+/// Return a resolution only when the current global snapshot needs no write.
+/// Absent registries deliberately fall through so legacy bootstrapping remains
+/// serialized with registry creation.
+async fn resolve_without_lock<B>(
+    backend: &B,
+    schemas: &[Schema],
+    pinned: &HashSet<String>,
+) -> Result<Option<Resolution>, MetastoreError>
+where
+    B: RegistryBackend + ?Sized,
+{
+    let Some(global) = backend.read_global().await? else {
+        return Ok(None);
+    };
+    let (resolution, proposed) =
+        build_resolution(&global.schema, schemas, pinned).map_err(schema_error)?;
+    Ok((!needs_publish(Some(&global.schema), &proposed)).then_some(resolution))
+}
+
+async fn ensure_clean_lock_state<B>(backend: &B) -> Result<(), MetastoreError>
+where
+    B: GlobalSchemaLockBackend + ?Sized,
+{
     let locks = backend.list_locks().await?;
     let now = Utc::now();
     let parsed_locks = locks
@@ -384,12 +438,15 @@ fn finish_resolution<T>(
     }
 }
 
-async fn resolve_backend(
-    backend: &dyn RegistryBackend,
+async fn resolve_backend<B>(
+    backend: &B,
     stream_name: &str,
     schemas: &[Schema],
     pinned: &HashSet<String>,
-) -> Result<Resolution, MetastoreError> {
+) -> Result<Resolution, MetastoreError>
+where
+    B: RegistryBackend + ?Sized,
+{
     for attempt in 0..MAX_CAS_ATTEMPTS {
         let global = backend.read_global().await?;
         let (canonical, original_schema) = match global.as_ref() {
@@ -408,11 +465,7 @@ async fn resolve_backend(
 
         let (resolution, proposed) =
             build_resolution(&canonical, schemas, pinned).map_err(schema_error)?;
-        let needs_publish = match (&original_schema, global.is_some()) {
-            (Some(original), true) => original != &proposed,
-            (None, false) => !proposed.fields().is_empty(),
-            _ => true,
-        };
+        let needs_publish = needs_publish(original_schema.as_ref(), &proposed);
 
         if !needs_publish {
             return Ok(resolution);
@@ -437,6 +490,13 @@ async fn resolve_backend(
     Err(schema_error(format!(
         "global schema compare-and-swap did not converge after {MAX_CAS_ATTEMPTS} attempts for stream '{stream_name}'"
     )))
+}
+
+fn needs_publish(existing: Option<&Schema>, proposed: &Schema) -> bool {
+    match existing {
+        Some(existing) => existing != proposed,
+        None => !proposed.fields().is_empty(),
+    }
 }
 
 fn schema_error(message: impl Into<String>) -> MetastoreError {
@@ -731,7 +791,7 @@ mod tests {
     use super::{
         GlobalSchemaLockBackend, MAX_CAS_ATTEMPTS, RegistryBackend, Resolution, build_resolution,
         canonical_field, ensure_clean_lock_state, finish_resolution, legacy_seed,
-        normalize_registry, resolve_backend,
+        normalize_registry, resolve_backend, resolve_with_lock,
     };
 
     #[test]
@@ -784,6 +844,7 @@ mod tests {
         global_reads: AtomicUsize,
         legacy_reads: AtomicUsize,
         cas_attempts: AtomicUsize,
+        lock_io: AtomicUsize,
         force_contention: bool,
         fail_read: bool,
         fail_write: bool,
@@ -799,6 +860,7 @@ mod tests {
                 global_reads: AtomicUsize::new(0),
                 legacy_reads: AtomicUsize::new(0),
                 cas_attempts: AtomicUsize::new(0),
+                lock_io: AtomicUsize::new(0),
                 force_contention: false,
                 fail_read: false,
                 fail_write: false,
@@ -832,6 +894,10 @@ mod tests {
             self.cas_attempts.load(Ordering::SeqCst)
         }
 
+        fn lock_io_count(&self) -> usize {
+            self.lock_io.load(Ordering::SeqCst)
+        }
+
         fn canonical_schema(&self) -> Option<Schema> {
             self.state.lock().unwrap().schema.clone()
         }
@@ -851,6 +917,33 @@ mod tests {
             MetastoreError::Error { message, .. }
                 if message == "injected registry storage failure"
         )
+    }
+
+    #[async_trait]
+    impl GlobalSchemaLockBackend for InMemoryBackend {
+        async fn list_locks(&self) -> Result<Vec<String>, MetastoreError> {
+            self.lock_io.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+
+        async fn delete_lock(&self, _lock: &str) -> Result<(), MetastoreError> {
+            self.lock_io.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn wait_for_lock_release(&self) {
+            self.lock_io.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn create_lock(&self) -> Result<String, MetastoreError> {
+            self.lock_io.fetch_add(1, Ordering::SeqCst);
+            Ok("test.lock".to_owned())
+        }
+
+        async fn release_lock(&self, _lock: &str) -> Result<(), MetastoreError> {
+            self.lock_io.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -960,6 +1053,14 @@ mod tests {
             if self.clear_on_wait {
                 self.locks.lock().unwrap().clear();
             }
+        }
+
+        async fn create_lock(&self) -> Result<String, MetastoreError> {
+            Ok("test.lock".to_owned())
+        }
+
+        async fn release_lock(&self, _lock: &str) -> Result<(), MetastoreError> {
+            Ok(())
         }
     }
 
@@ -1398,6 +1499,164 @@ mod tests {
             resolution.target("time", &ms).unwrap().name(),
             "time_timestamp_ms"
         );
+    }
+
+    #[tokio::test]
+    async fn migration_schema_recovery_resolves_canonical_conflicts_without_deleting_files() {
+        use std::fs::{self, File};
+
+        use arrow_ipc::writer::StreamWriter;
+        use temp_dir::TempDir;
+
+        use crate::{cli::Options, metadata::LogStreamMetadata, parseable::Stream};
+
+        let temp = TempDir::new().unwrap();
+        let stream = Stream::new(
+            Arc::new(Options {
+                local_staging_path: temp.path().to_path_buf(),
+                ..Options::default()
+            }),
+            "recovered",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let canonical = Schema::new(vec![
+            field("value", DataType::Utf8),
+            field("value_int64", DataType::Int64),
+        ]);
+        let backend = InMemoryBackend::new(Some(canonical.clone()), Vec::new(), 0);
+        // With no staging files, canonical columns are not submitted as raw.
+        let empty = stream.recovery_raw_schema().unwrap();
+        assert!(empty.fields().is_empty());
+        resolve_with_lock(&backend, "recovered", &[empty], &HashSet::new())
+            .await
+            .unwrap();
+
+        fs::create_dir_all(&stream.data_path).unwrap();
+        let path = stream.data_path.join("recovered.arrows");
+        let raw = Schema::new(vec![field("value", DataType::Int64)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(raw.clone()),
+            vec![Arc::new(Int64Array::from(vec![42]))],
+        )
+        .unwrap();
+        let mut writer = StreamWriter::try_new(File::create(&path).unwrap(), &raw).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        let original = fs::read(&path).unwrap();
+
+        let recovered = stream.recovery_raw_schema().unwrap();
+        assert_eq!(recovered, raw);
+        let resolution = resolve_with_lock(&backend, "recovered", &[recovered], &HashSet::new())
+            .await
+            .unwrap();
+        let renamed = resolution.rename_batch(&batch).unwrap();
+        assert!(renamed.column_by_name("value").is_none());
+        assert_eq!(renamed.schema().field(0).name(), "value_int64");
+        assert!(Arc::ptr_eq(renamed.column(0), batch.column(0)));
+        assert_eq!(
+            backend.read_global().await.unwrap().unwrap().schema,
+            canonical
+        );
+        assert_eq!(backend.cas_attempt_count(), 0);
+        assert_eq!(backend.lock_io_count(), 0);
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn existing_resolution_reuses_published_suffix_without_lock_io() {
+        let canonical = Schema::new(vec![
+            field("value", DataType::Utf8),
+            field("value_int64", DataType::Int64),
+        ]);
+        let backend = InMemoryBackend::new(Some(canonical), Vec::new(), 0);
+        let local = [Schema::new(vec![
+            field("value", DataType::Int64),
+            field("ignored", DataType::Null),
+        ])];
+
+        let resolution = resolve_with_lock(&backend, "existing", &local, &HashSet::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resolution.target("value", &DataType::Int64).unwrap().name(),
+            "value_int64"
+        );
+        assert_eq!(backend.global_read_count(), 1);
+        assert_eq!(backend.cas_attempt_count(), 0);
+        assert_eq!(backend.lock_io_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn changed_or_missing_global_schema_uses_existing_lock_protocol() {
+        let existing = InMemoryBackend::new(
+            Some(Schema::new(vec![field("base", DataType::Boolean)])),
+            Vec::new(),
+            0,
+        );
+        let changed = [Schema::new(vec![field("new", DataType::Int64)])];
+        resolve_with_lock(&existing, "changed", &changed, &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(existing.cas_attempt_count(), 1);
+        assert_eq!(existing.lock_io_count(), 3);
+        assert_eq!(existing.global_read_count(), 2);
+
+        let missing = InMemoryBackend::new(None, Vec::new(), 0);
+        let empty = [Schema::empty()];
+        resolve_with_lock(&missing, "missing", &empty, &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(missing.cas_attempt_count(), 0);
+        assert_eq!(missing.lock_io_count(), 3);
+        assert_eq!(missing.global_read_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn existing_normalization_and_fast_path_errors_do_not_skip_required_work() {
+        let noncanonical = Schema::new_with_metadata(
+            vec![Arc::new(
+                Field::new("base", DataType::Boolean, false)
+                    .with_metadata([("legacy".to_owned(), "true".to_owned())].into()),
+            )],
+            [("schema".to_owned(), "metadata".to_owned())].into(),
+        );
+        let normalization = InMemoryBackend::new(Some(noncanonical), Vec::new(), 0);
+        let matching = [Schema::new(vec![field("base", DataType::Boolean)])];
+        resolve_with_lock(&normalization, "normalize", &matching, &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(normalization.cas_attempt_count(), 1);
+        assert_eq!(normalization.lock_io_count(), 3);
+
+        let read_failure = InMemoryBackend::new(
+            Some(Schema::new(vec![field("base", DataType::Boolean)])),
+            Vec::new(),
+            0,
+        )
+        .with_read_error();
+        let error = resolve_with_lock(&read_failure, "read-error", &matching, &HashSet::new())
+            .await
+            .unwrap_err();
+        assert!(is_injected_storage_error(&error));
+        assert_eq!(read_failure.lock_io_count(), 0);
+
+        let build_failure = InMemoryBackend::new(
+            Some(Schema::new(vec![field("pinned", DataType::Utf8)])),
+            Vec::new(),
+            0,
+        );
+        let conflicting = [Schema::new(vec![field("pinned", DataType::Int64)])];
+        let pinned = HashSet::from(["pinned".to_owned()]);
+        assert!(
+            resolve_with_lock(&build_failure, "build-error", &conflicting, &pinned)
+                .await
+                .is_err()
+        );
+        assert_eq!(build_failure.lock_io_count(), 0);
     }
 
     #[tokio::test]
