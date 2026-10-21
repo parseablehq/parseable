@@ -32,6 +32,13 @@ use serde::Deserialize;
 /// are derived from these roles (same flow as native/OAuth users).
 /// `apiKey` lets a caller register their own key; omitting it preserves
 /// the existing server-generated key behavior.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKeyType {
+    Ingestor,
+    Query,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateApiKeyRequest {
@@ -39,9 +46,8 @@ pub struct CreateApiKeyRequest {
     #[serde(default)]
     pub roles: HashSet<String>,
     pub api_key: Option<String>,
-    /// Helm uses this mode to request the server-managed global ingest role.
-    #[serde(default)]
-    pub ingestor_only: bool,
+    /// Omit for the existing UI/API flow that assigns explicit roles.
+    pub api_key_type: Option<ApiKeyType>,
 }
 
 /// Require a hyphenated UUID v4, allowing either letter case.
@@ -67,8 +73,8 @@ pub enum ApiKeyError {
     #[error("apiKey must be a UUID v4 in 8-4-4-4-12 format")]
     InvalidApiKey,
 
-    #[error("ingestorOnly cannot be combined with roles")]
-    IngestorOnlyWithRoles,
+    #[error("apiKeyType cannot be combined with roles")]
+    ApiKeyTypeWithRoles,
 
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
@@ -93,7 +99,7 @@ impl actix_web::ResponseError for ApiKeyError {
             ApiKeyError::DuplicateKeyName(_) | ApiKeyError::DuplicateApiKey => {
                 actix_web::http::StatusCode::CONFLICT
             }
-            ApiKeyError::InvalidApiKey | ApiKeyError::IngestorOnlyWithRoles => {
+            ApiKeyError::InvalidApiKey | ApiKeyError::ApiKeyTypeWithRoles => {
                 actix_web::http::StatusCode::BAD_REQUEST
             }
             ApiKeyError::Unauthorized(_) => actix_web::http::StatusCode::FORBIDDEN,
@@ -105,5 +111,33 @@ impl actix_web::ResponseError for ApiKeyError {
                 actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::{ApiKeyType, CreateApiKeyRequest};
+
+    #[test]
+    fn typed_keys_and_existing_role_requests_deserialize() {
+        let ingestor: CreateApiKeyRequest =
+            serde_json::from_str(r#"{"keyName":"ingest-key","apiKeyType":"ingestor"}"#).unwrap();
+        assert_eq!(ingestor.api_key_type, Some(ApiKeyType::Ingestor));
+
+        let query: CreateApiKeyRequest =
+            serde_json::from_str(r#"{"keyName":"query-key","apiKeyType":"query"}"#).unwrap();
+        assert_eq!(query.api_key_type, Some(ApiKeyType::Query));
+
+        let ui: CreateApiKeyRequest =
+            serde_json::from_str(r#"{"keyName":"ui-key","roles":["reader-role"]}"#).unwrap();
+        assert_eq!(ui.api_key_type, None);
+        assert!(ui.roles.contains("reader-role"));
+
+        assert!(
+            serde_json::from_str::<CreateApiKeyRequest>(
+                r#"{"keyName":"old-key","ingestorOnly":true}"#
+            )
+            .is_err()
+        );
     }
 }
