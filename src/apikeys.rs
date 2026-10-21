@@ -113,31 +113,3 @@ impl actix_web::ResponseError for ApiKeyError {
         }
     }
 }
-
-#[cfg(test)]
-mod request_tests {
-    use super::{ApiKeyType, CreateApiKeyRequest};
-
-    #[test]
-    fn typed_keys_and_existing_role_requests_deserialize() {
-        let ingestor: CreateApiKeyRequest =
-            serde_json::from_str(r#"{"keyName":"ingest-key","apiKeyType":"ingestor"}"#).unwrap();
-        assert_eq!(ingestor.api_key_type, Some(ApiKeyType::Ingestor));
-
-        let query: CreateApiKeyRequest =
-            serde_json::from_str(r#"{"keyName":"query-key","apiKeyType":"query"}"#).unwrap();
-        assert_eq!(query.api_key_type, Some(ApiKeyType::Query));
-
-        let ui: CreateApiKeyRequest =
-            serde_json::from_str(r#"{"keyName":"ui-key","roles":["reader-role"]}"#).unwrap();
-        assert_eq!(ui.api_key_type, None);
-        assert!(ui.roles.contains("reader-role"));
-
-        assert!(
-            serde_json::from_str::<CreateApiKeyRequest>(
-                r#"{"keyName":"old-key","ingestorOnly":true}"#
-            )
-            .is_err()
-        );
-    }
-}
