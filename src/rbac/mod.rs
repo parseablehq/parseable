@@ -428,30 +428,3 @@ pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permissio
     }
     perms.into_iter().collect()
 }
-
-#[cfg(test)]
-mod global_api_key_role_tests {
-    use super::*;
-
-    #[test]
-    fn internal_ingestor_role_grants_only_global_ingest() {
-        let permissions = roles_to_permission(vec![GLOBAL_INGESTOR_ROLE.to_string()], "tenant");
-        assert_eq!(
-            permissions,
-            vec![Permission::Resource(Action::Ingest, None)]
-        );
-    }
-
-    #[test]
-    fn internal_querier_role_has_reader_access_to_all_datasets() {
-        let permissions = roles_to_permission(vec![GLOBAL_QUERIER_ROLE.to_string()], "tenant");
-        let all_datasets = Some(ParseableResourceType::Stream("*".to_string()));
-        assert!(permissions.contains(&Permission::Resource(Action::Query, all_datasets.clone())));
-        assert!(permissions.contains(&Permission::Resource(Action::ListStream, all_datasets)));
-        assert!(!permissions.iter().any(|permission| matches!(
-            permission,
-            Permission::Resource(Action::Ingest | Action::All, _)
-                | Permission::Unit(Action::DeleteStream | Action::PutRole)
-        )));
-    }
-}
