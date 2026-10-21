@@ -6,14 +6,16 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use ulid::Ulid;
 
 use crate::{
-    apikeys::{ApiKeyError, CreateApiKeyRequest, validate_api_key as validate_api_key_value},
+    apikeys::{
+        ApiKeyError, ApiKeyType, CreateApiKeyRequest, validate_api_key as validate_api_key_value,
+    },
     handlers::http::{
         modal::utils::rbac_utils::{get_metadata, put_metadata},
         rbac::{RBACError, UPDATE_LOCK},
     },
     parseable::DEFAULT_TENANT,
     rbac::{
-        GLOBAL_INGESTOR_ROLE, Users,
+        GLOBAL_INGESTOR_ROLE, GLOBAL_QUERIER_ROLE, Users,
         map::{roles, users},
         role::model::{DefaultPrivilege, Role},
         user::{User, UserType},
@@ -212,17 +214,24 @@ pub async fn create_api_key(
 
     let guard = UPDATE_LOCK.lock().await;
 
-    // Helm's ingest-only mode uses an internal role. Explicit roles retain
-    // the existing UI/API behavior and cannot be mixed with this mode.
-    let assigned_roles = if body.ingestor_only {
-        if !body.roles.is_empty() {
-            return Err(ApiKeyError::IngestorOnlyWithRoles);
+    // Typed keys get server-managed roles; the existing UI/API flow keeps
+    // assigning explicit roles when apiKeyType is omitted.
+    let assigned_roles = match body.api_key_type {
+        Some(api_key_type) => {
+            if !body.roles.is_empty() {
+                return Err(ApiKeyError::ApiKeyTypeWithRoles);
+            }
+            let role = match api_key_type {
+                ApiKeyType::Ingestor => GLOBAL_INGESTOR_ROLE,
+                ApiKeyType::Query => GLOBAL_QUERIER_ROLE,
+            };
+            HashSet::from([role.to_string()])
         }
-        HashSet::from([GLOBAL_INGESTOR_ROLE.to_string()])
-    } else {
-        // Hold the update lock while checking user-defined roles.
-        validate_roles(&body.roles, &tenant_id)?;
-        body.roles
+        None => {
+            // Hold the update lock while checking user-defined roles.
+            validate_roles(&body.roles, &tenant_id)?;
+            body.roles
+        }
     };
 
     // Duplicate key-name detection inside the same tenant.

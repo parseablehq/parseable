@@ -41,13 +41,15 @@ use crate::rbac::user::User;
 use crate::utils::get_tenant_id_from_key;
 
 use self::map::SessionKey;
-use self::role::{Permission, RoleBuilder};
+use self::role::{ParseableResourceType, Permission, RoleBuilder, model::DefaultPrivilege};
 use self::user::UserType;
 
 pub const EXPIRY_DURATION: Duration = Duration::hours(1);
 /// Reserved, server-managed role for Helm's ingest-only API keys.
 /// This name is outside the user-defined role-name grammar.
 pub const GLOBAL_INGESTOR_ROLE: &str = "__global_ingestor__";
+/// Reserved, server-managed role with the existing reader privilege on all datasets.
+pub const GLOBAL_QUERIER_ROLE: &str = "__global_querier__";
 
 #[derive(PartialEq, Debug)]
 pub enum Response {
@@ -404,6 +406,15 @@ pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permissio
             perms.insert(Permission::Resource(Action::Ingest, None));
             continue;
         }
+        if role == GLOBAL_QUERIER_ROLE {
+            perms.extend(
+                RoleBuilder::from(&DefaultPrivilege::Reader {
+                    resource: Some(ParseableResourceType::Stream("*".to_string())),
+                })
+                .build(),
+            );
+            continue;
+        }
         let role_map = &map::roles();
         if let Some(roles) = role_map.get(tenant_id)
             && let Some(privilege_list) = roles.get(role)
@@ -419,7 +430,7 @@ pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permissio
 }
 
 #[cfg(test)]
-mod global_ingestor_tests {
+mod global_api_key_role_tests {
     use super::*;
 
     #[test]
@@ -429,5 +440,18 @@ mod global_ingestor_tests {
             permissions,
             vec![Permission::Resource(Action::Ingest, None)]
         );
+    }
+
+    #[test]
+    fn internal_querier_role_has_reader_access_to_all_datasets() {
+        let permissions = roles_to_permission(vec![GLOBAL_QUERIER_ROLE.to_string()], "tenant");
+        let all_datasets = Some(ParseableResourceType::Stream("*".to_string()));
+        assert!(permissions.contains(&Permission::Resource(Action::Query, all_datasets.clone())));
+        assert!(permissions.contains(&Permission::Resource(Action::ListStream, all_datasets)));
+        assert!(!permissions.iter().any(|permission| matches!(
+            permission,
+            Permission::Resource(Action::Ingest | Action::All, _)
+                | Permission::Unit(Action::DeleteStream | Action::PutRole)
+        )));
     }
 }
