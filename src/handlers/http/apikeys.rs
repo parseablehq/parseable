@@ -6,14 +6,14 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use ulid::Ulid;
 
 use crate::{
-    apikeys::{ApiKeyError, CreateApiKeyRequest, validate_provided_api_key},
+    apikeys::{ApiKeyError, CreateApiKeyRequest, validate_api_key as validate_api_key_value},
     handlers::http::{
         modal::utils::rbac_utils::{get_metadata, put_metadata},
         rbac::{RBACError, UPDATE_LOCK},
     },
     parseable::DEFAULT_TENANT,
     rbac::{
-        Users,
+        GLOBAL_INGESTOR_ROLE, Users,
         map::{roles, users},
         role::model::{DefaultPrivilege, Role},
         user::{User, UserType},
@@ -206,9 +206,18 @@ pub async fn create_api_key(
 
     let guard = UPDATE_LOCK.lock().await;
 
-    // Reject any role names that don't exist in this tenant while holding the
-    // update lock so a concurrent role update cannot invalidate the check.
-    validate_roles(&body.roles, &tenant_id)?;
+    // Helm's ingest-only mode uses an internal role. Explicit roles retain
+    // the existing UI/API behavior and cannot be mixed with this mode.
+    let assigned_roles = if body.ingestor_only {
+        if !body.roles.is_empty() {
+            return Err(ApiKeyError::IngestorOnlyWithRoles);
+        }
+        HashSet::from([GLOBAL_INGESTOR_ROLE.to_string()])
+    } else {
+        // Hold the update lock while checking user-defined roles.
+        validate_roles(&body.roles, &tenant_id)?;
+        body.roles
+    };
 
     // Duplicate key-name detection inside the same tenant.
     let existing = collect_tenant_api_keys(&tenant_id);
@@ -221,9 +230,9 @@ pub async fn create_api_key(
     }
 
     let key_id = Ulid::new();
-    let api_key_value = if let Some(provided_api_key) = body.provided_api_key {
-        validate_provided_api_key(&provided_api_key)?;
-        provided_api_key
+    let api_key_value = if let Some(api_key) = body.api_key {
+        validate_api_key_value(&api_key)?;
+        api_key
     } else {
         generate_api_key_value()
     };
@@ -238,7 +247,7 @@ pub async fn create_api_key(
         key_id,
         api_key_value,
         body.key_name,
-        body.roles,
+        assigned_roles,
         created_by,
         tenant_id.clone(),
     );

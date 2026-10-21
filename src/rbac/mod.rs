@@ -45,6 +45,9 @@ use self::role::{Permission, RoleBuilder};
 use self::user::UserType;
 
 pub const EXPIRY_DURATION: Duration = Duration::hours(1);
+/// Reserved, server-managed role for Helm's ingest-only API keys.
+/// This name is outside the user-defined role-name grammar.
+pub const GLOBAL_INGESTOR_ROLE: &str = "__global_ingestor__";
 
 #[derive(PartialEq, Debug)]
 pub enum Response {
@@ -397,6 +400,10 @@ pub struct UsersPrism {
 pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permission> {
     let mut perms = HashSet::new();
     for role in &roles {
+        if role == GLOBAL_INGESTOR_ROLE {
+            perms.insert(Permission::Resource(Action::Ingest, None));
+            continue;
+        }
         let role_map = &map::roles();
         if let Some(roles) = role_map.get(tenant_id)
             && let Some(privilege_list) = roles.get(role)
@@ -409,4 +416,18 @@ pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permissio
         };
     }
     perms.into_iter().collect()
+}
+
+#[cfg(test)]
+mod global_ingestor_tests {
+    use super::*;
+
+    #[test]
+    fn internal_ingestor_role_grants_only_global_ingest() {
+        let permissions = roles_to_permission(vec![GLOBAL_INGESTOR_ROLE.to_string()], "tenant");
+        assert_eq!(
+            permissions,
+            vec![Permission::Resource(Action::Ingest, None)]
+        );
+    }
 }
