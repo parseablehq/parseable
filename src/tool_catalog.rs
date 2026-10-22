@@ -105,6 +105,7 @@ impl ToolSpec {
             | "discover_datasets"
             | "get_traces"
             | "get_trace"
+            | "get_trace_activity"
             | "list_log_errors"
             | "list_trace_errors" => ToolEffect::ExpensiveRead,
             "create_alert"
@@ -135,7 +136,10 @@ pub fn validate_tool_arguments(schema: &Value, arguments: &Value) -> Result<(), 
 
 fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
     if let Some(result) = validate_any_of(schema, value, path) {
-        return result;
+        result?;
+    }
+    if let Some(result) = validate_one_of(schema, value, path) {
+        result?;
     }
 
     validate_enum(schema, value, path)?;
@@ -144,6 +148,21 @@ fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> Result<()
     validate_array(schema, value, path)?;
     validate_string(schema, value, path)?;
     validate_number(schema, value, path)
+}
+
+fn validate_one_of(schema: &Value, value: &Value, path: &str) -> Option<Result<(), String>> {
+    schema
+        .get("oneOf")
+        .and_then(Value::as_array)
+        .map(|variants| {
+            let matches = variants
+                .iter()
+                .filter(|variant| validate_schema_value(variant, value, path).is_ok())
+                .count();
+            (matches == 1)
+                .then_some(())
+                .ok_or_else(|| format!("{path} must match exactly one allowed schema"))
+        })
 }
 
 fn validate_any_of(schema: &Value, value: &Value, path: &str) -> Option<Result<(), String>> {
@@ -336,7 +355,9 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
                 json!({
                     "query": string_property("User request or dataset search text."),
                     "selectedDataset": { "type": "string" },
-                    "contextDataset": { "type": "string" }
+                    "contextDataset": { "type": "string" },
+                    "telemetryType": { "type": "string", "enum": ["logs", "metrics", "traces"] },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 }
                 }),
                 &["query"],
             ),
@@ -380,6 +401,8 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
                     "dataset": string_property("Dataset name."),
                     "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 },
                     "minutes": { "type": "integer", "minimum": 1, "maximum": 1440, "default": 60 },
+                    "startTime": string_property("Optional explicit RFC3339 range start; provide with endTime."),
+                    "endTime": string_property("Optional explicit RFC3339 range end; provide with startTime."),
                 }),
                 &["dataset"],
             ),
@@ -388,21 +411,29 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
             "get_log_context",
             "Get surrounding log context",
             "Fetch records around an exact anchor log row.",
-            object_schema(
-                json!({
-                    "dataset": string_property("Dataset containing the anchor row."),
-                    "pTimestamp": string_property("Exact p_timestamp from the anchor row."),
-                    "log": { "type": "string" },
-                    "body": { "type": "string" },
-                    "message": { "type": "string" },
-                    "contextWindow": { "type": "string" },
-                    "contextStartTime": { "type": "string" },
-                    "contextEndTime": { "type": "string" },
-                    "conditions": { "type": "object", "additionalProperties": true },
-                    "pageSize": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
-                }),
-                &["dataset", "pTimestamp"],
-            ),
+            {
+                let mut schema = object_schema(
+                    json!({
+                        "dataset": string_property("Dataset containing the anchor row."),
+                        "pTimestamp": string_property("Exact p_timestamp from the anchor row."),
+                        "log": string_property("Exact log value from the anchor row. Provide exactly one of log, body, or message."),
+                        "body": string_property("Exact body value from the anchor row. Provide exactly one of log, body, or message."),
+                        "message": string_property("Exact message value from the anchor row. Provide exactly one of log, body, or message."),
+                        "contextWindow": { "type": "string" },
+                        "contextStartTime": { "type": "string" },
+                        "contextEndTime": { "type": "string" },
+                        "conditions": { "type": "object", "additionalProperties": true },
+                        "pageSize": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+                    }),
+                    &["dataset", "pTimestamp"],
+                );
+                schema["oneOf"] = json!([
+                    { "required": ["log"] },
+                    { "required": ["body"] },
+                    { "required": ["message"] }
+                ]);
+                schema
+            },
         ),
         ToolSpec::new(
             "list_log_errors",
@@ -502,6 +533,22 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
                     "endTime": string_property("RFC3339 range end.")
                 }),
                 &["traceId", "dataset", "startTime", "endTime"],
+            ),
+        ),
+        ToolSpec::new(
+            "get_trace_activity",
+            "Get trace activity",
+            "Return a bounded trace-activity time series using Parseable's canonical semantics: span_count is COUNT(DISTINCT span_span_id) and trace_count is COUNT(DISTINCT span_trace_id). Use this for span or trace volume, trends, charts, and service breakdowns instead of deriving counts from raw trace rows. Returns the exact executed SQL with its rows so clients can reuse it unchanged.",
+            object_schema(
+                json!({
+                    "dataset": string_property("One traces dataset."),
+                    "startTime": string_property("RFC3339 range start."),
+                    "endTime": string_property("RFC3339 range end."),
+                    "groupBy": { "type": "array", "maxItems": 5, "items": { "type": "string" }, "description": "Optional exact trace fields, such as service.name, used to split the activity series." },
+                    "filters": { "type": "object", "description": "Optional exact trace-field filters.", "additionalProperties": true },
+                    "bucketCount": { "type": "integer", "minimum": 1, "maximum": 100, "default": 60, "description": "Approximate number of time buckets." }
+                }),
+                &["dataset", "startTime", "endTime"],
             ),
         ),
         ToolSpec::new(
@@ -854,7 +901,7 @@ mod tests {
         let tools = oss_tool_specs();
         let names = tools.iter().map(|tool| tool.name).collect::<HashSet<_>>();
 
-        assert_eq!(tools.len(), 49);
+        assert_eq!(tools.len(), 50);
         assert_eq!(tools.len(), names.len());
     }
 
@@ -893,7 +940,7 @@ mod tests {
         let read_tools = oss_read_tool_specs();
         let action_tools = oss_action_tool_specs();
 
-        assert_eq!(read_tools.len(), 36);
+        assert_eq!(read_tools.len(), 37);
         assert_eq!(action_tools.len(), 13);
         assert!(read_tools.iter().all(|tool| matches!(
             tool.effect(),
@@ -978,6 +1025,18 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn oss_catalog_exposes_trace_activity() {
+        let tool = oss_read_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "get_trace_activity")
+            .expect("get_trace_activity must be available in OSS");
+
+        assert_eq!(tool.effect(), ToolEffect::ExpensiveRead);
+        assert_eq!(tool.input_schema["properties"]["dataset"]["type"], "string");
+        assert_eq!(tool.input_schema["properties"]["groupBy"]["maxItems"], 5);
+    }
+
+    #[actix_web::test]
     async fn tool_call_defaults_to_empty_arguments() {
         let call: ToolCallRequest = serde_json::from_value(serde_json::json!({
             "name": "list_datasets"
@@ -1011,6 +1070,52 @@ mod tests {
             schema_tool
                 .validate_arguments(&serde_json::json!({ "dataset": "logs" }))
                 .is_ok()
+        );
+
+        let resolve_tool = oss_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "resolve_dataset")
+            .unwrap();
+        assert!(
+            resolve_tool
+                .validate_arguments(&serde_json::json!({
+                    "query": "metrics",
+                    "telemetryType": "metrics",
+                    "limit": 10
+                }))
+                .is_ok()
+        );
+
+        let context_tool = oss_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "get_log_context")
+            .unwrap();
+        assert!(
+            context_tool
+                .validate_arguments(&serde_json::json!({
+                    "dataset": "logs",
+                    "pTimestamp": "2026-10-22T00:00:00Z"
+                }))
+                .is_err()
+        );
+        assert!(
+            context_tool
+                .validate_arguments(&serde_json::json!({
+                    "dataset": "logs",
+                    "pTimestamp": "2026-10-22T00:00:00Z",
+                    "message": "failed"
+                }))
+                .is_ok()
+        );
+        assert!(
+            context_tool
+                .validate_arguments(&serde_json::json!({
+                    "dataset": "logs",
+                    "pTimestamp": "2026-10-22T00:00:00Z",
+                    "log": "failed",
+                    "message": "failed"
+                }))
+                .is_err()
         );
     }
 
