@@ -53,7 +53,10 @@ pub struct CreateApiKeyRequest {
 /// Require a hyphenated UUID v4, allowing either letter case.
 pub fn validate_api_key(value: &str) -> Result<(), ApiKeyError> {
     let uuid = uuid::Uuid::parse_str(value).map_err(|_| ApiKeyError::InvalidApiKey)?;
-    if value.len() != 36 || uuid.get_version_num() != 4 {
+    if value.len() != 36
+        || uuid.get_version_num() != 4
+        || uuid.get_variant() != uuid::Variant::RFC4122
+    {
         return Err(ApiKeyError::InvalidApiKey);
     }
     Ok(())
