@@ -36,13 +36,19 @@ use datafusion::{
         provider_as_source,
     },
     error::{DataFusionError, Result as DataFusionResult},
-    execution::object_store::ObjectStoreUrl,
+    execution::{TaskContext, object_store::ObjectStoreUrl},
     logical_expr::{
         BinaryExpr, Operator, TableProviderFilterPushDown, TableSource, TableType,
         physical_planning_context::PhysicalPlanningContext, utils::conjunction,
     },
-    physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr, expressions::col},
-    physical_plan::{ExecutionPlan, Statistics, empty::EmptyExec, union::UnionExec},
+    physical_expr::{
+        EquivalenceProperties, LexOrdering, PhysicalSortExpr, create_physical_expr,
+        expressions::col,
+    },
+    physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+        SendableRecordBatchStream, Statistics, empty::EmptyExec, union::UnionExec,
+    },
     prelude::Expr,
     scalar::ScalarValue,
 };
@@ -60,7 +66,7 @@ use crate::{
     catalog::{
         ManifestFile, Snapshot as CatalogSnapshot,
         column::{Column, TypedStatistics},
-        manifest::{File, SortOrder},
+        manifest::File,
         snapshot::{ManifestItem, Snapshot},
     },
     event::DEFAULT_TIMESTAMP_KEY,
@@ -213,8 +219,7 @@ pub fn balanced_file_groups(manifest_files: Vec<File>, target_partitions: usize)
 
     // Longest-processing-time scheduling avoids a large file being assigned near the end and
     // leaving one scan partition as the tail. Keep each group's original file order after the
-    // assignment: manifests are newest-first, and that order is needed when file statistics prove
-    // the files form a globally sorted stream.
+    // assignment to retain the manifests' newest-first scan preference, without claiming row order.
     let mut files = manifest_files.into_iter().enumerate().collect_vec();
     files.sort_by_key(|(original_index, file)| (Reverse(file.file_size), *original_index));
 
@@ -240,60 +245,76 @@ pub fn balanced_file_groups(manifest_files: Vec<File>, target_partitions: usize)
         .collect()
 }
 
-fn file_time_statistics(file: &File, time_column: &str) -> Option<(i64, i64, Option<u64>)> {
-    let column = file
-        .columns
-        .iter()
-        .find(|column| column.name == time_column)?;
-    let stats = column.stats.as_ref()?;
-    let TypedStatistics::Int(stats) = stats else {
-        return None;
-    };
-    Some((stats.min, stats.max, column.null_count))
+/// Discard unverified footer ordering so sorts and TopK cannot trust the scan.
+fn without_output_ordering(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    if plan.output_ordering().is_none() {
+        return plan;
+    }
+    let properties = PlanProperties::new(
+        EquivalenceProperties::new(plan.schema()),
+        plan.output_partitioning().clone(),
+        plan.properties().emission_type,
+        plan.properties().boundedness,
+    );
+    Arc::new(UnorderedExec {
+        input: plan,
+        properties: Arc::new(properties),
+    })
 }
 
-/// DataFusion may eliminate a sort or stop a TopK scan early when this ordering is advertised.
-/// Only do so when every file is timestamp-descending and adjacent file ranges do not overlap.
-/// A single false claim here can produce incorrectly ordered query results.
-fn file_groups_are_time_ordered(file_groups: &[Vec<File>], time_column: &str) -> bool {
-    !file_groups.is_empty()
-        && file_groups.iter().all(|group| {
-            if group.is_empty()
-                || !group.iter().all(|file| {
-                    matches!(
-                        file.sort_order_id.first(),
-                        Some((column, SortOrder::DescNullsLast)) if column == time_column
-                    )
-                })
-            {
-                return false;
-            }
+#[derive(Debug)]
+struct UnorderedExec {
+    input: Arc<dyn ExecutionPlan>,
+    properties: Arc<PlanProperties>,
+}
 
-            // One sorted file needs no range proof. For multiple files, inspect each timestamp
-            // statistic once and prove that concatenating them preserves descending order.
-            if group.len() == 1 {
-                return true;
-            }
-            let mut previous_min = None;
-            for (index, file) in group.iter().enumerate() {
-                let Some((current_min, current_max, null_count)) =
-                    file_time_statistics(file, time_column)
-                else {
-                    return false;
-                };
-                // Nulls sort last within a file, but concatenating another file after them would
-                // put its non-null timestamps after those nulls. Only the final file may contain
-                // null timestamps.
-                if index + 1 < group.len() && null_count != Some(0) {
-                    return false;
-                }
-                if previous_min.is_some_and(|min| min < current_max) {
-                    return false;
-                }
-                previous_min = Some(current_min);
-            }
-            true
-        })
+impl DisplayAs for UnorderedExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "UnorderedExec")
+    }
+}
+
+impl ExecutionPlan for UnorderedExec {
+    fn name(&self) -> &str {
+        "UnorderedExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+        ) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(DataFusionError::Internal(
+                "UnorderedExec requires one child".to_owned(),
+            ));
+        }
+        Ok(without_output_ordering(children.remove(0)))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        self.input.execute(partition, context)
+    }
 }
 
 impl StandardTableProvider {
@@ -317,9 +338,15 @@ impl StandardTableProvider {
         // create file groups from vec file partitions
         let file_groups = partitions.into_iter().map(FileGroup::new).collect_vec();
 
+        // Unit scans must not initialize the global server or parse its CLI.
+        #[cfg(test)]
+        let batch_size: usize = state.config_options().execution.batch_size.into();
+        #[cfg(not(test))]
+        let batch_size = PARSEABLE.options.execution_batch_size;
+
         let mut conf_builder = FileScanConfigBuilder::new(object_store_url, file_source.into())
             .with_statistics(statistics)
-            .with_batch_size(Some(PARSEABLE.options.execution_batch_size))
+            .with_batch_size(Some(batch_size))
             .with_constraints(Constraints::default())
             .with_file_groups(file_groups);
 
@@ -358,7 +385,7 @@ impl StandardTableProvider {
             )
             .await?;
 
-        execution_plans.push(plan);
+        execution_plans.push(without_output_ordering(plan));
 
         Ok(())
     }
@@ -511,7 +538,7 @@ impl StandardTableProvider {
                     builder.build(self.schema.clone(), |x| glob_storage.query_prefixes(x))?;
                 if let Some(table) = table {
                     let plan = table.scan(state, projection, filters, limit).await?;
-                    execution_plans.push(plan);
+                    execution_plans.push(without_output_ordering(plan));
                 }
 
                 Ok(())
@@ -569,14 +596,15 @@ pub fn partitioned_files(
     manifest_files: Vec<File>,
     target_partitions: usize,
     _is_hot_tier: bool,
-    time_column: &str,
+    _time_column: &str,
 ) -> (
     Vec<Vec<PartitionedFile>>,
     datafusion::common::Statistics,
     bool,
 ) {
     let file_groups = balanced_file_groups(manifest_files, target_partitions);
-    let output_ordered_by_time = file_groups_are_time_ordered(&file_groups, time_column);
+    // Writer metadata does not prove intra-file order, even for a single file.
+    let output_ordered_by_time = false;
     let mut partitioned_files = Vec::with_capacity(file_groups.len());
     let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
     let mut count = 0;
@@ -1340,9 +1368,8 @@ mod tests {
     use super::{
         HotTierStreamKey, PartialTimeFilter, StandardTableProvider, balanced_file_groups,
         build_parquet_scan_components, build_parquet_scan_components_with_full_filters,
-        exact_source_filters, extract_timestamp_bound, file_groups_are_time_ordered,
-        guarded_hot_tier_table_source, hot_tier_stream_key, is_overlapping_query,
-        standard_table_provider,
+        exact_source_filters, extract_timestamp_bound, guarded_hot_tier_table_source,
+        hot_tier_stream_key, is_overlapping_query, standard_table_provider,
     };
 
     #[test]
@@ -1685,43 +1712,253 @@ mod tests {
     }
 
     #[test]
-    fn scan_order_is_advertised_only_for_non_overlapping_sorted_files() {
-        let ordered = vec![vec![
-            time_sorted_file("new.parquet", 10, 200, 299),
-            time_sorted_file("old.parquet", 10, 100, 199),
-        ]];
-        assert!(file_groups_are_time_ordered(&ordered, "p_timestamp"));
-
-        let overlapping = vec![vec![
-            time_sorted_file("new.parquet", 10, 150, 299),
-            time_sorted_file("old.parquet", 10, 100, 199),
-        ]];
-        assert!(!file_groups_are_time_ordered(&overlapping, "p_timestamp"));
-
-        let mut wrong_primary_key = time_sorted_file("metric.parquet", 10, 100, 199);
-        wrong_primary_key
-            .sort_order_id
-            .insert(0, ("metric_name".to_owned(), SortOrder::AscNullsLast));
-        assert!(!file_groups_are_time_ordered(
-            &[vec![wrong_primary_key]],
-            "p_timestamp"
-        ));
-        assert!(!file_groups_are_time_ordered(
-            &[vec![file("unsorted.parquet", 10)]],
-            "p_timestamp"
-        ));
+    fn manifest_sort_metadata_does_not_advertise_time_order() {
+        for time_column in ["p_timestamp", "event_time"] {
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                time_column,
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                true,
+            )]));
+            let files = [(200, 299), (100, 199)]
+                .into_iter()
+                .map(|(min, max)| {
+                    let mut file = time_sorted_file("test.parquet", 10, min, max);
+                    file.columns[0].name = time_column.to_owned();
+                    file.sort_order_id[0].0 = time_column.to_owned();
+                    file
+                })
+                .collect();
+            assert!(!super::partitioned_files(&schema, &None, files, 1, false, time_column).2);
+        }
     }
 
-    #[test]
-    fn scan_order_is_not_advertised_when_non_final_file_has_trailing_nulls() {
-        let mut newer = time_sorted_file("new.parquet", 10, 200, 299);
-        newer.columns[0].null_count = Some(1);
-        let older = time_sorted_file("old.parquet", 10, 100, 199);
+    #[tokio::test]
+    async fn writer_parquet_requires_sort_even_with_footer_ordering() {
+        use crate::{
+            cli::Options, metadata::LogStreamMetadata, parseable::Stream, storage::StreamType,
+        };
+        use arrow_array::{Int32Array, RecordBatch, TimestampMillisecondArray};
+        use datafusion::{
+            datasource::{
+                file_format::parquet::ParquetFormat,
+                listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
+            },
+            physical_plan::{ExecutionPlanProperties, collect},
+        };
 
-        assert!(!file_groups_are_time_ordered(
-            &[vec![newer, older]],
-            "p_timestamp"
-        ));
+        #[derive(Debug)]
+        struct WriterParquetProvider {
+            provider: StandardTableProvider,
+            file: File,
+            listing: Option<ListingTable>,
+        }
+
+        #[async_trait::async_trait]
+        impl TableProvider for WriterParquetProvider {
+            fn schema(&self) -> Arc<Schema> {
+                self.provider.schema.clone()
+            }
+            fn table_type(&self) -> TableType {
+                TableType::Base
+            }
+            async fn scan(
+                &self,
+                state: &dyn datafusion::catalog::Session,
+                projection: Option<&Vec<usize>>,
+                filters: &[Expr],
+                limit: Option<usize>,
+            ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+                if let Some(listing) = &self.listing {
+                    return Ok(super::without_output_ordering(
+                        listing.scan(state, projection, filters, limit).await?,
+                    ));
+                }
+                let (files, stats, ordered) = self.provider.partitioned_files(
+                    vec![self.file.clone()],
+                    1,
+                    false,
+                    "p_timestamp",
+                );
+                assert!(!ordered);
+                let mut plans = Vec::new();
+                self.provider
+                    .create_parquet_physical_plan(
+                        &mut plans,
+                        ObjectStoreUrl::local_filesystem(),
+                        files,
+                        stats,
+                        projection,
+                        filters,
+                        limit,
+                        state,
+                        None,
+                        ordered,
+                    )
+                    .await?;
+                assert!(plans[0].output_ordering().is_none());
+                Ok(plans.remove(0))
+            }
+        }
+
+        for (values, nullable) in [
+            ([1000, 1002, 1001], false),
+            ([1002, 1001, 1000], false),
+            ([1000, 1002, 1001], true),
+        ] {
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let staging = Stream::new(
+                Arc::new(Options {
+                    local_staging_path: temp_dir.path().to_path_buf(),
+                    row_group_size: 1048576,
+                    ..Default::default()
+                }),
+                "sort_test",
+                LogStreamMetadata::default(),
+                None,
+                &None,
+            );
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(
+                    "p_timestamp",
+                    DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                    nullable,
+                ),
+                Field::new("id", DataType::Int32, false),
+            ]));
+            let time = (Utc::now() - Duration::minutes(2)).naive_utc();
+            for (index, value) in values.into_iter().enumerate() {
+                let batch = RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(TimestampMillisecondArray::from(vec![
+                            Some(value),
+                            if nullable { None } else { Some(value) },
+                            Some(value),
+                        ])),
+                        Arc::new(Int32Array::from(vec![
+                            index as i32 * 3,
+                            index as i32 * 3 + 1,
+                            index as i32 * 3 + 2,
+                        ])),
+                    ],
+                )
+                .unwrap();
+                staging
+                    .push(
+                        "sort",
+                        &batch,
+                        time,
+                        &std::collections::HashMap::new(),
+                        StreamType::UserDefined,
+                    )
+                    .unwrap();
+            }
+            staging.flush(true).unwrap();
+            assert_eq!(staging.arrow_files().len(), 1);
+            staging
+                .convert_disk_files_to_parquet(None, None, false, true, &None)
+                .unwrap();
+            let paths = staging.parquet_files();
+            assert_eq!(paths.len(), 1);
+            let file = crate::catalog::manifest::create_from_parquet_file(
+                paths[0].display().to_string(),
+                &paths[0],
+            )
+            .unwrap();
+            assert_eq!(
+                file.sort_order_id,
+                vec![("p_timestamp".to_owned(), SortOrder::DescNullsLast)]
+            );
+            let mut config = SessionConfig::new();
+            config.options_mut().optimizer.prefer_existing_sort = true;
+            let context = SessionContext::new_with_config(config);
+            context
+                .register_table(
+                    "logs",
+                    Arc::new(WriterParquetProvider {
+                        provider: StandardTableProvider {
+                            schema: schema.clone(),
+                            stream: "sort_test".to_owned(),
+                            tenant_id: None,
+                            hot_tier_guarded: false,
+                        },
+                        file: file.clone(),
+                        listing: None,
+                    }),
+                )
+                .unwrap();
+            let listing = ListingTable::try_new(
+                ListingTableConfig::new(
+                    ListingTableUrl::parse(paths[0].display().to_string()).unwrap(),
+                )
+                .with_listing_options(
+                    ListingOptions::new(Arc::new(
+                        ParquetFormat::default().with_enable_pruning(true),
+                    ))
+                    .with_file_extension(".parquet"),
+                )
+                .with_schema(schema.clone()),
+            )
+            .unwrap();
+            let raw = listing
+                .scan(&context.state(), None, &[], None)
+                .await
+                .unwrap();
+            assert!(raw.output_ordering().is_some());
+            let stripped = super::without_output_ordering(raw);
+            assert!(!stripped.supports_limit_pushdown());
+            assert!(stripped.output_ordering().is_none());
+            context
+                .register_table(
+                    "legacy",
+                    Arc::new(WriterParquetProvider {
+                        provider: StandardTableProvider {
+                            schema,
+                            stream: "sort_test".to_owned(),
+                            tenant_id: None,
+                            hot_tier_guarded: false,
+                        },
+                        file,
+                        listing: Some(listing),
+                    }),
+                )
+                .unwrap();
+            for table in ["logs", "legacy"] {
+                for limit in ["", " LIMIT 2"] {
+                    let plan = context.sql(&format!("SELECT p_timestamp FROM {table} ORDER BY p_timestamp DESC NULLS LAST{limit}")).await.unwrap().create_physical_plan().await.unwrap();
+                    let display = displayable(plan.as_ref()).indent(true).to_string();
+                    assert!(display.contains("SortExec"), "{display}");
+                    if table == "logs" {
+                        assert!(
+                            !display.contains("output_ordering=[p_timestamp"),
+                            "{display}"
+                        );
+                    }
+                    let batches = collect(plan, context.task_ctx()).await.unwrap();
+                    let actual: Vec<_> = batches
+                        .iter()
+                        .flat_map(|batch| {
+                            batch
+                                .column(0)
+                                .as_any()
+                                .downcast_ref::<TimestampMillisecondArray>()
+                                .unwrap()
+                                .iter()
+                        })
+                        .collect();
+                    let mut expected = vec![Some(1002); if nullable { 2 } else { 3 }];
+                    expected.extend(vec![Some(1001); if nullable { 2 } else { 3 }]);
+                    expected.extend(vec![Some(1000); if nullable { 2 } else { 3 }]);
+                    if nullable {
+                        expected.extend([None; 3]);
+                    }
+                    if !limit.is_empty() {
+                        expected.truncate(2);
+                    }
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
     }
 
     fn datetime_min(year: i32, month: u32, day: u32) -> DateTime<Utc> {
