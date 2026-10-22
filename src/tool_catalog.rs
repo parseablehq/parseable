@@ -138,6 +138,9 @@ fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> Result<()
     if let Some(result) = validate_any_of(schema, value, path) {
         result?;
     }
+    if let Some(result) = validate_one_of(schema, value, path) {
+        result?;
+    }
 
     validate_enum(schema, value, path)?;
     validate_type(schema, value, path)?;
@@ -145,6 +148,21 @@ fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> Result<()
     validate_array(schema, value, path)?;
     validate_string(schema, value, path)?;
     validate_number(schema, value, path)
+}
+
+fn validate_one_of(schema: &Value, value: &Value, path: &str) -> Option<Result<(), String>> {
+    schema
+        .get("oneOf")
+        .and_then(Value::as_array)
+        .map(|variants| {
+            let matches = variants
+                .iter()
+                .filter(|variant| validate_schema_value(variant, value, path).is_ok())
+                .count();
+            (matches == 1)
+                .then_some(())
+                .ok_or_else(|| format!("{path} must match exactly one allowed schema"))
+        })
 }
 
 fn validate_any_of(schema: &Value, value: &Value, path: &str) -> Option<Result<(), String>> {
@@ -409,7 +427,7 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
                     }),
                     &["dataset", "pTimestamp"],
                 );
-                schema["anyOf"] = json!([
+                schema["oneOf"] = json!([
                     { "required": ["log"] },
                     { "required": ["body"] },
                     { "required": ["message"] }
@@ -1088,6 +1106,16 @@ mod tests {
                     "message": "failed"
                 }))
                 .is_ok()
+        );
+        assert!(
+            context_tool
+                .validate_arguments(&serde_json::json!({
+                    "dataset": "logs",
+                    "pTimestamp": "2026-10-22T00:00:00Z",
+                    "log": "failed",
+                    "message": "failed"
+                }))
+                .is_err()
         );
     }
 

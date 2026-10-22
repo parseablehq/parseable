@@ -328,6 +328,15 @@ fn authorize(
     }
 }
 
+fn dataset_matches_telemetry_type(dataset: &Value, expected: Option<&str>) -> bool {
+    expected.is_none_or(|expected| {
+        dataset
+            .get("telemetryType")
+            .and_then(Value::as_str)
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+    })
+}
+
 pub fn resolve_dataset_candidates(payload: Value, arguments: &Value) -> Value {
     let query = arguments
         .get("query")
@@ -339,6 +348,10 @@ pub fn resolve_dataset_candidates(payload: Value, arguments: &Value) -> Value {
     let Some(datasets) = payload.as_array() else {
         return payload;
     };
+    let telemetry_type = arguments
+        .get("telemetryType")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
 
     let requested_dataset = arguments
         .get("selectedDataset")
@@ -353,7 +366,8 @@ pub fn resolve_dataset_candidates(payload: Value, arguments: &Value) -> Value {
                 .is_some_and(|name| name.eq_ignore_ascii_case(requested_dataset))
         });
         return match selected {
-            Some(dataset) => json!({
+            Some(dataset) if dataset_matches_telemetry_type(dataset, telemetry_type.as_deref()) => {
+                json!({
                 "status": "resolved",
                 "datasets": [dataset],
                 "selectedDatasets": [dataset.get("name").and_then(Value::as_str).unwrap_or(requested_dataset)],
@@ -363,6 +377,15 @@ pub fn resolve_dataset_candidates(payload: Value, arguments: &Value) -> Value {
                 } else {
                     "trusted page-context dataset validated against caller-visible datasets"
                 }
+                })
+            }
+            Some(_) => json!({
+                "status": "not_found",
+                "datasets": [],
+                "message": format!(
+                    "Dataset `{requested_dataset}` does not match requested telemetry type `{}`",
+                    telemetry_type.as_deref().unwrap_or_default()
+                ),
             }),
             None => json!({
                 "status": "error",
@@ -373,6 +396,16 @@ pub fn resolve_dataset_candidates(payload: Value, arguments: &Value) -> Value {
 
     if datasets.len() == 1 {
         let dataset = &datasets[0];
+        if !dataset_matches_telemetry_type(dataset, telemetry_type.as_deref()) {
+            return json!({
+                "status": "not_found",
+                "datasets": [],
+                "message": format!(
+                    "The only caller-visible dataset does not match requested telemetry type `{}`",
+                    telemetry_type.as_deref().unwrap_or_default()
+                ),
+            });
+        }
         return json!({
             "status": "resolved",
             "datasets": [dataset],
@@ -386,20 +419,11 @@ pub fn resolve_dataset_candidates(payload: Value, arguments: &Value) -> Value {
         .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
         .filter(|term| term.len() > 2)
         .collect::<Vec<_>>();
-    let telemetry_type = arguments
-        .get("telemetryType")
-        .and_then(Value::as_str)
-        .map(str::to_ascii_lowercase);
     let mut scored = datasets
         .iter()
         .filter_map(|dataset| {
             let original_name = dataset.get("name")?.as_str()?;
-            if let Some(expected) = telemetry_type.as_deref()
-                && !dataset
-                    .get("telemetryType")
-                    .and_then(Value::as_str)
-                    .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
-            {
+            if !dataset_matches_telemetry_type(dataset, telemetry_type.as_deref()) {
                 return None;
             }
             let name = original_name.to_ascii_lowercase();
@@ -1806,6 +1830,22 @@ mod tests {
             &json!({ "query": "data", "telemetryType": "metrics" }),
         );
         assert_eq!(typed["selectedDatasets"], json!(["system-data"]));
+
+        let explicit_mismatch = resolve_dataset_candidates(
+            json!([{ "name": "otel-data", "telemetryType": "logs" }]),
+            &json!({
+                "query": "otel-data",
+                "selectedDataset": "otel-data",
+                "telemetryType": "metrics"
+            }),
+        );
+        assert_eq!(explicit_mismatch["status"], "not_found");
+
+        let sole_mismatch = resolve_dataset_candidates(
+            json!([{ "name": "otel-data", "telemetryType": "logs" }]),
+            &json!({ "query": "data", "telemetryType": "traces" }),
+        );
+        assert_eq!(sole_mismatch["status"], "not_found");
     }
 
     #[actix_web::test]
