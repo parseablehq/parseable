@@ -28,6 +28,7 @@ use datafusion::{
         stats::Precision,
         tree_node::{TreeNode, TreeNodeRecursion},
     },
+    config::ConfigOptions,
     datasource::{
         DefaultTableSource, MemTable, TableProvider,
         file_format::{FileFormat, parquet::ParquetFormat},
@@ -42,12 +43,16 @@ use datafusion::{
         physical_planning_context::PhysicalPlanningContext, utils::conjunction,
     },
     physical_expr::{
-        EquivalenceProperties, LexOrdering, PhysicalSortExpr, create_physical_expr,
+        EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr, create_physical_expr,
         expressions::col,
     },
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-        SendableRecordBatchStream, Statistics, empty::EmptyExec, union::UnionExec,
+        SendableRecordBatchStream, Statistics,
+        empty::EmptyExec,
+        filter_pushdown::{FilterDescription, FilterPushdownPhase},
+        statistics::{ChildStats, StatisticsArgs},
+        union::UnionExec,
     },
     prelude::Expr,
     scalar::ScalarValue,
@@ -314,6 +319,41 @@ impl ExecutionPlan for UnorderedExec {
         context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         self.input.execute(partition, context)
+    }
+
+    // Only the advertised ordering changes, so statistics, repartitioning
+    // and filter pushdown pass through to the wrapped scan. Input order is
+    // not reported as kept, or sort pushdown would trust the child ordering.
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
+    }
+
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> DataFusionResult<Arc<Statistics>> {
+        Ok(Arc::clone(&input_stats[0]))
+    }
+
+    fn repartitioned(
+        &self,
+        target_partitions: usize,
+        config: &ConfigOptions,
+    ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
+        Ok(self
+            .input
+            .repartitioned(target_partitions, config)?
+            .map(without_output_ordering))
+    }
+
+    fn gather_filters_for_pushdown(
+        &self,
+        _phase: FilterPushdownPhase,
+        parent_filters: Vec<Arc<dyn PhysicalExpr>>,
+        _config: &ConfigOptions,
+    ) -> DataFusionResult<FilterDescription> {
+        FilterDescription::from_children(parent_filters, &self.children())
     }
 }
 
@@ -1354,7 +1394,10 @@ mod tests {
         execution::context::{SessionConfig, SessionContext},
         execution::object_store::ObjectStoreUrl,
         logical_expr::{BinaryExpr, Operator, TableProviderFilterPushDown, TableType},
-        physical_plan::{ExecutionPlan, displayable},
+        physical_plan::{
+            ExecutionPlan, displayable,
+            statistics::{StatisticsArgs, StatisticsContext},
+        },
         prelude::Expr,
         scalar::ScalarValue,
     };
@@ -1905,9 +1948,18 @@ mod tests {
                 .await
                 .unwrap();
             assert!(raw.output_ordering().is_some());
+            let stats = StatisticsContext::new();
+            let raw_stats = stats.compute(raw.as_ref(), &StatisticsArgs::new()).unwrap();
             let stripped = super::without_output_ordering(raw);
             assert!(!stripped.supports_limit_pushdown());
             assert!(stripped.output_ordering().is_none());
+            stats.reset_cache();
+            assert_eq!(
+                stats
+                    .compute(stripped.as_ref(), &StatisticsArgs::new())
+                    .unwrap(),
+                raw_stats
+            );
             context
                 .register_table(
                     "legacy",
