@@ -18,7 +18,9 @@ use crate::{
     handlers::http::{
         alerts, cluster, health_check, logstream,
         modal::query::querier_logstream,
-        query, rbac, role, targets,
+        query,
+        query_context::{self, LogContextRequest},
+        rbac, role, targets,
         users::{dashboards, filters},
     },
     parseable::PARSEABLE,
@@ -122,7 +124,7 @@ pub fn validate_tool_sql(query: &str) -> Result<(), String> {
 pub fn bounded_tool_sql(query: &str) -> Result<String, String> {
     validate_tool_sql(query)?;
     Ok(format!(
-        "SELECT * FROM ({}) AS \"__parseable_tool_result\" LIMIT {MAX_TOOL_ROWS}",
+        "SELECT * FROM ({}\n) AS \"__parseable_tool_result\" LIMIT {MAX_TOOL_ROWS}",
         query.trim().trim_end_matches(';')
     ))
 }
@@ -173,6 +175,34 @@ fn visible_datasets(tenant_id: &Option<String>, session_key: &SessionKey) -> Vec
         .collect::<Vec<_>>();
     datasets.sort_unstable();
     datasets
+}
+
+async fn visible_dataset_catalog(
+    tenant_id: &Option<String>,
+    session_key: &SessionKey,
+) -> Vec<Value> {
+    let mut catalog = Vec::new();
+    for name in visible_datasets(tenant_id, session_key) {
+        let telemetry_type = if PARSEABLE.check_or_load_stream(&name, tenant_id).await {
+            PARSEABLE
+                .get_stream(&name, tenant_id)
+                .ok()
+                .and_then(|stream| {
+                    stream
+                        .metadata
+                        .read()
+                        .ok()
+                        .map(|metadata| metadata.telemetry_type.to_string())
+                })
+        } else {
+            None
+        };
+        catalog.push(json!({
+            "name": name,
+            "telemetryType": telemetry_type,
+        }));
+    }
+    catalog
 }
 
 fn resolve_time_range(arguments: &Value) -> Result<Value, String> {
@@ -364,6 +394,14 @@ pub fn resolve_dataset_candidates(payload: Value, arguments: &Value) -> Value {
         .iter()
         .filter_map(|dataset| {
             let original_name = dataset.get("name")?.as_str()?;
+            if let Some(expected) = telemetry_type.as_deref()
+                && !dataset
+                    .get("telemetryType")
+                    .and_then(Value::as_str)
+                    .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+            {
+                return None;
+            }
             let name = original_name.to_ascii_lowercase();
             let mut score = 0_u64;
             let mut reasons = Vec::new();
@@ -382,12 +420,7 @@ pub fn resolve_dataset_candidates(payload: Value, arguments: &Value) -> Value {
                 score += term_matches * 25;
                 reasons.push("dataset-name token match");
             }
-            if let Some(telemetry_type) = telemetry_type.as_deref()
-                && serde_json::to_string(dataset)
-                    .unwrap_or_default()
-                    .to_ascii_lowercase()
-                    .contains(telemetry_type)
-            {
+            if telemetry_type.is_some() {
                 score += 15;
                 reasons.push("telemetry type match");
             }
@@ -441,7 +474,7 @@ struct OssToolContext<'a> {
     query_headers: &'a HeaderMap,
 }
 
-fn execute_dataset_resolution_tool(
+async fn execute_dataset_resolution_tool(
     name: &str,
     arguments: &Value,
     context: OssToolContext<'_>,
@@ -452,11 +485,11 @@ fn execute_dataset_resolution_tool(
             .map(|name| json!({ "name": name }))
             .collect()),
         "resolve_dataset" => {
-            let datasets = visible_datasets(context.tenant_id, context.session_key)
-                .into_iter()
-                .map(|name| json!({ "name": name }))
-                .collect();
-            Ok(resolve_dataset_candidates(datasets, arguments))
+            let datasets = visible_dataset_catalog(context.tenant_id, context.session_key).await;
+            Ok(resolve_dataset_candidates(
+                Value::Array(datasets),
+                arguments,
+            ))
         }
         "resolve_time_range" => resolve_time_range(arguments),
         _ => unreachable!("dataset resolution dispatcher only receives known tools"),
@@ -695,8 +728,13 @@ pub fn sample_events_query(
         .filter(|candidate| fields.iter().any(|field| field == **candidate))
         .map(|field| (*field).to_owned())
         .collect::<Vec<_>>();
-    if selected.is_empty() {
-        selected.extend(fields.iter().take(MAX_TOOL_COLUMNS).cloned());
+    for field in fields {
+        if selected.len() >= MAX_TOOL_COLUMNS {
+            break;
+        }
+        if !selected.contains(field) {
+            selected.push(field.clone());
+        }
     }
     if selected.is_empty() {
         return Err("dataset schema has no fields".to_owned());
@@ -751,25 +789,6 @@ async fn sample_events(arguments: &Value, context: OssToolContext<'_>) -> Result
     .await
     .map_err(|error| error.to_string())?;
     enforce_tool_tabular_limits(response_value(response).await?)
-}
-
-fn normalized_log_context_bounds(
-    arguments: &Value,
-    anchor: DateTime<Utc>,
-) -> Result<(String, String), String> {
-    let start_time = arguments
-        .get("contextStartTime")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| (anchor - Duration::minutes(5)).to_rfc3339());
-    let end_time = arguments
-        .get("contextEndTime")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| (anchor + Duration::minutes(5)).to_rfc3339());
-    let time_range = TimeRange::parse_human_time(&start_time, &end_time)
-        .map_err(|error| format!("invalid log context time range: {error}"))?;
-    Ok((time_range.start.to_rfc3339(), time_range.end.to_rfc3339()))
 }
 
 pub fn log_context_request(arguments: &Value) -> Result<Value, String> {
@@ -843,8 +862,13 @@ pub fn project_log_context_result(mut value: Value) -> Value {
                 .take(MAX_TOOL_COLUMNS)
                 .map(|field| (*field).to_owned())
                 .collect::<Vec<_>>();
-            if selected.is_empty() {
-                selected.extend(object.keys().take(MAX_TOOL_COLUMNS).cloned());
+            for field in object.keys() {
+                if selected.len() >= MAX_TOOL_COLUMNS {
+                    break;
+                }
+                if !selected.contains(field) {
+                    selected.push(field.clone());
+                }
             }
             object.retain(|field, _| selected.contains(field));
         }
@@ -853,51 +877,18 @@ pub fn project_log_context_result(mut value: Value) -> Value {
 }
 
 async fn get_log_context(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
-    log_context_request(arguments)?;
+    let request = serde_json::from_value::<LogContextRequest>(log_context_request(arguments)?)
+        .map_err(|error| format!("invalid log context request: {error}"))?;
     let dataset = required_string(arguments, "dataset")?;
     authorize(context.session_key, Action::Query, Some(dataset), None)?;
-    let anchor = DateTime::parse_from_rfc3339(required_string(arguments, "pTimestamp")?)
-        .map_err(|error| error.to_string())?
-        .with_timezone(&Utc);
-    let (start_time, end_time) = normalized_log_context_bounds(arguments, anchor)?;
-    let limit = bounded_integer(arguments, "pageSize", 100, 1, 500);
-    let schema = logstream::get_schema_internal(dataset, context.tenant_id)
+    query::create_streams_for_distributed(vec![dataset.to_owned()], context.tenant_id)
         .await
         .map_err(|error| error.to_string())?;
-    let fields = schema
-        .fields()
-        .iter()
-        .take(10)
-        .map(|field| quote_identifier(field.name()))
-        .collect::<Vec<_>>();
-    if fields.is_empty() {
-        return Err("dataset schema has no fields".to_owned());
-    }
-    let response = query::query_internal(
-        query::Query {
-            query: format!(
-                "SELECT {} FROM {} WHERE {} >= {} AND {} <= {} ORDER BY {} LIMIT {limit}",
-                fields.join(", "),
-                quote_identifier(dataset),
-                quote_identifier("p_timestamp"),
-                quote_literal(&start_time),
-                quote_identifier("p_timestamp"),
-                quote_literal(&end_time),
-                quote_identifier("p_timestamp"),
-            ),
-            start_time,
-            end_time,
-            send_null: true,
-            fields: false,
-            streaming: false,
-            filter_tags: None,
-        },
-        context.session_key,
-        context.tenant_id,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    Ok(project_log_context_result(response_value(response).await?))
+    let response = query_context::query_context_for_authorized_dataset(request, context.tenant_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let response = serde_json::to_value(response).map_err(|error| error.to_string())?;
+    Ok(project_log_context_result(response))
 }
 
 fn first_present_field(fields: &[String], candidates: &[&str]) -> Option<String> {
@@ -1286,11 +1277,10 @@ fn trace_activity_query(
         .map(|position| position.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let where_clause = if clauses.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", clauses.join(" AND "))
-    };
+    let where_clause = clauses
+        .first()
+        .map(|_| format!(" WHERE {}", clauses.join(" AND ")))
+        .unwrap_or_default();
     format!(
         "SELECT {} FROM {}{} GROUP BY {} ORDER BY 1 LIMIT 500",
         select.join(", "),
@@ -1300,13 +1290,10 @@ fn trace_activity_query(
     )
 }
 
-async fn execute_trace_activity_tool(
-    arguments: &Value,
+async fn trace_activity_fields(
+    dataset: &str,
     context: OssToolContext<'_>,
-) -> Result<Value, String> {
-    let dataset = required_string(arguments, "dataset")?;
-    let start_time = required_string(arguments, "startTime")?;
-    let end_time = required_string(arguments, "endTime")?;
+) -> Result<(Vec<String>, String), String> {
     authorize(context.session_key, Action::Query, Some(dataset), None)?;
     if !PARSEABLE
         .check_or_load_stream(dataset, context.tenant_id)
@@ -1351,6 +1338,10 @@ async fn execute_trace_activity_tool(
             "trace dataset `{dataset}` is missing time field `{time_field}`"
         ));
     }
+    Ok((fields, time_field))
+}
+
+fn trace_activity_group_by(arguments: &Value, fields: &[String]) -> Result<Vec<String>, String> {
     let group_by = arguments
         .get("groupBy")
         .and_then(Value::as_array)
@@ -1366,33 +1357,50 @@ async fn execute_trace_activity_tool(
     if group_by.len() > 5 {
         return Err("groupBy may contain at most 5 fields".to_owned());
     }
-    for field in &group_by {
-        if !fields.contains(field) {
-            return Err(format!("groupBy field `{field}` does not exist"));
-        }
+    if let Some(field) = group_by.iter().find(|field| !fields.contains(field)) {
+        return Err(format!("groupBy field `{field}` does not exist"));
     }
-    let mut clauses = Vec::new();
-    for (field, value) in arguments
+    Ok(group_by)
+}
+
+fn trace_activity_filter_clauses(
+    arguments: &Value,
+    fields: &[String],
+) -> Result<Vec<String>, String> {
+    arguments
         .get("filters")
         .and_then(Value::as_object)
         .into_iter()
         .flatten()
-    {
-        if !fields.iter().any(|candidate| candidate == field) {
-            return Err(format!("filter field `{field}` does not exist"));
-        }
-        match value {
-            Value::String(value) => clauses.push(format!(
-                "{} = {}",
-                quote_identifier(field),
-                quote_literal(value)
-            )),
-            Value::Number(value) => clauses.push(format!("{} = {value}", quote_identifier(field))),
-            Value::Bool(value) => clauses.push(format!("{} = {value}", quote_identifier(field))),
-            Value::Null => clauses.push(format!("{} IS NULL", quote_identifier(field))),
-            _ => return Err("filter values must be JSON scalars".to_owned()),
-        }
-    }
+        .map(|(field, value)| {
+            if !fields.iter().any(|candidate| candidate == field) {
+                return Err(format!("filter field `{field}` does not exist"));
+            }
+            match value {
+                Value::String(value) => Ok(format!(
+                    "{} = {}",
+                    quote_identifier(field),
+                    quote_literal(value)
+                )),
+                Value::Number(value) => Ok(format!("{} = {value}", quote_identifier(field))),
+                Value::Bool(value) => Ok(format!("{} = {value}", quote_identifier(field))),
+                Value::Null => Ok(format!("{} IS NULL", quote_identifier(field))),
+                _ => Err("filter values must be JSON scalars".to_owned()),
+            }
+        })
+        .collect()
+}
+
+async fn execute_trace_activity_tool(
+    arguments: &Value,
+    context: OssToolContext<'_>,
+) -> Result<Value, String> {
+    let dataset = required_string(arguments, "dataset")?;
+    let start_time = required_string(arguments, "startTime")?;
+    let end_time = required_string(arguments, "endTime")?;
+    let (fields, time_field) = trace_activity_fields(dataset, context).await?;
+    let group_by = trace_activity_group_by(arguments, &fields)?;
+    let clauses = trace_activity_filter_clauses(arguments, &fields)?;
     let bucket_count = bounded_integer(arguments, "bucketCount", 60, 1, 100);
     let interval = time_bucket_interval(start_time, end_time, bucket_count);
     let query = trace_activity_query(dataset, &time_field, &interval, &group_by, &clauses);
@@ -1637,7 +1645,7 @@ async fn execute_oss_tool_inner(
     };
     match name {
         "list_datasets" | "resolve_dataset" | "resolve_time_range" => {
-            execute_dataset_resolution_tool(name, arguments, context)
+            execute_dataset_resolution_tool(name, arguments, context).await
         }
         "discover_datasets" => discover_datasets(arguments, context).await,
         "get_dataset_schema" | "get_dataset_info" | "get_dataset_stats" => {
@@ -1754,13 +1762,13 @@ pub async fn call_tool_registry(
 #[cfg(test)]
 mod tests {
     use actix_web::{App, http::StatusCode, test, web};
-    use chrono::{DateTime, Duration, Utc};
+    use chrono::{DateTime, Utc};
     use serde_json::{Value, json};
 
     use super::{
         bounded_tool_sql, call_tool_registry, list_log_errors_query, log_context_request,
-        normalized_log_context_bounds, project_log_context_result, resolve_dataset_candidates,
-        resolve_time_range_at, sample_events_query, trace_activity_query,
+        project_log_context_result, resolve_dataset_candidates, resolve_time_range_at,
+        sample_events_query, trace_activity_query,
     };
 
     #[actix_web::test]
@@ -1768,6 +1776,8 @@ mod tests {
         assert!(bounded_tool_sql("SELECT a, b FROM logs").is_ok());
         assert!(bounded_tool_sql("SELECT * FROM logs").is_err());
         assert!(bounded_tool_sql("SELECT a,b,c,d,e,f,g,h,i,j,k FROM logs").is_err());
+        let bounded = bounded_tool_sql("SELECT a FROM logs -- recent events").unwrap();
+        assert!(bounded.contains("-- recent events\n) AS"));
     }
 
     #[actix_web::test]
@@ -1787,6 +1797,15 @@ mod tests {
         );
         assert_eq!(ambiguous["status"], "ambiguous");
         assert_eq!(ambiguous["candidates"].as_array().unwrap().len(), 2);
+
+        let typed = resolve_dataset_candidates(
+            json!([
+                { "name": "otel-data", "telemetryType": "logs" },
+                { "name": "system-data", "telemetryType": "metrics" }
+            ]),
+            &json!({ "query": "data", "telemetryType": "metrics" }),
+        );
+        assert_eq!(typed["selectedDatasets"], json!(["system-data"]));
     }
 
     #[actix_web::test]
@@ -1816,7 +1835,7 @@ mod tests {
         }]));
         assert!(projected[0].get("p_timestamp").is_some());
         assert!(projected[0].get("service.name").is_some());
-        assert!(projected[0].get("unrelated").is_none());
+        assert!(projected[0].get("unrelated").is_some());
     }
 
     #[actix_web::test]
@@ -1844,7 +1863,7 @@ mod tests {
                 .query
                 .contains("\"p_timestamp\", \"service.name\", \"body\"")
         );
-        assert!(!query.query.contains("\"unused\""));
+        assert!(query.query.contains("\"unused\""));
         assert!(query.query.ends_with("LIMIT 5"));
     }
 
@@ -1893,22 +1912,6 @@ mod tests {
         assert!(query.contains("CAST(\"severity_number\" AS BIGINT) >= 17"));
         assert!(query.contains("'ERROR', 'FATAL', 'CRITICAL'"));
         assert!(query.contains("LIMIT 5"));
-    }
-
-    #[actix_web::test]
-    async fn log_context_bounds_normalize_relative_times() {
-        let (start, end) = normalized_log_context_bounds(
-            &json!({
-                "contextStartTime": "now-15m",
-                "contextEndTime": "now",
-            }),
-            Utc::now(),
-        )
-        .expect("relative bounds must be accepted");
-        let start = start.parse::<DateTime<Utc>>().expect("valid start time");
-        let end = end.parse::<DateTime<Utc>>().expect("valid end time");
-
-        assert_eq!(end - start, Duration::minutes(15));
     }
 
     #[actix_web::test]

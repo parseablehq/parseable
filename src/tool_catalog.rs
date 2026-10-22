@@ -136,7 +136,7 @@ pub fn validate_tool_arguments(schema: &Value, arguments: &Value) -> Result<(), 
 
 fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
     if let Some(result) = validate_any_of(schema, value, path) {
-        return result;
+        result?;
     }
 
     validate_enum(schema, value, path)?;
@@ -337,7 +337,9 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
                 json!({
                     "query": string_property("User request or dataset search text."),
                     "selectedDataset": { "type": "string" },
-                    "contextDataset": { "type": "string" }
+                    "contextDataset": { "type": "string" },
+                    "telemetryType": { "type": "string", "enum": ["logs", "metrics", "traces"] },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 }
                 }),
                 &["query"],
             ),
@@ -391,21 +393,29 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
             "get_log_context",
             "Get surrounding log context",
             "Fetch records around an exact anchor log row.",
-            object_schema(
-                json!({
-                    "dataset": string_property("Dataset containing the anchor row."),
-                    "pTimestamp": string_property("Exact p_timestamp from the anchor row."),
-                    "log": { "type": "string" },
-                    "body": { "type": "string" },
-                    "message": { "type": "string" },
-                    "contextWindow": { "type": "string" },
-                    "contextStartTime": { "type": "string" },
-                    "contextEndTime": { "type": "string" },
-                    "conditions": { "type": "object", "additionalProperties": true },
-                    "pageSize": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
-                }),
-                &["dataset", "pTimestamp"],
-            ),
+            {
+                let mut schema = object_schema(
+                    json!({
+                        "dataset": string_property("Dataset containing the anchor row."),
+                        "pTimestamp": string_property("Exact p_timestamp from the anchor row."),
+                        "log": string_property("Exact log value from the anchor row. Provide exactly one of log, body, or message."),
+                        "body": string_property("Exact body value from the anchor row. Provide exactly one of log, body, or message."),
+                        "message": string_property("Exact message value from the anchor row. Provide exactly one of log, body, or message."),
+                        "contextWindow": { "type": "string" },
+                        "contextStartTime": { "type": "string" },
+                        "contextEndTime": { "type": "string" },
+                        "conditions": { "type": "object", "additionalProperties": true },
+                        "pageSize": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+                    }),
+                    &["dataset", "pTimestamp"],
+                );
+                schema["anyOf"] = json!([
+                    { "required": ["log"] },
+                    { "required": ["body"] },
+                    { "required": ["message"] }
+                ]);
+                schema
+            },
         ),
         ToolSpec::new(
             "list_log_errors",
@@ -1041,6 +1051,42 @@ mod tests {
         assert!(
             schema_tool
                 .validate_arguments(&serde_json::json!({ "dataset": "logs" }))
+                .is_ok()
+        );
+
+        let resolve_tool = oss_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "resolve_dataset")
+            .unwrap();
+        assert!(
+            resolve_tool
+                .validate_arguments(&serde_json::json!({
+                    "query": "metrics",
+                    "telemetryType": "metrics",
+                    "limit": 10
+                }))
+                .is_ok()
+        );
+
+        let context_tool = oss_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "get_log_context")
+            .unwrap();
+        assert!(
+            context_tool
+                .validate_arguments(&serde_json::json!({
+                    "dataset": "logs",
+                    "pTimestamp": "2026-10-22T00:00:00Z"
+                }))
+                .is_err()
+        );
+        assert!(
+            context_tool
+                .validate_arguments(&serde_json::json!({
+                    "dataset": "logs",
+                    "pTimestamp": "2026-10-22T00:00:00Z",
+                    "message": "failed"
+                }))
                 .is_ok()
         );
     }
