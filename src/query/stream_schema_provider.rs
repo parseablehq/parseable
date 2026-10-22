@@ -966,6 +966,12 @@ impl PartialTimeFilter {
         let Expr::BinaryExpr(binexpr) = expr else {
             return None;
         };
+
+        let is_p_timestamp = expr
+            .column_refs()
+            .iter()
+            .map(|c| &c.name)
+            .contains(&DEFAULT_TIMESTAMP_KEY.to_string());
         let (op, time) = extract_timestamp_bound(binexpr, time_partition)?;
         let value = match op {
             Operator::Gt => PartialTimeFilter::Low(Bound::Excluded(time)),
@@ -976,7 +982,7 @@ impl PartialTimeFilter {
             Operator::IsNotDistinctFrom => PartialTimeFilter::Eq(time),
             _ => return None,
         };
-        Some(value)
+        if is_p_timestamp { Some(value) } else { None }
     }
 
     pub fn binary_expr(&self, left: Expr) -> Expr {
