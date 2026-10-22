@@ -105,6 +105,7 @@ impl ToolSpec {
             | "discover_datasets"
             | "get_traces"
             | "get_trace"
+            | "get_trace_activity"
             | "list_log_errors"
             | "list_trace_errors" => ToolEffect::ExpensiveRead,
             "create_alert"
@@ -380,6 +381,8 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
                     "dataset": string_property("Dataset name."),
                     "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 },
                     "minutes": { "type": "integer", "minimum": 1, "maximum": 1440, "default": 60 },
+                    "startTime": string_property("Optional explicit RFC3339 range start; provide with endTime."),
+                    "endTime": string_property("Optional explicit RFC3339 range end; provide with startTime."),
                 }),
                 &["dataset"],
             ),
@@ -502,6 +505,22 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
                     "endTime": string_property("RFC3339 range end.")
                 }),
                 &["traceId", "dataset", "startTime", "endTime"],
+            ),
+        ),
+        ToolSpec::new(
+            "get_trace_activity",
+            "Get trace activity",
+            "Return a bounded trace-activity time series using Parseable's canonical semantics: span_count is COUNT(DISTINCT span_span_id) and trace_count is COUNT(DISTINCT span_trace_id). Use this for span or trace volume, trends, charts, and service breakdowns instead of deriving counts from raw trace rows. Returns the exact executed SQL with its rows so clients can reuse it unchanged.",
+            object_schema(
+                json!({
+                    "dataset": string_property("One traces dataset."),
+                    "startTime": string_property("RFC3339 range start."),
+                    "endTime": string_property("RFC3339 range end."),
+                    "groupBy": { "type": "array", "maxItems": 5, "items": { "type": "string" }, "description": "Optional exact trace fields, such as service.name, used to split the activity series." },
+                    "filters": { "type": "object", "description": "Optional exact trace-field filters.", "additionalProperties": true },
+                    "bucketCount": { "type": "integer", "minimum": 1, "maximum": 100, "default": 60, "description": "Approximate number of time buckets." }
+                }),
+                &["dataset", "startTime", "endTime"],
             ),
         ),
         ToolSpec::new(
@@ -854,7 +873,7 @@ mod tests {
         let tools = oss_tool_specs();
         let names = tools.iter().map(|tool| tool.name).collect::<HashSet<_>>();
 
-        assert_eq!(tools.len(), 49);
+        assert_eq!(tools.len(), 50);
         assert_eq!(tools.len(), names.len());
     }
 
@@ -893,7 +912,7 @@ mod tests {
         let read_tools = oss_read_tool_specs();
         let action_tools = oss_action_tool_specs();
 
-        assert_eq!(read_tools.len(), 36);
+        assert_eq!(read_tools.len(), 37);
         assert_eq!(action_tools.len(), 13);
         assert!(read_tools.iter().all(|tool| matches!(
             tool.effect(),
@@ -975,6 +994,18 @@ mod tests {
                 .unwrap()
                 .contains(&serde_json::json!("dataset"))
         );
+    }
+
+    #[actix_web::test]
+    async fn oss_catalog_exposes_trace_activity() {
+        let tool = oss_read_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "get_trace_activity")
+            .expect("get_trace_activity must be available in OSS");
+
+        assert_eq!(tool.effect(), ToolEffect::ExpensiveRead);
+        assert_eq!(tool.input_schema["properties"]["dataset"]["type"], "string");
+        assert_eq!(tool.input_schema["properties"]["groupBy"]["maxItems"], 5);
     }
 
     #[actix_web::test]

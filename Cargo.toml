@@ -138,6 +138,7 @@ tracing-actix-web = "0.7"
 
 # Time and Date
 chrono = "0.4"
+chrono-tz = "0.10"
 chrono-humanize = "0.2"
 humantime = "2.1.0"
 humantime-serde = "1.1"
