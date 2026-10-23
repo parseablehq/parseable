@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use ulid::Ulid;
 
 use crate::{
@@ -15,6 +15,7 @@ use crate::{
     rbac::{
         Users,
         map::{roles, users},
+        role::model::{DefaultPrivilege, Role},
         user::{User, UserType},
     },
     utils::{get_user_and_tenant_from_request, is_admin},
@@ -95,6 +96,39 @@ struct ValidateApiKeyResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ValidateApiKeyRequest {
     api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListApiKeysQuery {
+    #[serde(default, deserialize_with = "deserialize_api_key_privilege")]
+    priviledge: Option<DefaultPrivilege>,
+}
+
+fn deserialize_api_key_privilege<'de, D>(
+    deserializer: D,
+) -> Result<Option<DefaultPrivilege>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)?
+        .map(|privilege| match privilege.as_str() {
+            "reader" => Ok(DefaultPrivilege::Reader { resource: None }),
+            "ingestor" => Ok(DefaultPrivilege::Ingestor { resource: None }),
+            "admin" => Ok(DefaultPrivilege::Admin),
+            "writer" => Ok(DefaultPrivilege::Writer { resource: None }),
+            "editor" => Ok(DefaultPrivilege::Editor),
+            _ => Err(de::Error::unknown_variant(
+                &privilege,
+                &["reader", "ingestor", "admin", "writer", "editor"],
+            )),
+        })
+        .transpose()
+}
+
+fn role_has_privilege(role: &Role, privilege: &DefaultPrivilege) -> bool {
+    role.privileges()
+        .iter()
+        .any(|candidate| std::mem::discriminant(candidate) == std::mem::discriminant(privilege))
 }
 
 impl ApiKeyListEntry {
@@ -285,11 +319,27 @@ pub async fn delete_api_key(
 
 /// GET /api/prism/v1/apikeys
 ///
-/// List all API keys (masked). Only admins can list keys.
-pub async fn list_api_keys(req: HttpRequest) -> Result<impl Responder, ApiKeyError> {
+/// List all API keys (masked). Only admins can list keys. Optionally filter by
+/// role privilege with `?priviledge=reader|ingestor|admin|writer|editor`.
+pub async fn list_api_keys(
+    req: HttpRequest,
+    web::Query(query): web::Query<ListApiKeysQuery>,
+) -> Result<impl Responder, ApiKeyError> {
     let (_, tenant_id) = verify_admin(&req)?;
+    let tenant = tenant_or_default(&tenant_id);
+    let tenant_roles = roles();
     let entries: Vec<ApiKeyListEntry> = collect_tenant_api_keys(&tenant_id)
         .iter()
+        .filter(|user| {
+            query.priviledge.as_ref().is_none_or(|privilege| {
+                user.roles.iter().any(|role_name| {
+                    tenant_roles
+                        .get(tenant)
+                        .and_then(|roles| roles.get(role_name))
+                        .is_some_and(|role| role_has_privilege(role, privilege))
+                })
+            })
+        })
         .filter_map(ApiKeyListEntry::from_user)
         .collect();
     Ok(HttpResponse::Ok().json(entries))
