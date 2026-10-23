@@ -7,7 +7,8 @@ use ulid::Ulid;
 
 use crate::{
     apikeys::{
-        ApiKeyError, ApiKeyType, CreateApiKeyRequest, validate_api_key as validate_api_key_value,
+        ApiKeyError, ApiKeyType, CreateApiKeyRequest, PatchApiKeyRequest,
+        validate_api_key as validate_api_key_value,
     },
     handlers::http::{
         modal::utils::rbac_utils::{get_metadata, put_metadata},
@@ -287,6 +288,91 @@ pub async fn create_api_key(
     {
         tracing::error!("Failed to sync API-key user creation: {e}");
     }
+
+    let response = ApiKeyResponse::try_from(&user)?;
+    Ok(HttpResponse::Ok().json(response))
+}
+
+/// PATCH /api/prism/v1/apikeys/{key_id}
+///
+/// Update a key's name or value without changing its identity or roles.
+pub async fn patch_api_key(
+    req: HttpRequest,
+    path: web::Path<String>,
+    web::Json(body): web::Json<PatchApiKeyRequest>,
+) -> Result<impl Responder, ApiKeyError> {
+    let (caller_userid, tenant_id) = verify_admin(&req)?;
+    let key_id_str = path.into_inner();
+    let key_id =
+        Ulid::from_string(&key_id_str).map_err(|_| ApiKeyError::KeyNotFound(key_id_str.clone()))?;
+    if body.key_name.is_none() && body.api_key.is_none() {
+        return Err(ApiKeyError::EmptyApiKeyUpdate);
+    }
+
+    let guard = UPDATE_LOCK.lock().await;
+    let existing = collect_tenant_api_keys(&tenant_id);
+    let mut user = existing
+        .iter()
+        .find(|user| user.as_api_key().is_some_and(|key| key.key_id == key_id))
+        .cloned()
+        .ok_or_else(|| ApiKeyError::KeyNotFound(key_id_str))?;
+    let current = user.as_api_key().expect("selected API key user");
+    let key_name = body.key_name.unwrap_or_else(|| current.key_name.clone());
+    let api_key_value = body.api_key.unwrap_or_else(|| current.api_key.clone());
+
+    if key_name.trim().is_empty() {
+        return Err(ApiKeyError::InvalidApiKeyName);
+    }
+    if api_key_value != current.api_key {
+        validate_api_key_value(&api_key_value)?;
+    }
+    if existing.iter().any(|other| {
+        other
+            .as_api_key()
+            .is_some_and(|key| key.key_id != key_id && key.key_name == key_name)
+    }) {
+        return Err(ApiKeyError::DuplicateKeyName(key_name.clone()));
+    }
+    if existing.iter().any(|other| {
+        other
+            .as_api_key()
+            .is_some_and(|key| key.key_id != key_id && key.api_key == api_key_value)
+    }) {
+        return Err(ApiKeyError::DuplicateApiKey);
+    }
+
+    let changed = key_name != current.key_name || api_key_value != current.api_key;
+    if changed {
+        let key = match &mut user.ty {
+            UserType::ApiKey(key) => key,
+            _ => unreachable!("selected API key user"),
+        };
+        key.key_name.clone_from(&key_name);
+        key.api_key.clone_from(&api_key_value);
+        key.modified_at = Utc::now();
+
+        let mut metadata = get_metadata(&tenant_id).await?;
+        let stored = metadata
+            .users
+            .iter_mut()
+            .find(|stored| stored.userid() == user.userid())
+            .ok_or_else(|| ApiKeyError::KeyNotFound(key_id.to_string()))?;
+        *stored = user.clone();
+        put_metadata(&metadata, &tenant_id).await?;
+        Users.put_user(user.clone());
+    }
+    drop(guard);
+
+    // A retry also re-sends an already applied update to any lagging nodes.
+    crate::handlers::http::cluster::sync_user_creation(
+        &req,
+        user.clone(),
+        &None,
+        &tenant_id,
+        &caller_userid,
+    )
+    .await
+    .map_err(|error: RBACError| ApiKeyError::UpdateSyncFailed(error.to_string()))?;
 
     let response = ApiKeyResponse::try_from(&user)?;
     Ok(HttpResponse::Ok().json(response))
