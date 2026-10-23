@@ -50,6 +50,13 @@ pub struct CreateApiKeyRequest {
     pub api_key_type: Option<ApiKeyType>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PatchApiKeyRequest {
+    pub key_name: Option<String>,
+    pub api_key: Option<String>,
+}
+
 /// Require a hyphenated UUID v4, allowing either letter case.
 pub fn validate_api_key(value: &str) -> Result<(), ApiKeyError> {
     let uuid = uuid::Uuid::parse_str(value).map_err(|_| ApiKeyError::InvalidApiKey)?;
@@ -73,6 +80,12 @@ pub enum ApiKeyError {
     #[error("API key value is already registered")]
     DuplicateApiKey,
 
+    #[error("API key update must include keyName or apiKey")]
+    EmptyApiKeyUpdate,
+
+    #[error("keyName cannot be empty")]
+    InvalidApiKeyName,
+
     #[error("apiKey must be a UUID v4 in 8-4-4-4-12 format")]
     InvalidApiKey,
 
@@ -84,6 +97,9 @@ pub enum ApiKeyError {
 
     #[error("API key revocation could not be synced to all live nodes: {0}")]
     RevocationSyncFailed(String),
+
+    #[error("API key update could not be synced to all live nodes: {0}")]
+    UpdateSyncFailed(String),
 
     #[error("{0}")]
     Storage(#[from] crate::storage::ObjectStorageError),
@@ -102,11 +118,12 @@ impl actix_web::ResponseError for ApiKeyError {
             ApiKeyError::DuplicateKeyName(_) | ApiKeyError::DuplicateApiKey => {
                 actix_web::http::StatusCode::CONFLICT
             }
-            ApiKeyError::InvalidApiKey | ApiKeyError::ApiKeyTypeWithRoles => {
-                actix_web::http::StatusCode::BAD_REQUEST
-            }
+            ApiKeyError::InvalidApiKey
+            | ApiKeyError::ApiKeyTypeWithRoles
+            | ApiKeyError::EmptyApiKeyUpdate
+            | ApiKeyError::InvalidApiKeyName => actix_web::http::StatusCode::BAD_REQUEST,
             ApiKeyError::Unauthorized(_) => actix_web::http::StatusCode::FORBIDDEN,
-            ApiKeyError::RevocationSyncFailed(_) => {
+            ApiKeyError::RevocationSyncFailed(_) | ApiKeyError::UpdateSyncFailed(_) => {
                 actix_web::http::StatusCode::SERVICE_UNAVAILABLE
             }
             ApiKeyError::Rbac(err) => actix_web::ResponseError::status_code(err),
