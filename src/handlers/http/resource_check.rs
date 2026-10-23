@@ -275,11 +275,11 @@ pub fn cpu_limit_cores() -> f64 {
 
     #[cfg(not(target_os = "linux"))]
     {
-        0.0
+        num_cpus::get() as f64
     }
 }
 
-fn cpu_metrics() -> (f64, f64) {
+fn cpu_metrics(_cpu_usage_percent: f64) -> (f64, f64) {
     #[cfg(target_os = "linux")]
     {
         match cgroup_cpu_metrics() {
@@ -298,7 +298,7 @@ fn cpu_metrics() -> (f64, f64) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        (0.0, 0.0)
+        (num_cpus::get() as f64, _cpu_usage_percent / 100.0)
     }
 }
 
@@ -319,7 +319,7 @@ async fn sample_process_metrics() {
         };
 
         process_metrics.map(|(cpu_usage, memory_bytes, total_mem)| {
-            let (cpu_limit_cores, cpu_usage_cores) = cpu_metrics();
+            let (cpu_limit_cores, cpu_usage_cores) = cpu_metrics(cpu_usage);
             (
                 cpu_usage,
                 memory_bytes,

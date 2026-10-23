@@ -251,7 +251,7 @@ pub static PROCESS_CPU_USAGE_CORES: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
             "process_cpu_usage_cores",
-            "Average CPU cores used by the Parseable cgroup over the last minute",
+            "Average CPU cores used by Parseable over the last minute",
         )
         .namespace(METRICS_NAMESPACE),
     )
