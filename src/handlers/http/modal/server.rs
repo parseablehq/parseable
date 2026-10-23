@@ -271,6 +271,11 @@ impl Server {
                 resource("/{key_id}")
                     .route(web::get().to(apikeys::get_api_key).authorize(Action::All))
                     .route(
+                        web::patch()
+                            .to(apikeys::patch_api_key)
+                            .authorize(Action::All),
+                    )
+                    .route(
                         web::delete()
                             .to(apikeys::delete_api_key)
                             .authorize(Action::All),

@@ -41,10 +41,15 @@ use crate::rbac::user::User;
 use crate::utils::get_tenant_id_from_key;
 
 use self::map::SessionKey;
-use self::role::{Permission, RoleBuilder};
+use self::role::{ParseableResourceType, Permission, RoleBuilder, model::DefaultPrivilege};
 use self::user::UserType;
 
 pub const EXPIRY_DURATION: Duration = Duration::hours(1);
+/// Reserved, server-managed role for Helm's ingest-only API keys.
+/// This name is outside the user-defined role-name grammar.
+pub const GLOBAL_INGESTOR_ROLE: &str = "__global_ingestor__";
+/// Reserved, server-managed role with the existing reader privilege on all datasets.
+pub const GLOBAL_QUERIER_ROLE: &str = "__global_querier__";
 
 #[derive(PartialEq, Debug)]
 pub enum Response {
@@ -397,6 +402,19 @@ pub struct UsersPrism {
 pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permission> {
     let mut perms = HashSet::new();
     for role in &roles {
+        if role == GLOBAL_INGESTOR_ROLE {
+            perms.insert(Permission::Resource(Action::Ingest, None));
+            continue;
+        }
+        if role == GLOBAL_QUERIER_ROLE {
+            perms.extend(
+                RoleBuilder::from(&DefaultPrivilege::Reader {
+                    resource: Some(ParseableResourceType::Stream("*".to_string())),
+                })
+                .build(),
+            );
+            continue;
+        }
         let role_map = &map::roles();
         if let Some(roles) = role_map.get(tenant_id)
             && let Some(privilege_list) = roles.get(role)

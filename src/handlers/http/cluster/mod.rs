@@ -618,11 +618,17 @@ pub async fn sync_user_creation(
                 })?;
 
             if !res.status().is_success() {
+                let status = res.status();
                 error!(
                     "failed to forward request to node: {}\nResponse Returned: {:?}",
                     node.domain_name,
                     res.text().await
                 );
+                return Err(RBACError::Anyhow(anyhow::anyhow!(
+                    "user sync to {} failed with HTTP {}",
+                    node.domain_name,
+                    status
+                )));
             }
 
             Ok(())
