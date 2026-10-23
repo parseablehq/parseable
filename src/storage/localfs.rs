@@ -916,3 +916,119 @@ impl From<fs_extra::error::Error> for ObjectStorageError {
         ObjectStorageError::UnhandledError(Box::new(e))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use arrow_schema::{DataType, Field, Schema};
+
+    use crate::{
+        metastore::{
+            metastore_traits::Metastore, metastores::object_store_metastore::ObjectStoreMetastore,
+        },
+        parseable::GlobalSchema,
+        storage::{
+            ObjectStorage, SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+            object_storage::{global_schema_path, to_bytes},
+        },
+    };
+    use relative_path::RelativePathBuf;
+
+    use super::LocalFS;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn global_schema_lock_deletion_is_idempotent_and_propagates_failures() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(LocalFS::new(temp_dir.path().to_path_buf()));
+        let metastore = ObjectStoreMetastore { storage };
+        let lock = RelativePathBuf::from("events/.stream/node-1.lock");
+
+        metastore
+            .put_global_schema_lock(lock.clone(), &None)
+            .await
+            .unwrap();
+        metastore
+            .delete_global_schema_lock(lock.clone(), &None)
+            .await
+            .unwrap();
+        metastore
+            .delete_global_schema_lock(lock, &None)
+            .await
+            .expect("deleting an absent lock is idempotent");
+
+        let blocked = RelativePathBuf::from("events/.stream/blocked.lock");
+        let directory = temp_dir.path().join(blocked.as_str());
+        std::fs::create_dir_all(&directory).unwrap();
+        metastore
+            .delete_global_schema_lock(blocked, &None)
+            .await
+            .expect_err("a failed lock deletion must not be swallowed");
+        assert!(directory.is_dir());
+    }
+
+    #[tokio::test]
+    async fn localfs_skips_global_schema_and_discovers_legacy_schema() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(LocalFS::new(temp_dir.path().to_path_buf()));
+        let metastore = ObjectStoreMetastore {
+            storage: storage.clone(),
+        };
+        let tenant_id = None;
+        let stream_name = "events";
+
+        assert!(
+            metastore
+                .get_global_schema(stream_name, &tenant_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let schema = Schema::new(vec![Field::new("value", DataType::Utf8, true)]);
+        let legacy_schema_path =
+            RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
+        let serialized_schema = to_bytes(&schema);
+        storage
+            .put_object(&legacy_schema_path, serialized_schema.clone(), &tenant_id)
+            .await
+            .unwrap();
+
+        let stored_schema = storage
+            .get_object(&legacy_schema_path, &tenant_id)
+            .await
+            .unwrap();
+        assert_eq!(stored_schema, serialized_schema);
+        assert_eq!(
+            serde_json::from_slice::<Schema>(&stored_schema).unwrap(),
+            schema
+        );
+        assert_eq!(
+            metastore
+                .get_all_schemas(stream_name, &tenant_id)
+                .await
+                .unwrap(),
+            vec![schema.clone()]
+        );
+
+        let error = metastore
+            .put_global_schema(
+                GlobalSchema::from_schema(schema),
+                stream_name,
+                &tenant_id,
+                None,
+            )
+            .await
+            .expect_err("LocalFS must reject unsupported conditional global-schema writes");
+        assert!(
+            error
+                .to_string()
+                .contains("conditional object writes are not supported")
+        );
+        assert!(
+            storage
+                .get_object(&global_schema_path(stream_name, &tenant_id), &tenant_id)
+                .await
+                .is_err()
+        );
+    }
+}
