@@ -357,7 +357,7 @@ pub async fn patch_api_key(
             .iter_mut()
             .find(|stored| stored.userid() == user.userid())
             .ok_or_else(|| ApiKeyError::KeyNotFound(key_id.to_string()))?;
-        *stored = user.clone();
+        stored.clone_from(&user);
         put_metadata(&metadata, &tenant_id).await?;
         Users.put_user(user.clone());
     }
