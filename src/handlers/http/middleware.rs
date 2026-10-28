@@ -474,6 +474,18 @@ pub async fn refresh_token(
         };
 
         if let Some(oauth_data) = bearer_to_refresh {
+            if !oauth_data
+                .bearer
+                .as_ref()
+                .and_then(|bearer| bearer.refresh_token.as_deref())
+                .is_some_and(|token| !token.is_empty())
+            {
+                Users.remove_session(key);
+                return Err(ErrorUnauthorized(
+                    "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                ));
+            }
+
             let refreshed_token = match client
                 .read()
                 .await
