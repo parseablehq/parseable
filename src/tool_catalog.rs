@@ -323,9 +323,9 @@ fn target_schema() -> Value {
     )
 }
 
-/// Read-only tools implemented by Parseable OSS and safe for generic external
-/// invocation without a confirmation flow.
-pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
+/// Canonical OSS catalog used by internal agents, external MCP clients, and
+/// Enterprise. Tool effects distinguish reads from confirmed actions.
+pub fn oss_tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec::new(
             "list_datasets",
@@ -678,14 +678,6 @@ pub fn oss_read_tool_specs() -> Vec<ToolSpec> {
                 &[],
             ),
         ),
-    ]
-}
-
-/// Effectful OSS tools retained in the canonical registry for internal agents.
-/// Generic external invocation must not use this catalog until confirmation is
-/// server-verifiable.
-pub fn oss_action_tool_specs() -> Vec<ToolSpec> {
-    vec![
         ToolSpec::new(
             "enable_alert",
             "Enable alert",
@@ -725,15 +717,13 @@ pub fn oss_action_tool_specs() -> Vec<ToolSpec> {
         ToolSpec::new(
             "update_alert",
             "Update alert",
-            "Update an alert using an explicit validated patch or complete replacement after confirmation.",
+            "Replace an alert with a complete validated specification after confirmation.",
             object_schema(
                 json!({
                     "alertId": string_property("Alert ID to update."),
-                    "patch": { "type": "object", "additionalProperties": true, "description": "Explicit camelCase alert patch." },
-                    "replacement": { "type": "object", "additionalProperties": true, "description": "Optional complete validated alert replacement." },
-                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                    "spec": { "type": "object", "additionalProperties": true, "description": "Complete camelCase alert specification." }
                 }),
-                &["alertId", "idempotencyKey"],
+                &["alertId", "spec"],
             ),
         ),
         ToolSpec::new(
@@ -741,25 +731,20 @@ pub fn oss_action_tool_specs() -> Vec<ToolSpec> {
             "Delete alert",
             "Delete one alert after explicit confirmation.",
             object_schema(
-                json!({
-                    "alertId": string_property("Alert ID to delete."),
-                    "idempotencyKey": string_property("Server-scoped idempotency key.")
-                }),
-                &["alertId", "idempotencyKey"],
+                json!({ "alertId": string_property("Alert ID to delete.") }),
+                &["alertId"],
             ),
         ),
         ToolSpec::new(
             "update_alert_target",
             "Update alert target",
-            "Update an alert target using an explicit patch or replacement after confirmation.",
+            "Replace an alert target with a complete specification after confirmation.",
             object_schema(
                 json!({
                     "targetId": string_property("Alert-target ID."),
-                    "patch": { "type": "object", "additionalProperties": true },
-                    "replacement": { "type": "object", "additionalProperties": true },
-                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                    "spec": { "type": "object", "additionalProperties": true }
                 }),
-                &["targetId", "idempotencyKey"],
+                &["targetId", "spec"],
             ),
         ),
         ToolSpec::new(
@@ -767,11 +752,8 @@ pub fn oss_action_tool_specs() -> Vec<ToolSpec> {
             "Delete alert target",
             "Delete one alert target after explicit confirmation.",
             object_schema(
-                json!({
-                    "targetId": string_property("Alert-target ID."),
-                    "idempotencyKey": string_property("Server-scoped idempotency key.")
-                }),
-                &["targetId", "idempotencyKey"],
+                json!({ "targetId": string_property("Alert-target ID.") }),
+                &["targetId"],
             ),
         ),
         ToolSpec::new(
@@ -781,10 +763,9 @@ pub fn oss_action_tool_specs() -> Vec<ToolSpec> {
             object_schema(
                 json!({
                     "dashboardId": string_property("Dashboard ID."),
-                    "tile": { "type": "object", "additionalProperties": true },
-                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                    "tile": { "type": "object", "additionalProperties": true }
                 }),
-                &["dashboardId", "tile", "idempotencyKey"],
+                &["dashboardId", "tile"],
             ),
         ),
         ToolSpec::new(
@@ -792,25 +773,20 @@ pub fn oss_action_tool_specs() -> Vec<ToolSpec> {
             "Create dashboard",
             "Persist a validated dashboard after confirmation.",
             object_schema(
-                json!({
-                    "dashboard": { "type": "object", "additionalProperties": true },
-                    "idempotencyKey": string_property("Server-scoped idempotency key.")
-                }),
-                &["dashboard", "idempotencyKey"],
+                json!({ "dashboard": { "type": "object", "additionalProperties": true } }),
+                &["dashboard"],
             ),
         ),
         ToolSpec::new(
             "update_dashboard",
             "Update dashboard",
-            "Update a dashboard using an explicit patch or validated replacement after confirmation.",
+            "Replace a dashboard with a complete validated dashboard after confirmation.",
             object_schema(
                 json!({
                     "dashboardId": string_property("Dashboard ID."),
-                    "patch": { "type": "object", "additionalProperties": true },
-                    "replacement": { "type": "object", "additionalProperties": true },
-                    "idempotencyKey": string_property("Server-scoped idempotency key.")
+                    "dashboard": { "type": "object", "additionalProperties": true }
                 }),
-                &["dashboardId", "idempotencyKey"],
+                &["dashboardId", "dashboard"],
             ),
         ),
         ToolSpec::new(
@@ -818,29 +794,15 @@ pub fn oss_action_tool_specs() -> Vec<ToolSpec> {
             "Delete dashboard",
             "Delete one dashboard after explicit confirmation.",
             object_schema(
-                json!({
-                    "dashboardId": string_property("Dashboard ID."),
-                    "idempotencyKey": string_property("Server-scoped idempotency key.")
-                }),
-                &["dashboardId", "idempotencyKey"],
+                json!({ "dashboardId": string_property("Dashboard ID.") }),
+                &["dashboardId"],
             ),
         ),
     ]
 }
 
-/// Canonical OSS catalog used by internal agents and imported by Enterprise.
-pub fn oss_tool_specs() -> Vec<ToolSpec> {
-    let mut tools = oss_read_tool_specs();
-    tools.extend(oss_action_tool_specs());
-    tools
-}
-
 pub fn is_oss_tool(name: &str) -> bool {
     oss_tool_specs().iter().any(|tool| tool.name == name)
-}
-
-pub fn is_oss_read_tool(name: &str) -> bool {
-    oss_read_tool_specs().iter().any(|tool| tool.name == name)
 }
 
 pub fn registry_http_response(request: &HttpRequest, tools: Vec<Value>) -> HttpResponse {
@@ -869,7 +831,7 @@ pub fn registry_http_response(request: &HttpRequest, tools: Vec<Value>) -> HttpR
 
 /// `GET /api/prism/v1/llm/tools/list`
 pub async fn list_tool_registry(request: HttpRequest) -> HttpResponse {
-    let tools = oss_read_tool_specs()
+    let tools = oss_tool_specs()
         .into_iter()
         .map(|tool| {
             json!({
@@ -891,10 +853,7 @@ mod tests {
     use actix_web::{App, http::header, test, web};
     use serde_json::Value;
 
-    use super::{
-        ToolCallRequest, ToolCallResult, ToolEffect, is_oss_read_tool, list_tool_registry,
-        oss_action_tool_specs, oss_read_tool_specs, oss_tool_specs,
-    };
+    use super::{ToolCallRequest, ToolCallResult, ToolEffect, list_tool_registry, oss_tool_specs};
 
     #[actix_web::test]
     async fn oss_catalog_has_unique_names() {
@@ -918,27 +877,47 @@ mod tests {
 
         assert_eq!(
             response["tools"].as_array().unwrap().len(),
-            oss_read_tool_specs().len()
+            oss_tool_specs().len()
         );
         assert_eq!(response["tools"][0]["name"], "list_datasets");
         assert_eq!(response["tools"][0]["inputSchema"]["type"], "object");
-        assert!(oss_read_tool_specs().iter().all(|tool| matches!(
-            tool.effect(),
-            ToolEffect::ReadOnly | ToolEffect::ExpensiveRead
-        )));
         assert!(
             response["tools"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|tool| tool["name"] != "create_alert")
+                .any(|tool| { tool["name"] == "create_alert" })
+        );
+        assert!(
+            response["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| { tool["name"] == "update_alert" })
         );
     }
 
     #[actix_web::test]
     async fn read_and_action_catalogs_are_structurally_separated() {
-        let read_tools = oss_read_tool_specs();
-        let action_tools = oss_action_tool_specs();
+        let tools = oss_tool_specs();
+        let read_tools = tools
+            .iter()
+            .filter(|tool| {
+                matches!(
+                    tool.effect(),
+                    ToolEffect::ReadOnly | ToolEffect::ExpensiveRead
+                )
+            })
+            .collect::<Vec<_>>();
+        let action_tools = tools
+            .iter()
+            .filter(|tool| {
+                matches!(
+                    tool.effect(),
+                    ToolEffect::Mutation | ToolEffect::ExternalSideEffect
+                )
+            })
+            .collect::<Vec<_>>();
 
         assert_eq!(read_tools.len(), 37);
         assert_eq!(action_tools.len(), 13);
@@ -950,8 +929,6 @@ mod tests {
             tool.effect(),
             ToolEffect::Mutation | ToolEffect::ExternalSideEffect
         )));
-        assert!(read_tools.iter().all(|tool| is_oss_read_tool(tool.name)));
-        assert!(action_tools.iter().all(|tool| !is_oss_read_tool(tool.name)));
     }
 
     #[actix_web::test]
@@ -992,7 +969,7 @@ mod tests {
 
     #[actix_web::test]
     async fn oss_catalog_exposes_list_log_errors() {
-        let tool = oss_read_tool_specs()
+        let tool = oss_tool_specs()
             .into_iter()
             .find(|tool| tool.name == "list_log_errors")
             .expect("list_log_errors must be available in OSS");
@@ -1009,7 +986,7 @@ mod tests {
 
     #[actix_web::test]
     async fn oss_catalog_exposes_list_trace_errors() {
-        let tool = oss_read_tool_specs()
+        let tool = oss_tool_specs()
             .into_iter()
             .find(|tool| tool.name == "list_trace_errors")
             .expect("list_trace_errors must be available in OSS");
@@ -1026,7 +1003,7 @@ mod tests {
 
     #[actix_web::test]
     async fn oss_catalog_exposes_trace_activity() {
-        let tool = oss_read_tool_specs()
+        let tool = oss_tool_specs()
             .into_iter()
             .find(|tool| tool.name == "get_trace_activity")
             .expect("get_trace_activity must be available in OSS");

@@ -136,12 +136,23 @@ pub async fn get_internal(
 pub async fn update(
     req: HttpRequest,
     target_id: Path<Ulid>,
-    Json(mut target): Json<Target>,
+    Json(target): Json<Target>,
 ) -> Result<impl Responder, AlertError> {
     let target_id = target_id.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    Ok(web::Json(
+        update_internal(target_id, target, &tenant_id).await?,
+    ))
+}
+
+/// Shared target update implementation for HTTP handlers and in-process callers.
+pub async fn update_internal(
+    target_id: Ulid,
+    mut target: Target,
+    tenant_id: &Option<String>,
+) -> Result<serde_json::Value, AlertError> {
     // if target_id does not exist, error
-    let old_target = TARGETS.get_target_by_id(&target_id, &tenant_id).await?;
+    let old_target = TARGETS.get_target_by_id(&target_id, tenant_id).await?;
 
     // do not allow modifying name
     if old_target.name != target.name {
@@ -152,22 +163,29 @@ pub async fn update(
 
     // esnure that the supplied target id is assigned to the target config
     target.id = target_id;
-    target.tenant = tenant_id;
+    target.tenant.clone_from(tenant_id);
     target.validate_outbound_policy().await?;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;
 
-    Ok(web::Json(target.mask()))
+    Ok(serde_json::to_value(target.mask())?)
 }
 
 // DELETE /targets/{target_id}
 pub async fn delete(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let target_id = target_id.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let target = TARGETS.delete(&target_id, &tenant_id).await?;
+    Ok(web::Json(delete_internal(target_id, &tenant_id).await?))
+}
 
-    Ok(web::Json(target.mask()))
+/// Shared target deletion implementation for HTTP handlers and in-process callers.
+pub async fn delete_internal(
+    target_id: Ulid,
+    tenant_id: &Option<String>,
+) -> Result<serde_json::Value, AlertError> {
+    let target = TARGETS.delete(&target_id, tenant_id).await?;
+    Ok(serde_json::to_value(target.mask())?)
 }
 
 #[cfg(test)]
