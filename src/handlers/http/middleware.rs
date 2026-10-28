@@ -482,7 +482,7 @@ pub async fn refresh_token(
             {
                 Users.remove_session(key);
                 return Err(ErrorUnauthorized(
-                    "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                    "Your OIDC session cannot be refreshed because the identity provider did not issue a refresh token. Please sign in again and ask your administrator to configure the offline_access scope.",
                 ));
             }
 
