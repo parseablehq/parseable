@@ -37,8 +37,9 @@ use crate::handlers::http::modal::utils::ingest_utils::{
     ingest_helper, process_otel_content, validate_stream_for_ingestion,
 };
 use crate::handlers::{
-    DatasetTag, EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY,
-    TelemetryType,
+    DEFAULT_OTEL_LOGS_STREAM_NAME, DEFAULT_OTEL_METRICS_STREAM_NAME,
+    DEFAULT_OTEL_TRACES_STREAM_NAME, DEFAULT_STREAM_NAME, DatasetTag, EXTRACT_LOG_KEY,
+    LOG_SOURCE_KEY, TELEMETRY_TYPE_KEY, TelemetryType, stream_name_from_headers,
 };
 use crate::metadata::SchemaVersion;
 use crate::metastore::MetastoreError;
@@ -70,11 +71,8 @@ pub async fn ingest(
     req: HttpRequest,
     Json(json): Json<StrictValue>,
 ) -> Result<HttpResponse, PostError> {
-    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
-    };
     let tenant_id = get_tenant_id_from_request(&req);
-    let stream_name = stream_name.to_str().unwrap().to_owned();
+    let stream_name = stream_name_from_headers(req.headers(), DEFAULT_STREAM_NAME)?;
     let internal_stream_names = PARSEABLE.streams.list_internal_streams(&tenant_id);
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
@@ -229,11 +227,13 @@ pub async fn setup_otel_stream(
     dataset_tags: Vec<DatasetTag>,
     dataset_labels: Vec<String>,
 ) -> Result<(String, LogSource, LogSourceEntry, Option<String>), PostError> {
-    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    let default_stream_name = match log_source {
+        LogSource::OtelLogs => DEFAULT_OTEL_LOGS_STREAM_NAME,
+        LogSource::OtelMetrics => DEFAULT_OTEL_METRICS_STREAM_NAME,
+        LogSource::OtelTraces => DEFAULT_OTEL_TRACES_STREAM_NAME,
+        _ => DEFAULT_STREAM_NAME,
     };
-
-    let stream_name = stream_name.to_str().unwrap().to_owned();
+    let stream_name = stream_name_from_headers(req.headers(), default_stream_name)?;
 
     let log_source_entry = LogSourceEntry::new(
         log_source.clone(),

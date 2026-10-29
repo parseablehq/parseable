@@ -19,14 +19,21 @@
 use std::collections::HashSet;
 use std::fmt::Display;
 
+use actix_web::http::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+
+use crate::utils::header_parsing::ParseHeaderError;
 
 pub mod airplane;
 pub mod http;
 pub mod livetail;
 
 pub const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
+pub const DEFAULT_STREAM_NAME: &str = "default_logs";
+pub const DEFAULT_OTEL_LOGS_STREAM_NAME: &str = "default_otel_logs";
+pub const DEFAULT_OTEL_METRICS_STREAM_NAME: &str = "default_otel_metrics";
+pub const DEFAULT_OTEL_TRACES_STREAM_NAME: &str = "default_otel_traces";
 pub const LOG_SOURCE_KEY: &str = "x-p-log-source";
 pub const EXTRACT_LOG_KEY: &str = "x-p-extract-log";
 pub const TIME_PARTITION_KEY: &str = "x-p-time-partition";
@@ -55,6 +62,37 @@ pub const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attribute
 // constants for content type values
 pub const CONTENT_TYPE_JSON: &str = "application/json";
 pub const CONTENT_TYPE_PROTOBUF: &str = "application/x-protobuf";
+
+pub fn stream_name_from_headers(
+    headers: &HeaderMap,
+    default_stream_name: &str,
+) -> Result<String, ParseHeaderError> {
+    headers
+        .get(STREAM_NAME_HEADER_KEY)
+        .map(|stream_name| {
+            stream_name
+                .to_str()
+                .map(str::to_owned)
+                .map_err(|_| ParseHeaderError::InvalidValue)
+        })
+        .unwrap_or_else(|| Ok(default_stream_name.to_owned()))
+}
+
+pub fn default_stream_name_for_path(path: &str) -> &'static str {
+    default_stream_name_for_ingest_path(path).unwrap_or(DEFAULT_STREAM_NAME)
+}
+
+pub fn default_stream_name_for_ingest_path(path: &str) -> Option<&'static str> {
+    match path.trim_end_matches('/') {
+        path if path.ends_with("/api/v1/ingest") => Some(DEFAULT_STREAM_NAME),
+        path if path.ends_with("/v1/logs") => Some(DEFAULT_OTEL_LOGS_STREAM_NAME),
+        path if path.ends_with("/v1/metrics") || path.ends_with("/v1/prometheus/write") => {
+            Some(DEFAULT_OTEL_METRICS_STREAM_NAME)
+        }
+        path if path.ends_with("/v1/traces") => Some(DEFAULT_OTEL_TRACES_STREAM_NAME),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

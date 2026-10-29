@@ -34,7 +34,7 @@ use ulid::Ulid;
 use crate::{
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
-        STREAM_NAME_HEADER_KEY, TENANT_ID,
+        STREAM_NAME_HEADER_KEY, TENANT_ID, default_stream_name_for_path,
         http::{ingest::PostError, modal::OIDC_CLIENT, rbac::RBACError},
     },
     option::Mode,
@@ -70,7 +70,7 @@ pub struct CommonAttributes {
     #[serde(rename = "Authorization")]
     authorization: String,
     #[serde(rename = "X-P-Stream")]
-    pub x_p_stream: String,
+    pub x_p_stream: Option<String>,
 }
 
 pub trait RouteExt {
@@ -300,7 +300,7 @@ where
     }
 }
 
-/// Extract Kinesis Firehose headers (Authorization, X-P-Stream) from
+/// Extract Kinesis Firehose headers (Authorization and optional X-P-Stream) from
 /// the x-amz-firehose-common-attributes custom header when present.
 fn extract_kinesis_headers(req: &mut ServiceRequest) {
     if let Some(kinesis_common_attributes) =
@@ -309,15 +309,22 @@ fn extract_kinesis_headers(req: &mut ServiceRequest) {
         && let Ok(message) = serde_json::from_str::<Message>(attribute_value)
         && let Ok(auth_value) =
             header::HeaderValue::from_str(&message.common_attributes.authorization)
-        && let Ok(stream_name_key) =
-            header::HeaderValue::from_str(&message.common_attributes.x_p_stream)
     {
+        let stream_name_value = match message.common_attributes.x_p_stream {
+            Some(stream_name) => match header::HeaderValue::from_str(&stream_name) {
+                Ok(value) => Some(value),
+                Err(_) => return,
+            },
+            None => None,
+        };
         req.headers_mut()
             .insert(HeaderName::from_static(AUTHORIZATION_KEY), auth_value);
-        req.headers_mut().insert(
-            HeaderName::from_static(STREAM_NAME_HEADER_KEY),
-            stream_name_key,
-        );
+        if let Some(stream_name_value) = stream_name_value {
+            req.headers_mut().insert(
+                HeaderName::from_static(STREAM_NAME_HEADER_KEY),
+                stream_name_value,
+            );
+        }
         req.headers_mut().insert(
             HeaderName::from_static(LOG_SOURCE_KEY),
             header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
@@ -604,9 +611,13 @@ pub fn auth_resource_context(
     } else if let Some(stream) = stream {
         creds.map(|key| Users.authorize(key, action, Some(stream), None))
     } else {
-        if let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) {
-            stream = Some(stream_name.to_str().unwrap());
-        }
+        stream = req
+            .headers()
+            .get(STREAM_NAME_HEADER_KEY)
+            .and_then(|stream_name| stream_name.to_str().ok())
+            .or_else(|| {
+                (action == Action::Ingest).then(|| default_stream_name_for_path(req.path()))
+            });
         creds.map(|key| Users.authorize(key, action, stream, None))
     }
 }
@@ -990,5 +1001,35 @@ mod api_key_header_tests {
         insert_api_key_tenant_header(&mut req, &user, true);
 
         assert_eq!(req.headers().get(TENANT_ID).unwrap(), "acme");
+    }
+
+    #[test]
+    fn kinesis_common_attributes_allow_missing_stream_name() {
+        let common_attributes = r#"{"commonAttributes":{"Authorization":"Basic token"}}"#;
+        let mut req = actix_test::TestRequest::default()
+            .insert_header((KINESIS_COMMON_ATTRIBUTES_KEY, common_attributes))
+            .to_srv_request();
+
+        extract_kinesis_headers(&mut req);
+
+        assert_eq!(req.headers().get(AUTHORIZATION_KEY).unwrap(), "Basic token");
+        assert_eq!(
+            req.headers().get(LOG_SOURCE_KEY).unwrap(),
+            LOG_SOURCE_KINESIS
+        );
+        assert!(req.headers().get(STREAM_NAME_HEADER_KEY).is_none());
+    }
+
+    #[test]
+    fn kinesis_common_attributes_preserve_stream_name() {
+        let common_attributes =
+            r#"{"commonAttributes":{"Authorization":"Basic token","X-P-Stream":"custom"}}"#;
+        let mut req = actix_test::TestRequest::default()
+            .insert_header((KINESIS_COMMON_ATTRIBUTES_KEY, common_attributes))
+            .to_srv_request();
+
+        extract_kinesis_headers(&mut req);
+
+        assert_eq!(req.headers().get(STREAM_NAME_HEADER_KEY).unwrap(), "custom");
     }
 }
