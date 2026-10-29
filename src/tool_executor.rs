@@ -26,8 +26,11 @@ use crate::{
     parseable::PARSEABLE,
     prism::logstream::get_prism_logstream_info,
     rbac::{Response, Users, map::SessionKey, role::Action},
-    tool_catalog::{ToolCallRequest, ToolCallResult, oss_read_tool_specs, oss_tool_specs},
-    utils::{actix::extract_session_key_from_req, get_tenant_id_from_request, time::TimeRange},
+    tool_catalog::{ToolCallRequest, ToolCallResult, oss_tool_specs},
+    utils::{
+        actix::extract_session_key_from_req, get_tenant_id_from_request, is_admin_for_session,
+        time::TimeRange,
+    },
 };
 
 fn required_string<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, String> {
@@ -36,6 +39,16 @@ fn required_string<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, Stri
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("missing required string argument `{name}`"))
+}
+
+fn session_user_id(session_key: &SessionKey) -> Result<String, String> {
+    match session_key {
+        SessionKey::BasicAuth { username, .. } => Ok(username.clone()),
+        SessionKey::SessionId(_) => Users
+            .get_userid_from_session(session_key)
+            .map(|(user_id, _)| user_id)
+            .ok_or_else(|| "user session is not active".to_owned()),
+    }
 }
 
 fn bounded_integer(arguments: &Value, name: &str, default: u64, min: u64, max: u64) -> u64 {
@@ -1097,57 +1110,70 @@ async fn execute_alert_tool(
     context: OssToolContext<'_>,
 ) -> Result<Value, String> {
     match name {
-        "list_alerts" => {
-            authorize(context.session_key, Action::GetAlert, None, None)?;
-            serde_json::to_value(
-                alerts::list_internal(context.session_key.clone(), &HashMap::new())
-                    .await
-                    .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())
-        }
-        "get_alert" => {
-            authorize(context.session_key, Action::GetAlert, None, None)?;
-            let id = Ulid::from_string(required_string(arguments, "alert_id")?)
-                .map_err(|error| error.to_string())?;
-            serde_json::to_value(
-                alerts::get_internal(context.session_key, id, context.tenant_id)
-                    .await
-                    .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())
-        }
-        "list_alert_tags" => {
-            authorize(context.session_key, Action::GetAlert, None, None)?;
-            serde_json::to_value(
-                alerts::list_tags_internal(context.tenant_id)
-                    .await
-                    .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())
-        }
+        "list_alerts" => list_alerts(context).await,
+        "get_alert" => get_alert(arguments, context).await,
+        "list_alert_tags" => list_alert_tags(context).await,
         "enable_alert" | "disable_alert" | "evaluate_alert" => {
-            authorize(context.session_key, Action::PutAlert, None, None)?;
-            let id = Ulid::from_string(required_string(arguments, "alert_id")?)
-                .map_err(|error| error.to_string())?;
-            let response = match name {
-                "enable_alert" => {
-                    alerts::enable_alert_internal(context.session_key, id, context.tenant_id).await
-                }
-                "disable_alert" => {
-                    alerts::disable_alert_internal(context.session_key, id, context.tenant_id).await
-                }
-                _ => {
-                    alerts::evaluate_alert_internal(context.session_key, id, context.tenant_id)
-                        .await
-                }
-            }
-            .map_err(|error| error.to_string())?;
-            serde_json::to_value(response).map_err(|error| error.to_string())
+            change_alert_state(name, arguments, context).await
         }
         "create_alert" => create_alert(arguments, context).await,
+        "update_alert" => update_alert(arguments, context).await,
+        "delete_alert" => delete_alert(arguments, context).await,
         _ => unreachable!("alert dispatcher only receives known tools"),
     }
+}
+
+async fn list_alerts(context: OssToolContext<'_>) -> Result<Value, String> {
+    authorize(context.session_key, Action::GetAlert, None, None)?;
+    serde_json::to_value(
+        alerts::list_internal(context.session_key.clone(), &HashMap::new())
+            .await
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn get_alert(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
+    authorize(context.session_key, Action::GetAlert, None, None)?;
+    let id = Ulid::from_string(required_string(arguments, "alert_id")?)
+        .map_err(|error| error.to_string())?;
+    serde_json::to_value(
+        alerts::get_internal(context.session_key, id, context.tenant_id)
+            .await
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn list_alert_tags(context: OssToolContext<'_>) -> Result<Value, String> {
+    authorize(context.session_key, Action::GetAlert, None, None)?;
+    serde_json::to_value(
+        alerts::list_tags_internal(context.tenant_id)
+            .await
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn change_alert_state(
+    name: &str,
+    arguments: &Value,
+    context: OssToolContext<'_>,
+) -> Result<Value, String> {
+    authorize(context.session_key, Action::PutAlert, None, None)?;
+    let id = Ulid::from_string(required_string(arguments, "alert_id")?)
+        .map_err(|error| error.to_string())?;
+    let response = match name {
+        "enable_alert" => {
+            alerts::enable_alert_internal(context.session_key, id, context.tenant_id).await
+        }
+        "disable_alert" => {
+            alerts::disable_alert_internal(context.session_key, id, context.tenant_id).await
+        }
+        _ => alerts::evaluate_alert_internal(context.session_key, id, context.tenant_id).await,
+    }
+    .map_err(|error| error.to_string())?;
+    serde_json::to_value(response).map_err(|error| error.to_string())
 }
 
 async fn create_alert(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
@@ -1165,6 +1191,35 @@ async fn create_alert(arguments: &Value, context: OssToolContext<'_>) -> Result<
             .map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())
+}
+
+async fn update_alert(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
+    authorize(context.session_key, Action::PutAlert, None, None)?;
+    let id = Ulid::from_string(required_string(arguments, "alertId")?)
+        .map_err(|error| error.to_string())?;
+    let request = serde_json::from_value(
+        arguments
+            .get("spec")
+            .cloned()
+            .ok_or_else(|| "missing required object argument `spec`".to_owned())?,
+    )
+    .map_err(|error| format!("invalid updated alert: {error}"))?;
+    serde_json::to_value(
+        alerts::modify_alert_internal(context.session_key, id, request, context.tenant_id)
+            .await
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn delete_alert(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
+    authorize(context.session_key, Action::DeleteAlert, None, None)?;
+    let id = Ulid::from_string(required_string(arguments, "alertId")?)
+        .map_err(|error| error.to_string())?;
+    let message = alerts::delete_internal(context.session_key, id, context.tenant_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(json!({ "message": message }))
 }
 
 async fn execute_alert_target_tool(
@@ -1203,8 +1258,123 @@ async fn execute_alert_target_tool(
                 .await
                 .map_err(|error| error.to_string())
         }
+        "update_alert_target" => {
+            authorize(context.session_key, Action::PutAlert, None, None)?;
+            let id = Ulid::from_string(required_string(arguments, "targetId")?)
+                .map_err(|error| error.to_string())?;
+            let target = serde_json::from_value(
+                arguments
+                    .get("spec")
+                    .cloned()
+                    .ok_or_else(|| "missing required object argument `spec`".to_owned())?,
+            )
+            .map_err(|error| format!("invalid updated alert target: {error}"))?;
+            targets::update_internal(id, target, context.tenant_id)
+                .await
+                .map_err(|error| error.to_string())
+        }
+        "delete_alert_target" => {
+            authorize(context.session_key, Action::DeleteAlert, None, None)?;
+            let id = Ulid::from_string(required_string(arguments, "targetId")?)
+                .map_err(|error| error.to_string())?;
+            targets::delete_internal(id, context.tenant_id)
+                .await
+                .map_err(|error| error.to_string())
+        }
         _ => unreachable!("alert target dispatcher only receives known tools"),
     }
+}
+
+async fn execute_dashboard_action_tool(
+    name: &str,
+    arguments: &Value,
+    context: OssToolContext<'_>,
+) -> Result<Value, String> {
+    match name {
+        "create_dashboard" => create_dashboard(arguments, context).await,
+        "update_dashboard" => update_dashboard(arguments, context).await,
+        "save_tile" => save_tile(arguments, context).await,
+        "delete_dashboard" => delete_dashboard(arguments, context).await,
+        _ => unreachable!("dashboard action dispatcher only receives known tools"),
+    }
+}
+
+async fn create_dashboard(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
+    authorize(context.session_key, Action::CreateDashboard, None, None)?;
+    let user_id = session_user_id(context.session_key)?;
+    let dashboard = serde_json::from_value(
+        arguments
+            .get("dashboard")
+            .cloned()
+            .ok_or_else(|| "missing required object argument `dashboard`".to_owned())?,
+    )
+    .map_err(|error| format!("invalid dashboard: {error}"))?;
+    serde_json::to_value(
+        dashboards::create_dashboard_internal(&user_id, dashboard, context.tenant_id)
+            .await
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn update_dashboard(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
+    authorize(context.session_key, Action::CreateDashboard, None, None)?;
+    let user_id = session_user_id(context.session_key)?;
+    let is_admin = is_admin_for_session(context.session_key);
+    let id = crate::users::dashboards::validate_dashboard_id(
+        required_string(arguments, "dashboardId")?.to_owned(),
+    )
+    .map_err(|error| error.to_string())?;
+    let dashboard = serde_json::from_value(
+        arguments
+            .get("dashboard")
+            .cloned()
+            .ok_or_else(|| "missing required object argument `dashboard`".to_owned())?,
+    )
+    .map_err(|error| format!("invalid updated dashboard: {error}"))?;
+    serde_json::to_value(
+        dashboards::update_dashboard_internal(&user_id, id, dashboard, is_admin, context.tenant_id)
+            .await
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn save_tile(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
+    authorize(context.session_key, Action::CreateDashboard, None, None)?;
+    let user_id = session_user_id(context.session_key)?;
+    let is_admin = is_admin_for_session(context.session_key);
+    let id = crate::users::dashboards::validate_dashboard_id(
+        required_string(arguments, "dashboardId")?.to_owned(),
+    )
+    .map_err(|error| error.to_string())?;
+    let tile = serde_json::from_value(
+        arguments
+            .get("tile")
+            .cloned()
+            .ok_or_else(|| "missing required object argument `tile`".to_owned())?,
+    )
+    .map_err(|error| format!("invalid tile: {error}"))?;
+    serde_json::to_value(
+        dashboards::add_tile_internal(&user_id, id, tile, is_admin, context.tenant_id)
+            .await
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn delete_dashboard(arguments: &Value, context: OssToolContext<'_>) -> Result<Value, String> {
+    authorize(context.session_key, Action::DeleteDashboard, None, None)?;
+    let user_id = session_user_id(context.session_key)?;
+    let is_admin = is_admin_for_session(context.session_key);
+    let id = crate::users::dashboards::validate_dashboard_id(
+        required_string(arguments, "dashboardId")?.to_owned(),
+    )
+    .map_err(|error| error.to_string())?;
+    dashboards::delete_dashboard_internal(&user_id, id, is_admin, context.tenant_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(json!({ "deleted": true, "dashboardId": id }))
 }
 
 async fn execute_trace_tool(
@@ -1680,10 +1850,14 @@ async fn execute_oss_tool_inner(
         "list_log_errors" => list_log_errors(arguments, context).await,
         "query_sql" | "explain_query" => execute_sql_tool(name, arguments, context).await,
         "list_alerts" | "get_alert" | "list_alert_tags" | "enable_alert" | "disable_alert"
-        | "evaluate_alert" | "create_alert" => execute_alert_tool(name, arguments, context).await,
-        "list_alert_targets" | "get_alert_target" | "create_alert_target" => {
-            execute_alert_target_tool(name, arguments, context).await
+        | "evaluate_alert" | "create_alert" | "update_alert" | "delete_alert" => {
+            execute_alert_tool(name, arguments, context).await
         }
+        "list_alert_targets"
+        | "get_alert_target"
+        | "create_alert_target"
+        | "update_alert_target"
+        | "delete_alert_target" => execute_alert_target_tool(name, arguments, context).await,
         "get_traces" | "get_trace" | "list_trace_errors" => {
             execute_trace_tool(name, arguments, context).await
         }
@@ -1700,15 +1874,17 @@ async fn execute_oss_tool_inner(
         | "list_dashboard_tags"
         | "get_dashboard"
         | "list_dashboards" => execute_saved_object_tool(name, arguments, context).await,
+        "save_tile" | "create_dashboard" | "update_dashboard" | "delete_dashboard" => {
+            execute_dashboard_action_tool(name, arguments, context).await
+        }
         _ => Err(format!(
             "tool `{name}` is registered but does not yet have an OSS internal executor"
         )),
     }
 }
 
-/// Execute a registered OSS tool in-process. Enterprise uses this only after
-/// applying its own agent policy and action-confirmation checks, so catalog
-/// validation and the underlying platform implementation remain canonical.
+/// Execute a registered OSS tool in-process. Agent callers apply their own
+/// policies; external MCP callers are treated as client-confirmed actions.
 pub async fn execute_oss_tool(
     name: &str,
     arguments: &Value,
@@ -1759,7 +1935,7 @@ pub async fn call_tool_registry(
             "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
         ));
     }
-    let Some(spec) = oss_read_tool_specs()
+    let Some(spec) = crate::tool_catalog::oss_tool_specs()
         .into_iter()
         .find(|tool| tool.name == call.name)
     else {
