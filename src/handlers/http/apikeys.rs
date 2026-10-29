@@ -19,6 +19,7 @@ use crate::{
         GLOBAL_INGESTOR_ROLE, GLOBAL_QUERIER_ROLE, Users,
         map::{roles, users},
         role::model::{DefaultPrivilege, Role},
+        role_exists,
         user::{User, UserType},
     },
     utils::{get_user_and_tenant_from_request, is_admin},
@@ -186,15 +187,9 @@ fn validate_roles(
     tenant_id: &Option<String>,
 ) -> Result<(), ApiKeyError> {
     let tenant = tenant_or_default(tenant_id);
-    let tenant_roles = roles();
     let missing: Vec<String> = role_names
         .iter()
-        .filter(|r| {
-            tenant_roles
-                .get(tenant)
-                .map(|m| !m.contains_key(*r))
-                .unwrap_or(true)
-        })
+        .filter(|r| !role_exists(tenant, r))
         .cloned()
         .collect();
     if missing.is_empty() {
@@ -367,8 +362,6 @@ pub async fn patch_api_key(
         put_metadata(&metadata, &tenant_id).await?;
         Users.put_user(user.clone());
     }
-    drop(guard);
-
     // A retry also re-sends an already applied update to any lagging nodes.
     crate::handlers::http::cluster::sync_user_creation(
         &req,
@@ -379,6 +372,7 @@ pub async fn patch_api_key(
     )
     .await
     .map_err(|error: RBACError| ApiKeyError::UpdateSyncFailed(error.to_string()))?;
+    drop(guard);
 
     let response = ApiKeyResponse::try_from(&user)?;
     Ok(HttpResponse::Ok().json(response))

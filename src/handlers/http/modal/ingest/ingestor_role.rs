@@ -29,7 +29,10 @@ use crate::{
         role::RoleError,
     },
     parseable::DEFAULT_TENANT,
-    rbac::map::{mut_roles, mut_sessions, read_user_groups, users},
+    rbac::{
+        is_system_role,
+        map::{mut_roles, mut_sessions, read_user_groups, users},
+    },
     storage,
     utils::get_tenant_id_from_request,
 };
@@ -42,6 +45,9 @@ pub async fn put(
     Json(sync_req): Json<SyncRole>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    if is_system_role(&name) {
+        return Err(RoleError::ProtectedRole);
+    }
     let req_tenant_id = get_tenant_id_from_request(&req);
     let req_tenant = req_tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     if req_tenant.ne(DEFAULT_TENANT) && (req_tenant_id.ne(&sync_req.tenant_id)) {
@@ -100,6 +106,9 @@ pub async fn delete(
     name: web::Path<String>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    if is_system_role(&name) {
+        return Err(RoleError::ProtectedRole);
+    }
     let req_tenant_id = get_tenant_id_from_request(&req);
 
     let mut metadata = get_metadata(&req_tenant_id).await?;

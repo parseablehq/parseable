@@ -36,7 +36,7 @@ use crate::handlers::http::rbac::RBACError;
 use crate::parseable::DEFAULT_TENANT;
 use crate::rbac::map::{mut_sessions, mut_users, read_user_groups, roles, sessions, users};
 use crate::rbac::role::Action;
-use crate::rbac::role::model::RoleUI;
+use crate::rbac::role::model::{Role, RoleUI};
 use crate::rbac::user::User;
 use crate::utils::get_tenant_id_from_key;
 
@@ -45,11 +45,41 @@ use self::role::{ParseableResourceType, Permission, RoleBuilder, model::DefaultP
 use self::user::UserType;
 
 pub const EXPIRY_DURATION: Duration = Duration::hours(1);
-/// Reserved, server-managed role for Helm's ingest-only API keys.
+/// Reserved, server-managed role for global ingestion.
 /// This name is outside the user-defined role-name grammar.
 pub const GLOBAL_INGESTOR_ROLE: &str = "__global_ingestor__";
 /// Reserved, server-managed role with the existing reader privilege on all datasets.
 pub const GLOBAL_QUERIER_ROLE: &str = "__global_querier__";
+
+pub fn system_role(name: &str) -> Option<Role> {
+    let privilege = match name {
+        GLOBAL_INGESTOR_ROLE => DefaultPrivilege::Ingestor { resource: None },
+        GLOBAL_QUERIER_ROLE => DefaultPrivilege::Reader {
+            resource: Some(ParseableResourceType::Stream("*".to_string())),
+        },
+        _ => return None,
+    };
+    Some(Role::create_internal_role(vec![privilege]))
+}
+
+pub fn is_system_role(name: &str) -> bool {
+    matches!(name, GLOBAL_INGESTOR_ROLE | GLOBAL_QUERIER_ROLE)
+}
+
+pub fn role_for(tenant_id: &str, name: &str) -> Option<Role> {
+    system_role(name).or_else(|| {
+        roles()
+            .get(tenant_id)
+            .and_then(|roles| roles.get(name).cloned())
+    })
+}
+
+pub fn role_exists(tenant_id: &str, name: &str) -> bool {
+    is_system_role(name)
+        || roles()
+            .get(tenant_id)
+            .is_some_and(|roles| roles.contains_key(name))
+}
 
 #[derive(PartialEq, Debug)]
 pub enum Response {

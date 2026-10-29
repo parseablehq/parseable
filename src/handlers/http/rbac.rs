@@ -150,9 +150,7 @@ pub async fn post_user(
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && !tenant_roles.contains_key(role)
-        {
+        if !rbac::role_exists(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT), role) {
             non_existent_roles.push(role.clone());
         }
     }
@@ -294,13 +292,7 @@ pub fn get_role_internal(
         .get_role(userid, tenant_id)
         .iter()
         .filter_map(|role_name| {
-            if let Some(roles) = roles().get(tenant)
-                && let Some(role) = roles.get(role_name)
-            {
-                Some((role_name.to_owned(), role.clone()))
-            } else {
-                None
-            }
+            rbac::role_for(tenant, role_name).map(|role| (role_name.clone(), role))
         })
         .collect();
 
@@ -424,9 +416,7 @@ pub async fn add_roles_to_user(
 
     // check if the role exists
     for role in &roles_to_add {
-        if let Some(tenant_roles) = roles().get(tenant_str)
-            && !tenant_roles.contains_key(role)
-        {
+        if !rbac::role_exists(tenant_str, role) {
             non_existent_roles.push(role.clone());
         }
     }
@@ -488,9 +478,7 @@ pub async fn remove_roles_from_user(
 
     // check if the role exists
     for role in &roles_to_remove {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && !tenant_roles.contains_key(role)
-        {
+        if !rbac::role_exists(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT), role) {
             non_existent_roles.push(role.clone());
         }
     }
