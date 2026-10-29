@@ -101,26 +101,32 @@ pub struct ValidateApiKeyRequest {
 #[derive(Debug, Deserialize)]
 pub struct ListApiKeysQuery {
     #[serde(default, deserialize_with = "deserialize_api_key_privilege")]
-    priviledge: Option<DefaultPrivilege>,
+    priviledge: Option<Vec<DefaultPrivilege>>,
 }
 
 fn deserialize_api_key_privilege<'de, D>(
     deserializer: D,
-) -> Result<Option<DefaultPrivilege>, D::Error>
+) -> Result<Option<Vec<DefaultPrivilege>>, D::Error>
 where
     D: Deserializer<'de>,
 {
     Option::<String>::deserialize(deserializer)?
-        .map(|privilege| match privilege.as_str() {
-            "reader" => Ok(DefaultPrivilege::Reader { resource: None }),
-            "ingestor" => Ok(DefaultPrivilege::Ingestor { resource: None }),
-            "admin" => Ok(DefaultPrivilege::Admin),
-            "writer" => Ok(DefaultPrivilege::Writer { resource: None }),
-            "editor" => Ok(DefaultPrivilege::Editor),
-            _ => Err(de::Error::unknown_variant(
-                &privilege,
-                &["reader", "ingestor", "admin", "writer", "editor"],
-            )),
+        .map(|privileges| {
+            privileges
+                .split(',')
+                .map(str::trim)
+                .map(|privilege| match privilege {
+                    "reader" => Ok(DefaultPrivilege::Reader { resource: None }),
+                    "ingestor" => Ok(DefaultPrivilege::Ingestor { resource: None }),
+                    "admin" => Ok(DefaultPrivilege::Admin),
+                    "writer" => Ok(DefaultPrivilege::Writer { resource: None }),
+                    "editor" => Ok(DefaultPrivilege::Editor),
+                    _ => Err(de::Error::unknown_variant(
+                        privilege,
+                        &["reader", "ingestor", "admin", "writer", "editor"],
+                    )),
+                })
+                .collect()
         })
         .transpose()
 }
@@ -320,7 +326,8 @@ pub async fn delete_api_key(
 /// GET /api/prism/v1/apikeys
 ///
 /// List all API keys (masked). Only admins can list keys. Optionally filter by
-/// role privilege with `?priviledge=reader|ingestor|admin|writer|editor`.
+/// one or more comma-separated role privileges, such as
+/// `?priviledge=reader,editor,admin`.
 pub async fn list_api_keys(
     req: HttpRequest,
     web::Query(query): web::Query<ListApiKeysQuery>,
@@ -331,12 +338,16 @@ pub async fn list_api_keys(
     let entries: Vec<ApiKeyListEntry> = collect_tenant_api_keys(&tenant_id)
         .iter()
         .filter(|user| {
-            query.priviledge.as_ref().is_none_or(|privilege| {
+            query.priviledge.as_ref().is_none_or(|privileges| {
                 user.roles.iter().any(|role_name| {
                     tenant_roles
                         .get(tenant)
                         .and_then(|roles| roles.get(role_name))
-                        .is_some_and(|role| role_has_privilege(role, privilege))
+                        .is_some_and(|role| {
+                            privileges
+                                .iter()
+                                .any(|privilege| role_has_privilege(role, privilege))
+                        })
                 })
             })
         })
@@ -381,4 +392,63 @@ pub async fn get_api_key(
 
     let response = ApiKeyResponse::try_from(&user)?;
     Ok(HttpResponse::Ok().json(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_single_api_key_privilege() {
+        let query: ListApiKeysQuery =
+            serde_json::from_value(serde_json::json!({ "priviledge": "reader" })).unwrap();
+        let privileges = query.priviledge.unwrap();
+
+        assert_eq!(privileges.len(), 1);
+        assert!(matches!(
+            privileges.first(),
+            Some(DefaultPrivilege::Reader { .. })
+        ));
+    }
+
+    #[test]
+    fn deserializes_comma_separated_api_key_privileges() {
+        let query =
+            web::Query::<ListApiKeysQuery>::from_query("priviledge=reader%2Ceditor%2Cadmin")
+                .unwrap()
+                .into_inner();
+        let privileges = query.priviledge.unwrap();
+
+        assert_eq!(privileges.len(), 3);
+        assert!(matches!(
+            privileges.first(),
+            Some(DefaultPrivilege::Reader { .. })
+        ));
+        assert!(matches!(privileges.get(1), Some(DefaultPrivilege::Editor)));
+        assert!(matches!(privileges.get(2), Some(DefaultPrivilege::Admin)));
+    }
+
+    #[test]
+    fn allows_spaces_around_api_key_privileges() {
+        let query: ListApiKeysQuery = serde_json::from_value(serde_json::json!({
+            "priviledge": "reader, writer"
+        }))
+        .unwrap();
+        let privileges = query.priviledge.unwrap();
+
+        assert_eq!(privileges.len(), 2);
+        assert!(matches!(
+            privileges.get(1),
+            Some(DefaultPrivilege::Writer { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_api_key_privilege() {
+        let query = serde_json::from_value::<ListApiKeysQuery>(serde_json::json!({
+            "priviledge": "reader,owner"
+        }));
+
+        assert!(query.is_err());
+    }
 }
