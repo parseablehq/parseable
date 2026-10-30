@@ -45,7 +45,10 @@ pub async fn put(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     // internal role manipulation not allowed
-    if is_system_role(&name) || role.role_type().eq(&RoleType::Internal) {
+    if is_system_role(&name) {
+        return Err(RoleError::SystemRolePrivilegesLocked(name));
+    }
+    if role.role_type().eq(&RoleType::Internal) {
         return Err(RoleError::ProtectedRole);
     }
     if role.deny_super_admin() {
@@ -151,7 +154,7 @@ pub async fn delete(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     if is_system_role(&name) {
-        return Err(RoleError::ProtectedRole);
+        return Err(RoleError::SystemRoleDeletion(name));
     }
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
@@ -269,6 +272,10 @@ pub enum RoleError {
     RoleInUse,
     #[error("Cannot perform this operation as role is assigned to a protected user.")]
     ProtectedRole,
+    #[error("System role '{0}' cannot be deleted.")]
+    SystemRoleDeletion(String),
+    #[error("Privileges of system role '{0}' are fixed; you cannot add or remove them.")]
+    SystemRolePrivilegesLocked(String),
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
     #[error("{0}")]
@@ -288,6 +295,9 @@ impl actix_web::ResponseError for RoleError {
             Self::RoleInUse => StatusCode::BAD_REQUEST,
             Self::SuperAdminPrivilege => StatusCode::BAD_REQUEST,
             Self::ProtectedRole => StatusCode::BAD_REQUEST,
+            Self::SystemRoleDeletion(_) | Self::SystemRolePrivilegesLocked(_) => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::Network(_) => StatusCode::BAD_GATEWAY,

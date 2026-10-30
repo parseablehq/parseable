@@ -53,7 +53,9 @@ pub const GLOBAL_QUERIER_ROLE: &str = "__global_querier__";
 
 pub fn system_role(name: &str) -> Option<Role> {
     let privilege = match name {
-        GLOBAL_INGESTOR_ROLE => DefaultPrivilege::Ingestor { resource: None },
+        GLOBAL_INGESTOR_ROLE => DefaultPrivilege::Ingestor {
+            resource: Some(ParseableResourceType::Stream("*".to_string())),
+        },
         GLOBAL_QUERIER_ROLE => DefaultPrivilege::Reader {
             resource: Some(ParseableResourceType::Stream("*".to_string())),
         },
@@ -433,7 +435,10 @@ pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permissio
     let mut perms = HashSet::new();
     for role in &roles {
         if role == GLOBAL_INGESTOR_ROLE {
-            perms.insert(Permission::Resource(Action::Ingest, None));
+            perms.insert(Permission::Resource(
+                Action::Ingest,
+                Some(ParseableResourceType::Stream("*".to_string())),
+            ));
             continue;
         }
         if role == GLOBAL_QUERIER_ROLE {

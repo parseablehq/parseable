@@ -49,7 +49,7 @@ pub async fn put(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     if is_system_role(&name) {
-        return Err(RoleError::ProtectedRole);
+        return Err(RoleError::SystemRolePrivilegesLocked(name));
     }
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
@@ -135,7 +135,7 @@ pub async fn delete(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     if is_system_role(&name) {
-        return Err(RoleError::ProtectedRole);
+        return Err(RoleError::SystemRoleDeletion(name));
     }
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
