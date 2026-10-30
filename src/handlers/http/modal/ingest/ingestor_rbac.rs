@@ -27,8 +27,7 @@ use crate::{
     },
     parseable::DEFAULT_TENANT,
     rbac::{
-        Users,
-        map::roles,
+        Users, role_exists,
         user::{self, User as ParseableUser},
     },
     storage,
@@ -107,10 +106,7 @@ pub async fn add_roles_to_user(
     let mut non_existent_roles = Vec::new();
     roles_to_add.iter().for_each(|r| {
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        let role_exists = roles()
-            .get(tenant)
-            .is_some_and(|tenant_roles| tenant_roles.contains_key(r));
-        if !role_exists {
+        if !role_exists(tenant, r) {
             non_existent_roles.push(r.clone());
         }
     });
@@ -153,11 +149,9 @@ pub async fn remove_roles_from_user(
 
     // check if all roles exist
     let mut non_existent_roles = Vec::new();
-    roles_to_remove.iter().for_each(|r| {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && tenant_roles.get(r).is_none()
-        {
-            non_existent_roles.push(r.clone());
+    roles_to_remove.iter().for_each(|role| {
+        if !role_exists(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT), role) {
+            non_existent_roles.push(role.clone());
         }
     });
 

@@ -223,8 +223,7 @@ pub async fn add_roles_to_user(
 
     put_metadata(&metadata, &tenant_id).await?;
 
-    // sync to other nodes before updating in-memory (which invalidates sessions)
-    if let Err(e) = sync_users_with_roles_with_ingestors(
+    sync_users_with_roles_with_ingestors(
         &req,
         &userid,
         &roles_to_add,
@@ -232,10 +231,7 @@ pub async fn add_roles_to_user(
         &tenant_id,
         &caller_userid,
     )
-    .await
-    {
-        tracing::error!("Failed to sync role addition to cluster nodes: {e}");
-    }
+    .await?;
 
     // update in mem table (this invalidates the user's session)
     Users.add_roles(&userid.clone(), roles_to_add.clone(), &tenant_id);
@@ -326,8 +322,7 @@ pub async fn remove_roles_from_user(
 
     put_metadata(&metadata, &tenant_id).await?;
 
-    // sync to other nodes before updating in-memory (which invalidates sessions)
-    if let Err(e) = sync_users_with_roles_with_ingestors(
+    sync_users_with_roles_with_ingestors(
         &req,
         &userid,
         &roles_to_remove,
@@ -335,10 +330,7 @@ pub async fn remove_roles_from_user(
         &tenant_id,
         &caller_userid,
     )
-    .await
-    {
-        tracing::error!("Failed to sync role removal to cluster nodes: {e}");
-    }
+    .await?;
 
     // update in mem table (this invalidates the user's session)
     Users.remove_roles(&userid.clone(), roles_to_remove.clone(), &tenant_id);
