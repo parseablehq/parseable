@@ -251,7 +251,7 @@ pub fn balanced_file_groups(manifest_files: Vec<File>, target_partitions: usize)
 }
 
 /// Discard unverified footer ordering so sorts and TopK cannot trust the scan.
-fn without_output_ordering(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+pub fn without_output_ordering(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     if plan.output_ordering().is_none() {
         return plan;
     }
