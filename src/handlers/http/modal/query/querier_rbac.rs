@@ -31,8 +31,8 @@ use crate::{
     },
     parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
-        Users,
-        map::{roles, users, write_user_groups},
+        self, Users,
+        map::{users, write_user_groups},
         user::{self, UserType},
     },
     tenants::TENANT_METADATA,
@@ -62,11 +62,7 @@ pub async fn post_user(
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        let role_exists = roles()
-            .get(tenant)
-            .map(|tenant_roles| tenant_roles.contains_key(role))
-            .unwrap_or(false);
-        if !role_exists {
+        if !rbac::role_exists(tenant, role) {
             non_existent_roles.push(role.clone());
         }
     }
@@ -203,9 +199,7 @@ pub async fn add_roles_to_user(
 
     // check if the role exists
     roles_to_add.iter().for_each(|r| {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && tenant_roles.get(r).is_none()
-        {
+        if !rbac::role_exists(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT), r) {
             non_existent_roles.push(r.clone());
         }
     });
@@ -229,8 +223,7 @@ pub async fn add_roles_to_user(
 
     put_metadata(&metadata, &tenant_id).await?;
 
-    // sync to other nodes before updating in-memory (which invalidates sessions)
-    if let Err(e) = sync_users_with_roles_with_ingestors(
+    sync_users_with_roles_with_ingestors(
         &req,
         &userid,
         &roles_to_add,
@@ -238,10 +231,7 @@ pub async fn add_roles_to_user(
         &tenant_id,
         &caller_userid,
     )
-    .await
-    {
-        tracing::error!("Failed to sync role addition to cluster nodes: {e}");
-    }
+    .await?;
 
     // update in mem table (this invalidates the user's session)
     Users.add_roles(&userid.clone(), roles_to_add.clone(), &tenant_id);
@@ -279,9 +269,7 @@ pub async fn remove_roles_from_user(
 
     // check if the role exists
     roles_to_remove.iter().for_each(|r| {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && tenant_roles.get(r).is_none()
-        {
+        if !rbac::role_exists(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT), r) {
             non_existent_roles.push(r.clone());
         }
     });
@@ -334,8 +322,7 @@ pub async fn remove_roles_from_user(
 
     put_metadata(&metadata, &tenant_id).await?;
 
-    // sync to other nodes before updating in-memory (which invalidates sessions)
-    if let Err(e) = sync_users_with_roles_with_ingestors(
+    sync_users_with_roles_with_ingestors(
         &req,
         &userid,
         &roles_to_remove,
@@ -343,10 +330,7 @@ pub async fn remove_roles_from_user(
         &tenant_id,
         &caller_userid,
     )
-    .await
-    {
-        tracing::error!("Failed to sync role removal to cluster nodes: {e}");
-    }
+    .await?;
 
     // update in mem table (this invalidates the user's session)
     Users.remove_roles(&userid.clone(), roles_to_remove.clone(), &tenant_id);
