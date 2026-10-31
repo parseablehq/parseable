@@ -17,7 +17,11 @@
  */
 
 pub mod prom_utils;
-use std::{path::Path, sync::OnceLock};
+use std::{
+    collections::VecDeque,
+    path::Path,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::{
     handlers::{TelemetryType, http::metrics_path},
@@ -243,6 +247,17 @@ pub static PROCESS_CPU_USAGE_PERCENT_AVG: Lazy<Gauge> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static PROCESS_CPU_USAGE_CORES: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_cpu_usage_cores",
+            "Average CPU cores used by Parseable over the last minute",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
 pub static PROCESS_CPU_LIMIT_CORES: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
@@ -277,9 +292,12 @@ pub static PROCESS_MEMORY_LIMIT_BYTES: Lazy<Gauge> = Lazy::new(|| {
 });
 
 pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64)> = OnceLock::new();
+const CPU_USAGE_CORES_WINDOW_SAMPLES: usize = 12;
+
 pub struct ProcessMetricsAccumulator {
     cpu_usage_avg: AtomicF64,
     memory_bytes_avg: AtomicF64,
+    cpu_usage_cores_samples: Mutex<VecDeque<f64>>,
 }
 
 impl Default for ProcessMetricsAccumulator {
@@ -289,6 +307,9 @@ impl Default for ProcessMetricsAccumulator {
         Self {
             cpu_usage_avg: AtomicF64::new(cpu),
             memory_bytes_avg: AtomicF64::new(mem as f64),
+            cpu_usage_cores_samples: Mutex::new(VecDeque::with_capacity(
+                CPU_USAGE_CORES_WINDOW_SAMPLES,
+            )),
         }
     }
 }
@@ -314,6 +335,11 @@ impl ProcessMetricsAccumulator {
         (s_cpu_new, s_mem_new)
     }
 
+    fn record_cpu_usage_cores(&self, cpu_usage_cores: f64) -> f64 {
+        let mut samples = self.cpu_usage_cores_samples.lock().unwrap();
+        update_cpu_usage_cores_average(&mut samples, cpu_usage_cores)
+    }
+
     pub fn get_cpu(&self) -> f64 {
         self.cpu_usage_avg.get()
     }
@@ -325,6 +351,20 @@ impl ProcessMetricsAccumulator {
 
 pub static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
     Lazy::new(ProcessMetricsAccumulator::default);
+
+fn update_cpu_usage_cores_average(samples: &mut VecDeque<f64>, sample: f64) -> f64 {
+    if samples.len() == CPU_USAGE_CORES_WINDOW_SAMPLES {
+        samples.pop_front();
+    }
+    samples.push_back(sample);
+
+    samples.iter().sum::<f64>() / samples.len() as f64
+}
+
+pub fn record_process_cpu_usage_cores(cpu_usage_cores: f64) {
+    let average = PROCESS_METRICS_ACCUMULATOR.record_cpu_usage_cores(cpu_usage_cores);
+    PROCESS_CPU_USAGE_CORES.set(average);
+}
 
 pub fn record_process_metrics_sample(
     cpu_usage_percent: f64,
@@ -348,7 +388,9 @@ pub fn record_process_metrics_sample(
 mod process_metrics_tests {
     use crate::metrics::PROCESS_METRICS_INIT;
 
-    use super::ProcessMetricsAccumulator;
+    use super::{
+        CPU_USAGE_CORES_WINDOW_SAMPLES, ProcessMetricsAccumulator, update_cpu_usage_cores_average,
+    };
 
     #[test]
     fn averages_process_metric_samples() {
@@ -358,6 +400,20 @@ mod process_metrics_tests {
 
         assert_eq!(accumulator.record(10.0, 100), (10.0, 100.0));
         assert_eq!(accumulator.record(20.0, 300), (10.8, 116.0));
+    }
+
+    #[test]
+    fn cpu_usage_cores_window_is_one_minute_of_samples() {
+        let mut samples = std::collections::VecDeque::new();
+        let mut average = 0.0;
+        for sample in 1..=CPU_USAGE_CORES_WINDOW_SAMPLES + 1 {
+            average = update_cpu_usage_cores_average(&mut samples, sample as f64);
+        }
+
+        assert_eq!(samples.len(), CPU_USAGE_CORES_WINDOW_SAMPLES);
+        assert_eq!(samples.front(), Some(&2.0));
+        assert_eq!(samples.back(), Some(&13.0));
+        assert_eq!(average, 7.5);
     }
 }
 
@@ -903,6 +959,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_CPU_USAGE_CORES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_CPU_LIMIT_CORES.clone()))
