@@ -72,6 +72,7 @@ pub struct ObjectStoreMetastore {
 }
 
 impl ObjectStoreMetastore {
+    /// Serialize at the object's own path; the tenant is forwarded without changing the path.
     async fn put_object(
         &self,
         obj: &dyn MetastoreObject,
@@ -85,6 +86,7 @@ impl ObjectStoreMetastore {
             .await?)
     }
 
+    /// Delete at the object's own path, preserving storage errors for missing objects.
     async fn delete_object(
         &self,
         obj: &dyn MetastoreObject,
@@ -1387,18 +1389,15 @@ mod tests {
                 id: Ulid::new(),
                 path: format!("{}/object.json", tenant.as_deref().unwrap_or("default")),
             };
-            let path = RelativePathBuf::from(&object.path);
+            let path = dir.path().join(&object.path);
             metastore.put_object(&object, &tenant).await.unwrap();
-            let bytes = storage.get_object(&path, &tenant).await.unwrap();
+            let bytes = tokio::fs::read(&path).await.unwrap();
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
                 serde_json::json!({"id": object.id.to_string(), "path": object.path})
             );
             metastore.delete_object(&object, &tenant).await.unwrap();
-            assert!(matches!(
-                storage.get_object(&path, &tenant).await,
-                Err(ObjectStorageError::NoSuchKey(_))
-            ));
+            assert!(!path.exists());
             assert!(matches!(
                 metastore.delete_object(&object, &tenant).await,
                 Err(MetastoreError::ObjectStorageError(_))

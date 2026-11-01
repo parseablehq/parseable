@@ -24,6 +24,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 
+/// Expand required legacy stats and update versions without replacing unrelated metadata.
 fn migrate_stats_and_version(stream_metadata_map: &mut serde_json::Map<String, Value>) {
     let stats = stream_metadata_map.get("stats").unwrap().clone();
     let default_stats = json!({
@@ -54,6 +55,7 @@ fn migrate_stats_and_version(stream_metadata_map: &mut serde_json::Map<String, V
     );
 }
 
+/// Upgrade v1 stats and initialize an empty snapshot, preserving other metadata fields.
 pub fn v1_v4(mut stream_metadata: Value) -> Value {
     let stream_metadata_map = stream_metadata.as_object_mut().unwrap();
     migrate_stats_and_version(stream_metadata_map);
@@ -67,10 +69,12 @@ pub fn v1_v4(mut stream_metadata: Value) -> Value {
     stream_metadata
 }
 
+/// Apply the same stats and snapshot upgrade as v1; v2 needs no separate conversion.
 pub fn v2_v4(stream_metadata: Value) -> Value {
     v1_v4(stream_metadata)
 }
 
+/// Upgrade legacy stats and v1 snapshots, leaving newer snapshots and other fields intact.
 pub fn v3_v4(mut stream_metadata: Value) -> Value {
     let stream_metadata_map: &mut serde_json::Map<String, Value> =
         stream_metadata.as_object_mut().unwrap();

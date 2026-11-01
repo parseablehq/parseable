@@ -631,6 +631,7 @@ pub fn to_object_store_path(path: &RelativePath) -> Path {
     Path::from(path.as_str())
 }
 
+/// Strip the caller's prefix from date directories, counting LIST attempts even on failure.
 async fn list_dates<S: object_store::ObjectStore>(
     client: &S,
     prefix: &Path,
@@ -663,6 +664,7 @@ async fn list_dates<S: object_store::ObjectStore>(
     Ok(dates)
 }
 
+/// Require metadata in every legacy stream directory; retain the provider's HEAD metric tenant.
 async fn list_old_streams<S: object_store::ObjectStore>(
     client: &S,
     head_tenant: &str,
@@ -714,6 +716,7 @@ async fn list_old_streams<S: object_store::ObjectStore>(
     Ok(dirs)
 }
 
+/// Return matching partition names without the parent prefix or trailing slash.
 async fn list_partitions<S: object_store::ObjectStore>(
     client: &S,
     prefix: &str,
@@ -751,6 +754,7 @@ async fn list_partitions<S: object_store::ObjectStore>(
     Ok(partitions)
 }
 
+/// Fetch filtered filenames concurrently in listing order through the provider's traced GET.
 async fn get_objects<S: object_store::ObjectStore>(
     client: &S,
     provider: &impl ObjectStorage,
@@ -803,6 +807,7 @@ async fn get_objects<S: object_store::ObjectStore>(
     Ok(res)
 }
 
+/// Count each GET attempt, recording file and byte metrics only after the full body is read.
 async fn get_object<S: object_store::ObjectStore>(
     client: &S,
     path: &RelativePath,
@@ -830,6 +835,7 @@ async fn get_object<S: object_store::ObjectStore>(
     Ok(body)
 }
 
+/// Count every request attempt and count a scanned file only when the request succeeds.
 fn record_request<T>(
     result: Result<T, object_store::Error>,
     method: &str,
@@ -847,6 +853,7 @@ fn record_request<T>(
     Ok(value)
 }
 
+/// Return every component of each child prefix, retaining the providers' directory listing format.
 async fn list_dirs<S: object_store::ObjectStore>(
     client: &S,
     prefix: &Path,
@@ -872,6 +879,7 @@ async fn list_dirs<S: object_store::ObjectStore>(
         .collect::<Vec<_>>())
 }
 
+/// Select filenames starting with `ingestor`, counting all listed files in scan metrics.
 async fn get_ingestor_meta_file_paths<S: object_store::ObjectStore>(
     client: &S,
     prefix: &Path,
@@ -904,6 +912,7 @@ async fn get_ingestor_meta_file_paths<S: object_store::ObjectStore>(
     Ok(path_arr)
 }
 
+/// Truncate the destination and fill it with bounded concurrent ranges; count successful downloads.
 async fn parallel_download<S: object_store::ObjectStore>(
     client: &S,
     path: &RelativePath,
@@ -968,6 +977,7 @@ async fn parallel_download<S: object_store::ObjectStore>(
     Ok(())
 }
 
+/// Drain bulk deletion results before reporting failures, counting only successful deletes.
 async fn delete_prefix<S: object_store::ObjectStore>(
     client: &S,
     key: &str,
