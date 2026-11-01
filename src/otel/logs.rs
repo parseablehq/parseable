@@ -113,16 +113,10 @@ fn severity_number_from_text(severity_text: &str) -> Option<i32> {
 
 /// Add the normalized severity fields to the flattened JSON.
 fn flatten_severity(severity_number: i32, severity_text: &str) -> Map<String, Value> {
-    let mut severity_json: Map<String, Value> = Map::new();
-    severity_json.insert(
-        "severity_number".to_string(),
-        Value::Number(severity_number.into()),
-    );
-    severity_json.insert(
-        "severity_text".to_string(),
-        Value::String(severity_text.to_string()),
-    );
-    severity_json
+    Map::from_iter([
+        ("severity_number".into(), severity_number.into()),
+        ("severity_text".into(), severity_text.to_string().into()),
+    ])
 }
 
 /// Maps OTel severity_number (0–24) to a log category.
@@ -171,19 +165,16 @@ fn category_from_body(body_str: &str) -> &'static str {
 /// and returns a `Map` of the flattened json
 /// this function is called recursively for each log record object in the otel logs
 pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
-    let mut log_record_json: Map<String, Value> = Map::new();
-    log_record_json.insert(
-        "time_unix_nano".to_string(),
-        Value::String(convert_epoch_nano_to_timestamp(
-            log_record.time_unix_nano as i64,
-        )),
-    );
-    log_record_json.insert(
-        "observed_time_unix_nano".to_string(),
-        Value::String(convert_epoch_nano_to_timestamp(
-            log_record.observed_time_unix_nano as i64,
-        )),
-    );
+    let mut log_record_json = Map::from_iter([
+        (
+            "time_unix_nano".into(),
+            convert_epoch_nano_to_timestamp(log_record.time_unix_nano as i64).into(),
+        ),
+        (
+            "observed_time_unix_nano".into(),
+            convert_epoch_nano_to_timestamp(log_record.observed_time_unix_nano as i64).into(),
+        ),
+    ]);
 
     let (severity_number, severity_text) =
         normalize_severity(log_record.severity_number, &log_record.severity_text);
@@ -233,27 +224,19 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
     insert_attributes(&mut log_record_json, &log_record.attributes);
 
     // Insert after attributes so a client-sent "p_log_category" cannot override
-    log_record_json.insert(
-        "p_log_category".to_string(),
-        Value::String(log_category.unwrap_or("UNSPECIFIED").to_string()),
-    );
-    log_record_json.insert(
-        "log_record_dropped_attributes_count".to_string(),
-        Value::Number(log_record.dropped_attributes_count.into()),
-    );
-
-    log_record_json.insert(
-        "flags".to_string(),
-        Value::Number((log_record.flags).into()),
-    );
-    log_record_json.insert(
-        "span_id".to_string(),
-        Value::String(hex::encode(&log_record.span_id)),
-    );
-    log_record_json.insert(
-        "trace_id".to_string(),
-        Value::String(hex::encode(&log_record.trace_id)),
-    );
+    log_record_json.extend([
+        (
+            "p_log_category".into(),
+            log_category.unwrap_or("UNSPECIFIED").to_string().into(),
+        ),
+        (
+            "log_record_dropped_attributes_count".into(),
+            log_record.dropped_attributes_count.into(),
+        ),
+        ("flags".into(), (log_record.flags).into()),
+        ("span_id".into(), hex::encode(&log_record.span_id).into()),
+        ("trace_id".into(), hex::encode(&log_record.trace_id).into()),
+    ]);
 
     log_record_json
 }

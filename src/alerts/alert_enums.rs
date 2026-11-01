@@ -51,6 +51,7 @@ impl From<&str> for AlertVersion {
 }
 
 #[derive(
+    derive_more::Display,
     Debug,
     serde::Serialize,
     serde::Deserialize,
@@ -71,99 +72,70 @@ pub enum Severity {
     Low,
 }
 
-impl Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Severity::Critical => write!(f, "Critical"),
-            Severity::High => write!(f, "High"),
-            Severity::Medium => write!(f, "Medium"),
-            Severity::Low => write!(f, "Low"),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(derive_more::Display, Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum LogicalOperator {
+    #[display("AND")]
     And,
+    #[display("OR")]
     Or,
 }
 
-impl Display for LogicalOperator {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LogicalOperator::And => write!(f, "AND"),
-            LogicalOperator::Or => write!(f, "OR"),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+#[derive(derive_more::Display, Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum AlertType {
+    #[display("threshold")]
     Threshold,
+    #[display("anomaly")]
     Anomaly(AnomalyConfig),
+    #[display("forecast")]
     Forecast(ForecastConfig),
 }
 
-impl Display for AlertType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AlertType::Threshold => write!(f, "threshold"),
-            AlertType::Anomaly(_) => write!(f, "anomaly"),
-            AlertType::Forecast(_) => write!(f, "forecast"),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    derive_more::Display,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum AlertQueryType {
     #[default]
+    #[display("builder")]
     Builder,
     #[serde(alias = "sql")]
+    #[display("code")]
     Code,
+    #[display("promql")]
     Promql,
 }
 
-impl Display for AlertQueryType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AlertQueryType::Builder => write!(f, "builder"),
-            AlertQueryType::Code => write!(f, "code"),
-            AlertQueryType::Promql => write!(f, "promql"),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(derive_more::Display, Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum AlertOperator {
     #[serde(rename = ">")]
+    #[display(">")]
     GreaterThan,
     #[serde(rename = "<")]
+    #[display("<")]
     LessThan,
     #[serde(rename = "=")]
+    #[display("=")]
     Equal,
     #[serde(rename = "!=")]
+    #[display("!=")]
     NotEqual,
     #[serde(rename = ">=")]
+    #[display(">=")]
     GreaterThanOrEqual,
     #[serde(rename = "<=")]
+    #[display("<=")]
     LessThanOrEqual,
-}
-
-impl Display for AlertOperator {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AlertOperator::GreaterThan => write!(f, ">"),
-            AlertOperator::LessThan => write!(f, "<"),
-            AlertOperator::Equal => write!(f, "="),
-            AlertOperator::NotEqual => write!(f, "!="),
-            AlertOperator::GreaterThanOrEqual => write!(f, ">="),
-            AlertOperator::LessThanOrEqual => write!(f, "<="),
-        }
-    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, FromStr, PartialEq, Eq)]
@@ -292,7 +264,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(derive_more::Display, Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum AggregateFunction {
     Avg,
@@ -303,19 +275,6 @@ pub enum AggregateFunction {
     Sum,
 }
 
-impl Display for AggregateFunction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AggregateFunction::Avg => write!(f, "Avg"),
-            AggregateFunction::Count => write!(f, "Count"),
-            AggregateFunction::CountDistinct => write!(f, "CountDistinct"),
-            AggregateFunction::Min => write!(f, "Min"),
-            AggregateFunction::Max => write!(f, "Max"),
-            AggregateFunction::Sum => write!(f, "Sum"),
-        }
-    }
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum EvalConfig {
@@ -323,6 +282,7 @@ pub enum EvalConfig {
 }
 
 #[derive(
+    derive_more::Display,
     Debug,
     serde::Serialize,
     serde::Deserialize,
@@ -337,21 +297,14 @@ pub enum EvalConfig {
 )]
 #[serde(rename_all = "camelCase")]
 pub enum AlertState {
+    #[display("triggered")]
     Triggered,
     #[default]
     #[serde(rename = "not-triggered")]
+    #[display("not-triggered")]
     NotTriggered,
+    #[display("disabled")]
     Disabled,
-}
-
-impl Display for AlertState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AlertState::Triggered => write!(f, "triggered"),
-            AlertState::Disabled => write!(f, "disabled"),
-            AlertState::NotTriggered => write!(f, "not-triggered"),
-        }
-    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Default)]

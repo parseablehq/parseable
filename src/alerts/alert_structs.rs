@@ -647,7 +647,7 @@ pub struct NotificationStateRequest {
 }
 
 /// MTTR (Mean Time To Recovery) statistics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MTTRStats {
     /// Total number of incidents (triggered -> not-triggered cycles)
@@ -705,19 +705,6 @@ impl MTTRStats {
             min_seconds,
             max_seconds,
             recovery_times_seconds: recovery_times,
-        }
-    }
-}
-
-impl Default for MTTRStats {
-    fn default() -> Self {
-        Self {
-            total_incidents: 0,
-            mean_seconds: 0.0,
-            median_seconds: 0.0,
-            min_seconds: 0.0,
-            max_seconds: 0.0,
-            recovery_times_seconds: Vec::new(),
         }
     }
 }
