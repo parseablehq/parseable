@@ -71,6 +71,33 @@ pub struct ObjectStoreMetastore {
     pub storage: Arc<dyn ObjectStorage>,
 }
 
+impl ObjectStoreMetastore {
+    async fn put_object(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError> {
+        let path = obj.get_object_path();
+
+        Ok(self
+            .storage
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
+            .await?)
+    }
+
+    async fn delete_object(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError> {
+        let path = obj.get_object_path();
+        Ok(self
+            .storage
+            .delete_object(&RelativePathBuf::from(path), tenant_id)
+            .await?)
+    }
+}
+
 pub fn is_missing_optional_dir(err: &ObjectStorageError) -> bool {
     match err {
         ObjectStorageError::NoSuchKey(_) => true,
@@ -433,11 +460,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let path = RelativePathBuf::from(obj.get_object_path());
-        Ok(self
-            .storage
-            .put_object(&path, to_bytes(obj), tenant_id)
-            .await?)
+        self.put_object(obj, tenant_id).await
     }
 
     /// This function fetches all the llmconfigs from the underlying object store
@@ -469,12 +492,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-
-        Ok(self
-            .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
-            .await?)
+        self.put_object(obj, tenant_id).await
     }
 
     /// Delete an llmconfig
@@ -483,11 +501,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-        Ok(self
-            .storage
-            .delete_object(&RelativePathBuf::from(path), tenant_id)
-            .await?)
+        self.delete_object(obj, tenant_id).await
     }
 
     /// Fetch all dashboards
@@ -533,13 +547,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        // we need the path to store in obj store
-        let path = obj.get_object_path();
-
-        Ok(self
-            .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
-            .await?)
+        self.put_object(obj, tenant_id).await
     }
 
     /// Delete a dashboard
@@ -548,11 +556,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-        Ok(self
-            .storage
-            .delete_object(&RelativePathBuf::from(path), tenant_id)
-            .await?)
+        self.delete_object(obj, tenant_id).await
     }
 
     /// Fetch all chats
@@ -607,13 +611,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        // we need the path to store in obj store
-        let path = obj.get_object_path();
-
-        Ok(self
-            .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
-            .await?)
+        self.put_object(obj, tenant_id).await
     }
 
     /// Delete a chat
@@ -622,11 +620,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-        Ok(self
-            .storage
-            .delete_object(&RelativePathBuf::from(path), tenant_id)
-            .await?)
+        self.delete_object(obj, tenant_id).await
     }
 
     // for get filters, take care of migration and removal of incorrect/old filters
@@ -744,13 +738,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        // we need the path to store in obj store
-        let path = obj.get_object_path();
-
-        Ok(self
-            .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
-            .await?)
+        self.put_object(obj, tenant_id).await
     }
 
     /// Delete a filter
@@ -759,12 +747,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-
-        Ok(self
-            .storage
-            .delete_object(&RelativePathBuf::from(path), tenant_id)
-            .await?)
+        self.delete_object(obj, tenant_id).await
     }
 
     /// Fetch an `ObjectStoreFormat` file
@@ -1075,13 +1058,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        // we need the path to store in obj store
-        let path = obj.get_object_path();
-
-        Ok(self
-            .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
-            .await?)
+        self.put_object(obj, tenant_id).await
     }
 
     async fn delete_target(
@@ -1089,13 +1066,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        // we need the path to store in obj store
-        let path = obj.get_object_path();
-
-        Ok(self
-            .storage
-            .delete_object(&RelativePathBuf::from(path), tenant_id)
-            .await?)
+        self.delete_object(obj, tenant_id).await
     }
 
     async fn get_outbound_policies(
@@ -1281,11 +1252,7 @@ impl Metastore for ObjectStoreMetastore {
     }
 
     async fn put_node_metadata(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-        self.storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj), &None)
-            .await?;
-        Ok(())
+        self.put_object(obj, &None).await
     }
 
     async fn delete_node_metadata(
@@ -1405,6 +1372,43 @@ mod tests {
 
         fn get_object_id(&self) -> String {
             self.id.to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn object_path_persistence_keeps_serialization_tenants_and_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(LocalFS::new(dir.path().to_path_buf()));
+        let metastore = ObjectStoreMetastore {
+            storage: storage.clone(),
+        };
+        for tenant in [None, Some("tenant".to_owned())] {
+            let mut object = TestMetastoreObject {
+                id: Ulid::new(),
+                path: format!("{}/object.json", tenant.as_deref().unwrap_or("default")),
+            };
+            let path = RelativePathBuf::from(&object.path);
+            metastore.put_object(&object, &tenant).await.unwrap();
+            let bytes = storage.get_object(&path, &tenant).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                serde_json::json!({"id": object.id.to_string(), "path": object.path})
+            );
+            metastore.delete_object(&object, &tenant).await.unwrap();
+            assert!(matches!(
+                storage.get_object(&path, &tenant).await,
+                Err(ObjectStorageError::NoSuchKey(_))
+            ));
+            assert!(matches!(
+                metastore.delete_object(&object, &tenant).await,
+                Err(MetastoreError::ObjectStorageError(_))
+            ));
+            std::fs::write(dir.path().join("blocked"), "data").unwrap();
+            object.path = "blocked/object.json".into();
+            assert!(matches!(
+                metastore.put_object(&object, &tenant).await,
+                Err(MetastoreError::ObjectStorageError(_))
+            ));
         }
     }
 

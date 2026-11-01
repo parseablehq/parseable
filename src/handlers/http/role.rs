@@ -25,12 +25,13 @@ use actix_web::{
     web::{self, Json},
 };
 
+use crate::handlers::http::modal::utils::rbac_utils::{get_metadata, put_metadata};
 use crate::rbac::map::roles;
 use crate::rbac::role::model::{Role, RoleType, RoleUI};
 use crate::{
-    parseable::{DEFAULT_TENANT, PARSEABLE},
+    parseable::DEFAULT_TENANT,
     rbac::map::{DEFAULT_ROLE, mut_roles, mut_sessions, read_user_groups, users},
-    storage::{self, ObjectStorageError, StorageMetadata},
+    storage::ObjectStorageError,
     utils::get_tenant_id_from_request,
     validator::{self, error::UsernameValidationError},
 };
@@ -226,27 +227,6 @@ pub fn get_default_internal(tenant_id: &Option<String>) -> serde_json::Value {
     // };
 
     res
-}
-
-async fn get_metadata(
-    tenant_id: &Option<String>,
-) -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
-    let metadata = PARSEABLE
-        .metastore
-        .get_parseable_metadata(tenant_id)
-        .await
-        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
-        .ok_or_else(|| ObjectStorageError::Custom("parseable metadata not initialized".into()))?;
-    Ok(serde_json::from_slice::<StorageMetadata>(&metadata)?)
-}
-
-async fn put_metadata(
-    metadata: &StorageMetadata,
-    tenant_id: &Option<String>,
-) -> Result<(), ObjectStorageError> {
-    storage::put_remote_metadata(metadata, tenant_id).await?;
-    storage::put_staging_metadata(metadata, tenant_id)?;
-    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
