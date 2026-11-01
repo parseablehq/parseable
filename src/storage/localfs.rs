@@ -726,6 +726,7 @@ impl ObjectStorage for LocalFS {
     }
 }
 
+/// Collect directory names in completion order, propagating entry and file-type errors.
 async fn directory_names(read_dir: fs::ReadDir) -> Result<Vec<String>, ObjectStorageError> {
     let entries = ReadDirStream::new(read_dir)
         .try_collect::<Vec<DirEntry>>()
@@ -740,6 +741,7 @@ async fn directory_names(read_dir: fs::ReadDir) -> Result<Vec<String>, ObjectSto
     )
 }
 
+/// Discover streams using the caller's ignore list and metadata layout; missing roots are errors.
 async fn stream_directories(
     root: &Path,
     ignore_dirs: &[&str],
@@ -766,6 +768,7 @@ async fn stream_directories(
     .collect())
 }
 
+/// Skip ignored entries and files; a stream directory without its metadata is an error.
 async fn dir_with_stream(
     entry: DirEntry,
     ignore_dirs: &[&str],
