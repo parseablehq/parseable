@@ -140,7 +140,6 @@ pub async fn post_user(
     let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     validator::user_role_name(&userid)?;
-    let mut metadata = get_metadata(&tenant_id).await?;
 
     let user_roles: HashSet<String> = if let Some(body) = body {
         serde_json::from_value(body.into_inner())?
@@ -150,9 +149,7 @@ pub async fn post_user(
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && !tenant_roles.contains_key(role)
-        {
+        if !rbac::role_exists(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT), role) {
             non_existent_roles.push(role.clone());
         }
     }
@@ -160,6 +157,7 @@ pub async fn post_user(
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
     let _guard = UPDATE_LOCK.lock().await;
+    let mut metadata = get_metadata(&tenant_id).await?;
     if Users.contains(&userid, &tenant_id)
         || metadata.users.iter().any(|user| match &user.ty {
             UserType::Native(basic) => basic.username == userid,
@@ -178,6 +176,7 @@ pub async fn post_user(
     put_metadata(&metadata, &tenant_id).await?;
     let created_role = user_roles.clone();
     Users.put_user(user.clone());
+    drop(_guard);
     if !created_role.is_empty() {
         add_roles_to_user(
             req,
@@ -240,9 +239,9 @@ pub async fn post_gen_password(
     }
     let mut new_password = String::default();
     let mut new_hash = String::default();
-    let mut metadata = get_metadata(&tenant_id).await?;
 
     let _guard = UPDATE_LOCK.lock().await;
+    let mut metadata = get_metadata(&tenant_id).await?;
     let user::PassCode { password, hash } = user::Basic::gen_new_password();
     new_password.clone_from(&password);
     new_hash.clone_from(&hash);
@@ -294,13 +293,7 @@ pub fn get_role_internal(
         .get_role(userid, tenant_id)
         .iter()
         .filter_map(|role_name| {
-            if let Some(roles) = roles().get(tenant)
-                && let Some(role) = roles.get(role_name)
-            {
-                Some((role_name.to_owned(), role.clone()))
-            } else {
-                None
-            }
+            rbac::role_for(tenant, role_name).map(|role| (role_name.clone(), role))
         })
         .collect();
 
@@ -388,6 +381,7 @@ pub async fn add_roles_to_user(
     let roles_to_add = roles_to_add.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    let _guard = UPDATE_LOCK.lock().await;
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
@@ -424,9 +418,7 @@ pub async fn add_roles_to_user(
 
     // check if the role exists
     for role in &roles_to_add {
-        if let Some(tenant_roles) = roles().get(tenant_str)
-            && !tenant_roles.contains_key(role)
-        {
+        if !rbac::role_exists(tenant_str, role) {
             non_existent_roles.push(role.clone());
         }
     }
@@ -464,6 +456,7 @@ pub async fn remove_roles_from_user(
     let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let _guard = UPDATE_LOCK.lock().await;
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
@@ -488,9 +481,7 @@ pub async fn remove_roles_from_user(
 
     // check if the role exists
     for role in &roles_to_remove {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && !tenant_roles.contains_key(role)
-        {
+        if !rbac::role_exists(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT), role) {
             non_existent_roles.push(role.clone());
         }
     }

@@ -31,6 +31,7 @@ use crate::{
     },
     parseable::DEFAULT_TENANT,
     rbac::{
+        is_system_role,
         map::{mut_roles, mut_sessions, read_user_groups, roles, users},
         role::model::{Role, RoleType},
         roles_to_permission,
@@ -47,6 +48,9 @@ pub async fn put(
     Json(body): Json<Role>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    if is_system_role(&name) {
+        return Err(RoleError::SystemRolePrivilegesLocked(name));
+    }
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // extract caller userid early, before any session mutations
@@ -130,6 +134,9 @@ pub async fn delete(
     name: web::Path<String>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    if is_system_role(&name) {
+        return Err(RoleError::SystemRoleDeletion(name));
+    }
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // extract caller userid early, before any session mutations

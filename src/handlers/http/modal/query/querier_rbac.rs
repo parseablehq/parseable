@@ -31,8 +31,8 @@ use crate::{
     },
     parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
-        Users,
-        map::{roles, users, write_user_groups},
+        self, Users,
+        map::{users, write_user_groups},
         user::{self, UserType},
     },
     tenants::TENANT_METADATA,
@@ -51,7 +51,6 @@ pub async fn post_user(
     let tenant_id = get_tenant_id_from_request(&req);
     let caller_userid = get_user_from_request(&req)?;
     validator::user_role_name(&username)?;
-    let mut metadata = get_metadata(&tenant_id).await?;
 
     let user_roles: HashSet<String> = if let Some(body) = body {
         serde_json::from_value(body.into_inner())?
@@ -62,11 +61,7 @@ pub async fn post_user(
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        let role_exists = roles()
-            .get(tenant)
-            .map(|tenant_roles| tenant_roles.contains_key(role))
-            .unwrap_or(false);
-        if !role_exists {
+        if !rbac::role_exists(tenant, role) {
             non_existent_roles.push(role.clone());
         }
     }
@@ -74,6 +69,7 @@ pub async fn post_user(
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
     let _guard = UPDATE_LOCK.lock().await;
+    let mut metadata = get_metadata(&tenant_id).await?;
     if Users.contains(&username, &tenant_id)
         || metadata
             .users
@@ -185,6 +181,7 @@ pub async fn add_roles_to_user(
     let roles_to_add = roles_to_add.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let caller_userid = get_user_from_request(&req)?;
+    let _guard = UPDATE_LOCK.lock().await;
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
@@ -203,9 +200,7 @@ pub async fn add_roles_to_user(
 
     // check if the role exists
     roles_to_add.iter().for_each(|r| {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && tenant_roles.get(r).is_none()
-        {
+        if !rbac::role_exists(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT), r) {
             non_existent_roles.push(r.clone());
         }
     });
@@ -229,8 +224,11 @@ pub async fn add_roles_to_user(
 
     put_metadata(&metadata, &tenant_id).await?;
 
-    // sync to other nodes before updating in-memory (which invalidates sessions)
-    if let Err(e) = sync_users_with_roles_with_ingestors(
+    // Keep local state aligned with the durable metadata even if cluster
+    // fan-out fails. The caller can safely retry the idempotent sync.
+    Users.add_roles(&userid, roles_to_add.clone(), &tenant_id);
+
+    sync_users_with_roles_with_ingestors(
         &req,
         &userid,
         &roles_to_add,
@@ -238,13 +236,7 @@ pub async fn add_roles_to_user(
         &tenant_id,
         &caller_userid,
     )
-    .await
-    {
-        tracing::error!("Failed to sync role addition to cluster nodes: {e}");
-    }
-
-    // update in mem table (this invalidates the user's session)
-    Users.add_roles(&userid.clone(), roles_to_add.clone(), &tenant_id);
+    .await?;
 
     Ok(format!("Roles updated successfully for {username}"))
 }
@@ -279,25 +271,13 @@ pub async fn remove_roles_from_user(
 
     // check if the role exists
     roles_to_remove.iter().for_each(|r| {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && tenant_roles.get(r).is_none()
-        {
+        if !rbac::role_exists(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT), r) {
             non_existent_roles.push(r.clone());
         }
     });
 
     if !non_existent_roles.is_empty() {
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
-    }
-
-    // check for role not present with user
-    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&userid, &tenant_id));
-    let roles_not_with_user: HashSet<String> =
-        HashSet::from_iter(roles_to_remove.difference(&user_roles).cloned());
-    if !roles_not_with_user.is_empty() {
-        return Err(RBACError::RolesNotAssigned(Vec::from_iter(
-            roles_not_with_user,
-        )));
     }
 
     // In multi-tenant, prevent removing the admin role from the tenant owner
@@ -332,10 +312,9 @@ pub async fn remove_roles_from_user(
         return Err(RBACError::UserDoesNotExist);
     }
 
-    put_metadata(&metadata, &tenant_id).await?;
-
-    // sync to other nodes before updating in-memory (which invalidates sessions)
-    if let Err(e) = sync_users_with_roles_with_ingestors(
+    // Sync before removing the role locally, so the UI can retry if sync fails.
+    // Ingestors accept the retry even if they already removed the role.
+    sync_users_with_roles_with_ingestors(
         &req,
         &userid,
         &roles_to_remove,
@@ -343,13 +322,10 @@ pub async fn remove_roles_from_user(
         &tenant_id,
         &caller_userid,
     )
-    .await
-    {
-        tracing::error!("Failed to sync role removal to cluster nodes: {e}");
-    }
+    .await?;
 
-    // update in mem table (this invalidates the user's session)
-    Users.remove_roles(&userid.clone(), roles_to_remove.clone(), &tenant_id);
+    put_metadata(&metadata, &tenant_id).await?;
+    Users.remove_roles(&userid, roles_to_remove.clone(), &tenant_id);
 
     Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
@@ -365,9 +341,9 @@ pub async fn post_gen_password(
     let mut new_hash = String::default();
     let tenant_id = get_tenant_id_from_request(&req);
     let caller_userid = get_user_from_request(&req)?;
-    let mut metadata = get_metadata(&tenant_id).await?;
 
     let _guard = UPDATE_LOCK.lock().await;
+    let mut metadata = get_metadata(&tenant_id).await?;
     let user::PassCode { password, hash } = user::Basic::gen_new_password();
     new_password.clone_from(&password);
     new_hash.clone_from(&hash);

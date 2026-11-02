@@ -21,7 +21,7 @@ use url::Url;
 
 use crate::{
     parseable::{DEFAULT_TENANT, PARSEABLE},
-    rbac::{map::read_user_groups, role::model::RoleUI},
+    rbac::{map::read_user_groups, role::model::RoleUI, role_for},
 };
 
 use super::{
@@ -63,19 +63,7 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
         .get_role(id, &user.tenant)
         .iter()
         .filter_map(|role_name| {
-            roles()
-                .get(tenant_id)
-                .filter(|roles| roles.get(role_name).is_some())
-                // .map(|roles| {
-                //     if let Some(role) = roles.get(role_name) {
-                //         (role_name.to_owned(), role.clone())
-                //     }
-                // })
-                // .get(role_name)
-                .map(|roles| {
-                    let role = roles.get(role_name).unwrap();
-                    (role_name.to_owned(), RoleUI(role.clone()))
-                })
+            role_for(tenant_id, role_name).map(|role| (role_name.clone(), RoleUI(role)))
         })
         .collect();
 

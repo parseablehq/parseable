@@ -507,11 +507,17 @@ pub async fn sync_users_with_roles_with_ingestors(
                 })?;
 
             if !res.status().is_success() {
+                let status = res.status();
                 error!(
                     "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
                     ingestor.domain_name,
                     res.text().await
                 );
+                return Err(RBACError::Anyhow(anyhow::anyhow!(
+                    "role sync to {} failed with HTTP {}",
+                    ingestor.domain_name,
+                    status
+                )));
             }
 
             Ok(())
@@ -618,11 +624,17 @@ pub async fn sync_user_creation(
                 })?;
 
             if !res.status().is_success() {
+                let status = res.status();
                 error!(
                     "failed to forward request to node: {}\nResponse Returned: {:?}",
                     node.domain_name,
                     res.text().await
                 );
+                return Err(RBACError::Anyhow(anyhow::anyhow!(
+                    "user sync to {} failed with HTTP {}",
+                    node.domain_name,
+                    status
+                )));
             }
 
             Ok(())
