@@ -34,7 +34,7 @@ use regex::Regex;
 use relative_path::RelativePathBuf;
 pub use staging::StagingError;
 use streams::StreamRef;
-pub use streams::{Stream, StreamNotFound, Streams};
+pub use streams::{GlobalSchema, Stream, StreamNotFound, Streams};
 use tokio::try_join;
 use tracing::error;
 

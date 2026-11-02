@@ -23,6 +23,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use erased_serde::Serialize as ErasedSerialize;
+use relative_path::RelativePathBuf;
 use tonic::async_trait;
 use ulid::Ulid;
 
@@ -36,6 +37,7 @@ use crate::{
     handlers::http::modal::NodeType,
     metastore::MetastoreError,
     option::Mode,
+    parseable::GlobalSchema,
     users::filters::Filter,
 };
 
@@ -291,6 +293,37 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
+    async fn get_global_schema_locks(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, MetastoreError>;
+    async fn put_global_schema_lock(
+        &self,
+        lock_file_path: RelativePathBuf,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_global_schema_lock(
+        &self,
+        path: RelativePathBuf,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    /// Global schema operations used to detect and resolve schema conflicts.
+    /// A missing expected hash creates the record; an existing hash is checked
+    /// before updating. Callers coordinate updates with global-schema lock files;
+    /// the hash check and write are not atomic. `false` indicates a conflict.
+    async fn get_global_schema(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<GlobalSchema>, MetastoreError>;
+    async fn put_global_schema(
+        &self,
+        obj: GlobalSchema,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+        expected: Option<u64>,
+    ) -> Result<bool, MetastoreError>;
 
     /// parseable metadata
     async fn get_parseable_metadata(

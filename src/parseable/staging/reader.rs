@@ -37,7 +37,7 @@ use tracing::{error, info_span};
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
-    utils::arrow::{adapt_batch, reverse},
+    utils::arrow::{batch_adapter::try_adapt_batch, reverse},
 };
 
 #[derive(Debug)]
@@ -205,14 +205,17 @@ impl MergedForwardRecordReader {
         self.file_plans.into_iter()
     }
 
+    /// Returns the schemas exposed by each readable Arrow stream.
+    pub fn source_schemas(&self) -> Vec<Schema> {
+        self.file_plans
+            .iter()
+            .map(|plan| plan.schema.as_ref().clone())
+            .collect()
+    }
+
     /// Returns the union of schemas exposed by all readable Arrow streams.
-    pub fn merged_schema(&self) -> Schema {
-        Schema::try_merge(
-            self.file_plans
-                .iter()
-                .map(|plan| plan.schema.as_ref().clone()),
-        )
-        .unwrap()
+    pub fn merged_schema(&self) -> Result<Schema, ArrowError> {
+        Schema::try_merge(self.source_schemas())
     }
 }
 
@@ -251,11 +254,29 @@ impl MergedReverseRecordReader {
         }
     }
 
-    /// Merges all readers in reverse timestamp order and adapts each batch to `schema`.
+    /// Identity-resolution convenience for reader tests.
+    #[cfg(test)]
     pub fn merged_iter(
         self,
         schema: Arc<Schema>,
         time_partition: Option<String>,
+    ) -> impl Iterator<Item = Result<RecordBatch, ArrowError>> {
+        self.merged_iter_with_resolution(
+            schema.clone(),
+            schema,
+            time_partition,
+            Arc::new(crate::schema_registry::Resolution::identity()),
+        )
+    }
+
+    /// Merges in reverse timestamp order, adapts batches to the local merged schema,
+    /// resolves field names, and adapts them to the final canonical schema.
+    pub fn merged_iter_with_resolution(
+        self,
+        schema: Arc<Schema>,
+        local_schema: Arc<Schema>,
+        time_partition: Option<String>,
+        resolution: Arc<crate::schema_registry::Resolution>,
     ) -> impl Iterator<Item = Result<RecordBatch, ArrowError>> {
         let adapted_readers = self.readers;
         kmerge_by(
@@ -275,17 +296,25 @@ impl MergedReverseRecordReader {
             },
         )
         .map(|batch| batch.map(|batch| reverse(&batch)))
-        .map(move |batch| batch.map(|batch| adapt_batch(schema.clone(), &batch)))
+        .map(move |batch| {
+            batch
+                .and_then(|batch| try_adapt_batch(local_schema.clone(), &batch))
+                .and_then(|batch| resolution.rename_batch(&batch))
+                .and_then(|batch| try_adapt_batch(schema.clone(), &batch))
+        })
+    }
+
+    /// Returns the schemas exposed by each readable Arrow stream.
+    pub fn source_schemas(&self) -> Vec<Schema> {
+        self.readers
+            .iter()
+            .map(|reader| reader.schema().as_ref().clone())
+            .collect()
     }
 
     /// Returns the union of schemas exposed by all readable Arrow streams.
-    pub fn merged_schema(&self) -> Schema {
-        Schema::try_merge(
-            self.readers
-                .iter()
-                .map(|reader| reader.schema().as_ref().clone()),
-        )
-        .unwrap()
+    pub fn merged_schema(&self) -> Result<Schema, ArrowError> {
+        Schema::try_merge(self.source_schemas())
     }
 }
 
@@ -635,14 +664,15 @@ fn find_limit_and_type(
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
+        collections::{HashMap, VecDeque},
         io::{self, Cursor, Read},
         path::Path,
         sync::Arc,
     };
 
     use arrow_array::{
-        Array, DictionaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+        Array, DictionaryArray, Float64Array, Int32Array, Int64Array, NullArray, RecordBatch,
+        StringArray, TimestampMillisecondArray,
         cast::AsArray,
         types::{Int32Type, Int64Type},
     };
@@ -653,7 +683,7 @@ mod tests {
             write_message,
         },
     };
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use chrono::Utc;
     use temp_dir::TempDir;
 
@@ -663,6 +693,7 @@ mod tests {
             reader::{MergedForwardRecordReader, MergedReverseRecordReader, OffsetReader},
             writer::DiskWriter,
         },
+        schema_registry::Resolution,
         utils::time::TimeRange,
     };
 
@@ -994,6 +1025,163 @@ mod tests {
         assert!(reader.next().is_none());
 
         Ok(())
+    }
+
+    #[test]
+    fn schema_resolution_rejects_incompatible_local_raw_schemas() {
+        let dir = TempDir::new().unwrap();
+        let int_path = dir.path().join("int.data.arrows");
+        let text_path = dir.path().join("text.data.arrows");
+        let timestamp_type = DataType::Timestamp(TimeUnit::Millisecond, None);
+        let int_schema = Arc::new(Schema::new(vec![
+            Field::new("ts", timestamp_type.clone(), false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+        let text_schema = Arc::new(Schema::new(vec![
+            Field::new("ts", timestamp_type.clone(), false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+        let int_batch = RecordBatch::try_new(
+            int_schema,
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![200])),
+                Arc::new(Int32Array::from(vec![7])),
+            ],
+        )
+        .unwrap();
+        let text_batch = RecordBatch::try_new(
+            text_schema,
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![100])),
+                Arc::new(StringArray::from(vec!["low"])),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&int_path, write_mem(&[int_batch])).unwrap();
+        std::fs::write(&text_path, write_mem(&[text_batch])).unwrap();
+        let file_paths = vec![int_path, text_path];
+
+        let mut targets = HashMap::new();
+        targets.insert(
+            ("ts".to_string(), timestamp_type.clone()),
+            Arc::new(Field::new("ts", timestamp_type, false)),
+        );
+        targets.insert(
+            ("value".to_string(), DataType::Int32),
+            Arc::new(Field::new("value_i32", DataType::Int32, true)),
+        );
+        targets.insert(
+            ("value".to_string(), DataType::Utf8),
+            Arc::new(Field::new("value_utf8", DataType::Utf8, true)),
+        );
+        let resolution = Resolution::from_targets(targets);
+
+        let forward_reader = MergedForwardRecordReader::try_new(&file_paths);
+        assert!(forward_reader.merged_schema().is_err());
+        assert!(
+            forward_reader
+                .merged_schema()
+                .and_then(|schema| resolution.rename_schema(&schema))
+                .is_err()
+        );
+
+        let reverse_reader = MergedReverseRecordReader::try_new(&file_paths);
+        assert!(reverse_reader.merged_schema().is_err());
+        assert!(
+            reverse_reader
+                .merged_schema()
+                .and_then(|schema| resolution.rename_schema(&schema))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn schema_resolution_adapts_compatible_local_batches_before_renaming() {
+        let dir = TempDir::new().unwrap();
+        let null_path = dir.path().join("null.data.arrows");
+        let int_path = dir.path().join("int.data.arrows");
+        let timestamp_type = DataType::Timestamp(TimeUnit::Millisecond, None);
+        let null_schema = Arc::new(Schema::new(vec![
+            Field::new("ts", timestamp_type.clone(), false),
+            Field::new("value", DataType::Null, true),
+        ]));
+        let int_schema = Arc::new(Schema::new(vec![
+            Field::new("ts", timestamp_type.clone(), false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+        let null_batch = RecordBatch::try_new(
+            null_schema,
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![100, 101])),
+                Arc::new(NullArray::new(2)),
+            ],
+        )
+        .unwrap();
+        let int_batch = RecordBatch::try_new(
+            int_schema,
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![200, 201])),
+                Arc::new(Int32Array::from(vec![7, 8])),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&null_path, write_mem(&[null_batch])).unwrap();
+        std::fs::write(&int_path, write_mem(&[int_batch])).unwrap();
+        let file_paths = vec![null_path, int_path];
+
+        let mut targets = HashMap::new();
+        targets.insert(
+            ("ts".to_string(), timestamp_type.clone()),
+            Arc::new(Field::new("ts", timestamp_type, false)),
+        );
+        targets.insert(
+            ("value".to_string(), DataType::Int32),
+            Arc::new(Field::new("value_i32", DataType::Int32, true)),
+        );
+        let resolution = Arc::new(Resolution::from_targets(targets));
+
+        let forward_reader = MergedForwardRecordReader::try_new(&file_paths);
+        let forward_local_schema = forward_reader.merged_schema().unwrap();
+        assert_eq!(
+            forward_local_schema
+                .field_with_name("value")
+                .unwrap()
+                .data_type(),
+            &DataType::Int32
+        );
+        assert!(
+            forward_reader
+                .merged_schema()
+                .and_then(|schema| resolution.rename_schema(&schema))
+                .unwrap()
+                .field_with_name("value_i32")
+                .is_ok()
+        );
+
+        let reverse_reader = MergedReverseRecordReader::try_new(&file_paths);
+        let local_schema = Arc::new(reverse_reader.merged_schema().unwrap());
+        let schema = Arc::new(resolution.rename_schema(&local_schema).unwrap());
+        let batches = reverse_reader
+            .merged_iter_with_resolution(schema, local_schema, None, resolution)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(batches.len(), 2);
+        let int_values = batches[0]
+            .column_by_name("value_i32")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(int_values.values(), &[8, 7]);
+        let null_values = batches[1]
+            .column_by_name("value_i32")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(null_values.len(), 2);
+        assert_eq!(null_values.null_count(), 2);
     }
 
     #[test]

@@ -49,6 +49,12 @@ pub enum MetastoreError {
     #[error("JSON schema validation error: {message}")]
     JsonSchemaError { message: String },
 
+    #[error("CAS convergence failure: {message}")]
+    CASConvergenceFailure { message: String },
+
+    #[error("LockFile failure: {message}")]
+    LockFileFailure { message: String },
+
     #[error("Invalid JSON structure: expected {expected}, found {found}")]
     InvalidJsonStructure { expected: String, found: String },
 
@@ -99,6 +105,24 @@ impl MetastoreError {
                 timestamp: Some(chrono::Utc::now()),
                 metadata: std::collections::HashMap::new(),
                 status_code: 400,
+            },
+            MetastoreError::CASConvergenceFailure { message } => MetastoreErrorDetail {
+                operation: "CASConvergenceFailure".to_string(),
+                message: message.to_string(),
+                stream_name: None,
+                file_path: None,
+                timestamp: Some(chrono::Utc::now()),
+                metadata: std::collections::HashMap::new(),
+                status_code: 500,
+            },
+            MetastoreError::LockFileFailure { message } => MetastoreErrorDetail {
+                operation: "LockFileFailure".to_string(),
+                message: message.to_string(),
+                stream_name: None,
+                file_path: None,
+                timestamp: Some(chrono::Utc::now()),
+                metadata: std::collections::HashMap::new(),
+                status_code: 500,
             },
             MetastoreError::ManifestCodecError(e) => MetastoreErrorDetail {
                 operation: "ManifestCodecError".to_string(),
@@ -164,9 +188,11 @@ impl MetastoreError {
             MetastoreError::JsonParseError(..) => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::ManifestCodecError(..) => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::JsonSchemaError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-            MetastoreError::InvalidJsonStructure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::InvalidJsonStructure { .. } => StatusCode::BAD_REQUEST,
             MetastoreError::MissingJsonField { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::InvalidJsonValue { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::CASConvergenceFailure { .. }
+            | MetastoreError::LockFileFailure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::Error { status_code, .. } => *status_code,
         }
     }

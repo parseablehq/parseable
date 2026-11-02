@@ -51,7 +51,8 @@ use rayon::{
     slice::ParallelSliceMut,
 };
 use relative_path::RelativePathBuf;
-use std::sync::PoisonError;
+use rustc_hash::FxHasher;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions, remove_file, write},
@@ -60,6 +61,10 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use std::{
+    hash::{Hash, Hasher},
+    sync::PoisonError,
 };
 use tokio::task::JoinSet;
 use tracing::{error, info, info_span, instrument, trace, warn};
@@ -78,7 +83,8 @@ use crate::{
     metrics,
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE},
-    storage::{StreamType, object_storage::to_bytes, retention::Retention},
+    schema_registry::Resolution,
+    storage::{ComparableBytes, StreamType, object_storage::to_bytes, retention::Retention},
     sync::FLUSH_AND_CONVERT_RUNTIME,
     utils::{
         arrow::adapt_batch,
@@ -372,6 +378,27 @@ fn minute_from_system_time(time: SystemTime) -> u128 {
         / 60000
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GlobalSchema {
+    pub schema: Schema,
+    pub hash: u64,
+}
+
+impl GlobalSchema {
+    pub fn from_schema(schema: Schema) -> Self {
+        let mut hasher = FxHasher::with_seed(0);
+        schema.hash(&mut hasher);
+        let hash = hasher.finish();
+        Self { schema, hash }
+    }
+}
+
+impl ComparableBytes for GlobalSchema {
+    fn get_hash(&self) -> u64 {
+        self.hash
+    }
+}
+
 /// All state associated with a single logstream in Parseable.
 pub struct Stream {
     pub stream_name: String,
@@ -380,6 +407,8 @@ pub struct Stream {
     pub options: Arc<Options>,
     pub writer: Mutex<Writer>,
     schema_writer: Mutex<()>,
+    global_schema: RwLock<Option<(Arc<Schema>, Arc<Resolution>)>>,
+    global_schema_resolution: Mutex<()>,
     pub ingestor_id: Option<String>,
 }
 
@@ -506,17 +535,36 @@ struct MetricForwardRecordIterator {
     active_files: VecDeque<QueuedMetricForwardFile>,
     readers_in_flight: usize,
     setup_error_queued: bool,
-    schema: Arc<Schema>,
+    final_schema: Arc<Schema>,
+    local_schema: Arc<Schema>,
+    resolution: Arc<Resolution>,
 }
 
 impl MetricForwardRecordIterator {
+    #[cfg(test)]
     fn new(reader: MergedForwardRecordReader, schema: Arc<Schema>) -> Self {
+        Self::with_resolution(
+            reader,
+            schema.clone(),
+            schema,
+            Arc::new(Resolution::identity()),
+        )
+    }
+
+    fn with_resolution(
+        reader: MergedForwardRecordReader,
+        final_schema: Arc<Schema>,
+        local_schema: Arc<Schema>,
+        resolution: Arc<Resolution>,
+    ) -> Self {
         Self {
             plans: reader.into_file_plans(),
             active_files: VecDeque::new(),
             readers_in_flight: 0,
             setup_error_queued: false,
-            schema,
+            final_schema,
+            local_schema,
+            resolution,
         }
     }
 
@@ -571,7 +619,19 @@ impl Iterator for MetricForwardRecordIterator {
             match &mut queued.state {
                 MetricForwardFileState::Ready(active) => {
                     if let Some(batch) = active.next_batch() {
-                        return Some(batch.map(|batch| adapt_batch(self.schema.clone(), &batch)));
+                        return Some(batch.and_then(|batch| {
+                            crate::utils::arrow::batch_adapter::try_adapt_batch(
+                                self.local_schema.clone(),
+                                &batch,
+                            )
+                            .and_then(|batch| self.resolution.rename_batch(&batch))
+                            .and_then(|batch| {
+                                crate::utils::arrow::batch_adapter::try_adapt_batch(
+                                    self.final_schema.clone(),
+                                    &batch,
+                                )
+                            })
+                        }));
                     }
                 }
                 MetricForwardFileState::Failed(_) => {}
@@ -624,21 +684,33 @@ impl ConversionRecordReader {
         }
     }
 
-    fn merged_schema(&self) -> Schema {
+    fn merged_schema(&self) -> Result<Schema, ArrowError> {
         match self {
             Self::Forward(reader) => reader.merged_schema(),
             Self::Reverse(reader) => reader.merged_schema(),
         }
     }
 
-    fn merged_iter(
+    fn merged_iter_with_resolution(
         self,
-        schema: Arc<Schema>,
+        final_schema: Arc<Schema>,
+        local_schema: Arc<Schema>,
         time_partition: Option<String>,
+        resolution: Arc<Resolution>,
     ) -> Box<dyn Iterator<Item = Result<RecordBatch, ArrowError>> + Send> {
         match self {
-            Self::Forward(reader) => Box::new(MetricForwardRecordIterator::new(reader, schema)),
-            Self::Reverse(reader) => Box::new(reader.merged_iter(schema, time_partition)),
+            Self::Forward(reader) => Box::new(MetricForwardRecordIterator::with_resolution(
+                reader,
+                final_schema,
+                local_schema,
+                resolution,
+            )),
+            Self::Reverse(reader) => Box::new(reader.merged_iter_with_resolution(
+                final_schema,
+                local_schema,
+                time_partition,
+                resolution,
+            )),
         }
     }
 }
@@ -686,6 +758,8 @@ impl Stream {
             options,
             writer: Mutex::new(Writer::default()),
             schema_writer: Mutex::new(()),
+            global_schema: RwLock::new(None),
+            global_schema_resolution: Mutex::new(()),
             ingestor_id,
         })
     }
@@ -1112,11 +1186,20 @@ impl Stream {
         let path = RelativePathBuf::from_iter([file_name]).to_path(&self.data_path);
         let tmp_path = path.with_extension("schema.tmp");
 
-        let staging_schemas = self.get_schemas_if_present()?;
-        if !staging_schemas.is_empty() {
-            let mut staging_schemas = staging_schemas;
-            staging_schemas.push(schema);
-            schema = Schema::try_merge(staging_schemas)?;
+        let canonical = self.global_schema.read().expect(LOCK_EXPECT).clone();
+        if self.uses_global_schema()
+            && let Some((global, _)) = canonical
+        {
+            // The registry is authoritative. Raw schemas staged before the
+            // first coordinated conversion may contain the losing field type.
+            schema = global.as_ref().to_owned();
+        } else {
+            let staging_schemas = self.get_schemas_if_present()?;
+            if !staging_schemas.is_empty() {
+                let mut staging_schemas = staging_schemas;
+                staging_schemas.push(schema);
+                schema = Schema::try_merge(staging_schemas)?;
+            }
         }
 
         // save the merged schema on staging disk
@@ -1140,7 +1223,40 @@ impl Stream {
         })?;
 
         if let Some(mem) = writer.mem.as_mut() {
-            mem.recordbatch_cloned(schema)
+            let global = self.global_schema.read().expect(LOCK_EXPECT).clone();
+            if self.uses_global_schema()
+                && let Some((_, resolution)) = global
+            {
+                let raw_fields = self
+                    .get_schema_raw()
+                    .into_values()
+                    .sorted_by_key(|field| field.name().clone())
+                    .collect::<Fields>();
+                let batches = mem.recordbatch_cloned(&Arc::new(Schema::new(raw_fields)))?;
+                batches
+                    .into_iter()
+                    .map(|batch| {
+                        // Newly ingested, unclaimed columns are not yet part of
+                        // the published schema; retain them in the raw buffers.
+                        let indices: Vec<_> = batch
+                            .schema()
+                            .fields()
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, field)| {
+                                resolution
+                                    .target(field.name(), field.data_type())
+                                    .map(|_| index)
+                            })
+                            .collect();
+                        let projected = batch.project(&indices)?;
+                        let renamed = resolution.rename_batch(&projected)?;
+                        Ok(adapt_batch(schema.clone(), &renamed))
+                    })
+                    .collect()
+            } else {
+                mem.recordbatch_cloned(schema)
+            }
         } else {
             Ok(Vec::new())
         }
@@ -1229,7 +1345,7 @@ impl Stream {
             // queried name still gets read. The bloom answers membership exactly,
             // so a row group that never saw the metric is rejected outright.
             let column_path = ColumnPath::new(vec!["metric_name".to_string()]);
-            let bloom_filter_position = if PARSEABLE.options.bloom_filter_default_position {
+            let bloom_filter_position = if self.options.bloom_filter_default_position {
                 BloomFilterPosition::AfterRowGroup
             } else {
                 BloomFilterPosition::End
@@ -1402,6 +1518,8 @@ impl Stream {
         time_partition: Option<String>,
         time_partition_field: String,
         target_rows: usize,
+        local_schema: Arc<Schema>,
+        resolution: Arc<Resolution>,
     ) -> std::sync::mpsc::Receiver<MetricRowGroupPipelineMessage> {
         // Metric batches are decoded by independent per-file reader lanes and
         // reassembled in source order. Concat and sort are also dispatched
@@ -1415,7 +1533,12 @@ impl Stream {
             let mut buffered_record_batches = 0;
             let mut pending_preparations =
                 VecDeque::with_capacity(*METRIC_ROW_GROUP_PREP_IN_FLIGHT);
-            let mut merged_iter = record_reader.merged_iter(schema.clone(), time_partition);
+            let mut merged_iter = record_reader.merged_iter_with_resolution(
+                schema.clone(),
+                local_schema,
+                time_partition,
+                resolution,
+            );
 
             loop {
                 let read_started = Instant::now();
@@ -1765,6 +1888,156 @@ impl Stream {
         )
     }
 
+    fn can_use_global_schema(&self) -> bool {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        crate::schema_registry::eligible_for_stream(
+            self.options.mode,
+            metadata.static_schema_flag,
+            metadata.stream_type,
+        )
+    }
+
+    fn uses_global_schema(&self) -> bool {
+        self.can_use_global_schema()
+            && (crate::schema_registry::enabled()
+                || self.global_schema.read().expect(LOCK_EXPECT).is_some())
+    }
+
+    /// Merges the raw schemas of readable local Arrow files. Canonical stream
+    /// metadata is intentionally excluded: it may contain an already renamed
+    /// field that conflicts with an unconverted local Arrow field.
+    fn merge_local_arrow_schema(
+        &self,
+        staging_files: &[(PathBuf, Vec<PathBuf>)],
+    ) -> Result<Option<Schema>, StagingError> {
+        let mut schemas = Vec::new();
+        for (_, files) in staging_files {
+            let reader = ConversionRecordReader::for_stream(files, self.is_otel_metrics());
+            if reader.reader_count() != 0 {
+                schemas.push(reader.merged_schema()?);
+            }
+        }
+        if schemas.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Schema::try_merge(schemas)?))
+        }
+    }
+
+    /// Resolves the one locally merged raw schema against a shared, append-only
+    /// schema before any Parquet writer is created. This runs on the conversion
+    /// blocking pool.
+    fn resolve_global_schema(
+        &self,
+        local_schema: &Schema,
+        tenant_id: &Option<String>,
+    ) -> Result<Arc<Resolution>, StagingError> {
+        if !self.can_use_global_schema() {
+            return Ok(Arc::new(Resolution::identity()));
+        }
+        let tenant_id = if let Some(tenant) = tenant_id
+            && tenant.eq(DEFAULT_TENANT)
+        {
+            &None
+        } else {
+            tenant_id
+        };
+
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|err| StagingError::GlobalSchema(err.to_string()))?;
+        // The opt-out prevents bootstrap, not safe handling of a registry that
+        // another node already created. Reverting to raw writes would violate
+        // that dataset's published schema. Probe even for newly loaded streams.
+        if !crate::schema_registry::enabled()
+            && self.global_schema.read().expect(LOCK_EXPECT).is_none()
+            && handle
+                .block_on(
+                    PARSEABLE
+                        .metastore
+                        .get_global_schema(&self.stream_name, tenant_id),
+                )
+                .map_err(|err| StagingError::GlobalSchema(err.to_string()))?
+                .is_none()
+        {
+            return Ok(Arc::new(Resolution::identity()));
+        }
+        let _guard = self.global_schema_resolution.lock().map_err(|err| {
+            StagingError::GlobalSchema(format!("global-schema lock poisoned: {err}"))
+        })?;
+        let mut pinned = HashSet::from([DEFAULT_TIMESTAMP_KEY.to_owned()]);
+        pinned.extend(self.get_time_partition());
+        if let Some(custom) = self.get_custom_partition() {
+            pinned.extend(custom.split(',').map(|name| name.trim().to_owned()));
+        }
+        let (mut resolution, canonical) = handle.block_on(async {
+            let resolution = crate::schema_registry::resolve(
+                PARSEABLE.metastore.as_ref(),
+                &self.stream_name,
+                tenant_id,
+                std::slice::from_ref(local_schema),
+                &pinned,
+            )
+            .await
+            .map_err(|err| StagingError::GlobalSchema(err.to_string()))?;
+            let global = PARSEABLE
+                .metastore
+                .get_global_schema(&self.stream_name, tenant_id)
+                .await
+                .map_err(|err| StagingError::GlobalSchema(err.to_string()))?
+                .ok_or_else(|| {
+                    StagingError::GlobalSchema(
+                        "global schema disappeared after resolution".to_owned(),
+                    )
+                })?;
+            let canonical = global.schema;
+            Ok::<_, StagingError>((resolution, Arc::new(canonical)))
+        })?;
+        resolution.include_identity_schema(&canonical);
+        let resolution = Arc::new(resolution);
+        *self.global_schema.write().expect(LOCK_EXPECT) = Some((canonical, resolution.clone()));
+        Ok(resolution)
+    }
+
+    fn requeue_unresolved_arrow_files(&self, staging_files: &[(PathBuf, Vec<PathBuf>)]) {
+        for (_, files) in staging_files {
+            for source in files {
+                let Some(name) = source.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let Some((_, suffix)) = name.split_once('.') else {
+                    continue;
+                };
+                let destination = self.data_path.join(format!("{}.{}", Ulid::new(), suffix));
+                // Creating a link is exclusive: never overwrite a live writer's
+                // finalized file. Source and destination share the staging FS.
+                if let Err(err) = fs::hard_link(source, &destination) {
+                    error!(
+                        "Could not requeue unresolved Arrow file {}: {err}",
+                        source.display()
+                    );
+                    continue;
+                }
+                if let Err(err) = fs::remove_file(source) {
+                    // Do not leave a duplicate for the next conversion cycle.
+                    if let Err(cleanup) = fs::remove_file(&destination) {
+                        error!(
+                            "Could not remove duplicate requeued file {}: {cleanup}",
+                            destination.display()
+                        );
+                    }
+                    error!(
+                        "Could not remove original requeued file {}: {err}",
+                        source.display()
+                    );
+                    continue;
+                }
+                if let Some(directory) = source.parent() {
+                    let _ = fs::remove_dir(directory);
+                }
+            }
+        }
+    }
+
     fn convert_arrow_file_groups_to_parquet(
         &self,
         staging_files: Vec<(PathBuf, Vec<PathBuf>)>,
@@ -1779,6 +2052,32 @@ impl Stream {
         }
 
         self.update_staging_metrics(&staging_files, tenant_id);
+        // Coordinate once for the entire cycle, before any group writes Parquet.
+        // A failure leaves every source Arrow file available for a later retry.
+        let (local_schema, resolution) = if self.can_use_global_schema() {
+            match self.merge_local_arrow_schema(&staging_files) {
+                Ok(Some(schema)) => {
+                    let local_schema = Arc::new(schema);
+                    let resolution = match self.resolve_global_schema(&local_schema, tenant_id) {
+                        Ok(resolution) => resolution,
+                        Err(err) => {
+                            // Periodic sync claims only root files. Return this snapshot to
+                            // the root so a metastore outage is retried without a restart.
+                            self.requeue_unresolved_arrow_files(&staging_files);
+                            return Err(err);
+                        }
+                    };
+                    (Some(local_schema), resolution)
+                }
+                Ok(None) => (None, Arc::new(Resolution::identity())),
+                Err(err) => {
+                    self.requeue_unresolved_arrow_files(&staging_files);
+                    return Err(err);
+                }
+            }
+        } else {
+            (None, Arc::new(Resolution::identity()))
+        };
         let mut schemas = Vec::new();
         let mut first_error = None;
 
@@ -1789,6 +2088,8 @@ impl Stream {
                 time_partition,
                 custom_partition,
                 tenant_id,
+                local_schema.clone(),
+                &resolution,
             );
             (parquet_path, result)
         };
@@ -1861,6 +2162,7 @@ impl Stream {
 
     /// Converts one Parquet output group and removes its Arrow sources only
     /// after the final Parquet rename succeeds.
+    #[allow(clippy::too_many_arguments)]
     fn convert_arrow_group(
         &self,
         parquet_path: PathBuf,
@@ -1868,6 +2170,8 @@ impl Stream {
         time_partition: Option<&String>,
         custom_partition: Option<&String>,
         tenant_id: &Option<String>,
+        local_schema: Option<Arc<Schema>>,
+        resolution: &Arc<Resolution>,
     ) -> Result<Option<Schema>, StagingError> {
         // Metrics sort every output row group explicitly, so reading their IPC
         // streams forward avoids reverse seeks and a full-column row reversal.
@@ -1879,7 +2183,12 @@ impl Stream {
             return Ok(None);
         }
 
-        let merged_schema = record_reader.merged_schema();
+        let local_schema = match local_schema {
+            Some(schema) => schema,
+            None => Arc::new(record_reader.merged_schema()?),
+        };
+        let merged_schema = resolution.rename_schema(&local_schema)?;
+
         let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
         let schema = Arc::new(merged_schema.clone());
         let mut part_path = parquet_path.clone();
@@ -1891,6 +2200,8 @@ impl Stream {
             &schema,
             &props,
             time_partition,
+            local_schema,
+            resolution.clone(),
         );
         match write_result {
             Ok(true) => {}
@@ -1931,6 +2242,7 @@ impl Stream {
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     /// Writes one conversion group to a temporary Parquet file.
+    #[allow(clippy::too_many_arguments)]
     fn write_parquet_part_file(
         &self,
         part_path: &Path,
@@ -1938,6 +2250,8 @@ impl Stream {
         schema: &Arc<Schema>,
         props: &WriterProperties,
         time_partition: Option<&String>,
+        local_schema: Arc<Schema>,
+        resolution: Arc<Resolution>,
     ) -> Result<bool, StagingError> {
         let _span = info_span!(
             "write_parquet_part_file",
@@ -1958,11 +2272,18 @@ impl Stream {
                 schema,
                 props,
                 time_partition,
+                local_schema,
+                resolution,
             )?;
         } else {
             let mut writer =
                 ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
-            for record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
+            for record in record_reader.merged_iter_with_resolution(
+                schema.clone(),
+                local_schema,
+                time_partition.cloned(),
+                resolution,
+            ) {
                 writer.write(&record?)?;
             }
             writer.close()?;
@@ -1984,6 +2305,7 @@ impl Stream {
 
     /// Writes a metric conversion group with pipelined row-group preparation
     /// and encoding while preserving row-group output order.
+    #[allow(clippy::too_many_arguments)]
     fn write_metric_parquet_part_file(
         &self,
         part_path: &Path,
@@ -1992,6 +2314,8 @@ impl Stream {
         schema: &Arc<Schema>,
         props: &WriterProperties,
         time_partition: Option<&String>,
+        local_schema: Arc<Schema>,
+        resolution: Arc<Resolution>,
     ) -> Result<(), StagingError> {
         let conversion_started = Instant::now();
         let source_arrow_files = record_reader.readable_files().len();
@@ -2033,6 +2357,8 @@ impl Stream {
             time_partition.cloned(),
             time_partition_field,
             target,
+            local_schema,
+            resolution,
         );
         let mut preparation_complete = false;
         let mut next_row_group_index = writer.flushed_row_groups().len();
@@ -2287,16 +2613,65 @@ impl Stream {
         self.cleanup_arrow_files_and_dir(arrow_files, tenant_id);
     }
 
-    pub fn updated_schema(&self, current_schema: Schema) -> Schema {
+    /// Restore an already coordinated dataset without merging raw, pre-flush
+    /// Arrow field names directly into its canonical schema.
+    pub async fn restore_global_schema(
+        &self,
+        current_schema: Schema,
+        tenant_id: &Option<String>,
+        time_partition: Option<&String>,
+        custom_partition: Option<&String>,
+    ) -> Result<Schema, StagingError> {
+        if self.get_stream_type() == StreamType::Internal {
+            return self.updated_schema(current_schema);
+        }
+        // Canonical names may differ from raw staging names. Only raw files
+        // must agree locally before their fields reach registry resolution.
+        let schemas = vec![self.recovery_raw_schema()?];
+        let mut pinned = HashSet::from([DEFAULT_TIMESTAMP_KEY.to_owned()]);
+        pinned.extend(time_partition.cloned());
+        if let Some(custom) = custom_partition {
+            pinned.extend(custom.split(',').map(|name| name.trim().to_owned()));
+        }
+        let mut resolution = crate::schema_registry::resolve(
+            PARSEABLE.metastore.as_ref(),
+            &self.stream_name,
+            tenant_id,
+            &schemas,
+            &pinned,
+        )
+        .await
+        .map_err(|err| StagingError::GlobalSchema(err.to_string()))?;
+        let global = PARSEABLE
+            .metastore
+            .get_global_schema(&self.stream_name, tenant_id)
+            .await
+            .map_err(|err| StagingError::GlobalSchema(err.to_string()))?
+            .ok_or_else(|| {
+                StagingError::GlobalSchema("global schema disappeared during startup".to_owned())
+            })?;
+        let canonical = global.schema;
+        resolution.include_identity_schema(&canonical);
+        *self.global_schema.write().expect(LOCK_EXPECT) =
+            Some((Arc::new(canonical.clone()), Arc::new(resolution)));
+        Ok(canonical)
+    }
+
+    pub(crate) fn recovery_raw_schema(&self) -> Result<Schema, StagingError> {
+        let reader = MergedReverseRecordReader::try_new(&self.arrow_files());
+        Ok(reader.merged_schema()?)
+    }
+
+    pub fn updated_schema(&self, current_schema: Schema) -> Result<Schema, StagingError> {
         let staging_files = self.arrow_files();
         let record_reader = MergedReverseRecordReader::try_new(&staging_files);
         if record_reader.readers.is_empty() {
-            return current_schema;
+            return Ok(current_schema);
         }
 
-        let schema = record_reader.merged_schema();
+        let schema = record_reader.merged_schema()?;
 
-        Schema::try_merge(vec![schema, current_schema]).unwrap()
+        Ok(Schema::try_merge(vec![schema, current_schema])?)
     }
 
     /// Stores the provided stream metadata in memory mapping
@@ -2352,6 +2727,11 @@ impl Stream {
     }
 
     pub fn get_schema(&self) -> Arc<Schema> {
+        if self.uses_global_schema()
+            && let Some((schema, _)) = self.global_schema.read().expect(LOCK_EXPECT).as_ref()
+        {
+            return schema.clone();
+        }
         let metadata = self.metadata.read().expect(LOCK_EXPECT);
 
         // sort fields on read from hashmap as order of fields can differ.
@@ -2966,6 +3346,382 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+    use crate::parseable::staging::writer::MemWriter;
+
+    #[tokio::test]
+    async fn migration_raw_schema_recovery_preserves_files_and_internal_merge_checks() {
+        for raw_conflict in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let stream = Stream::new(
+                Arc::new(Options {
+                    mode: Mode::Ingest,
+                    local_staging_path: temp.path().to_path_buf(),
+                    ..Default::default()
+                }),
+                "migration-conflict",
+                LogStreamMetadata::default(),
+                None,
+                &None,
+            );
+            fs::create_dir_all(&stream.data_path).unwrap();
+            let integer_schema = Schema::new(vec![Field::new("value", DataType::Int32, true)]);
+            assert_eq!(
+                stream.updated_schema(integer_schema.clone()).unwrap(),
+                integer_schema
+            );
+            let mut paths = Vec::new();
+            for index in 0..if raw_conflict { 2 } else { 1 } {
+                let (schema, values): (Schema, ArrayRef) = if index == 0 {
+                    (integer_schema.clone(), Arc::new(Int32Array::from(vec![1])))
+                } else {
+                    (
+                        Schema::new(vec![Field::new("value", DataType::Utf8, true)]),
+                        Arc::new(StringArray::from(vec!["one"])),
+                    )
+                };
+                let path = stream.data_path.join(format!("migration-{index}.arrows"));
+                let mut writer =
+                    ArrowStreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+                writer
+                    .write(&RecordBatch::try_new(Arc::new(schema), vec![values]).unwrap())
+                    .unwrap();
+                writer.finish().unwrap();
+                paths.push(path);
+            }
+            if !raw_conflict {
+                let compatible = Schema::new(vec![Field::new("other", DataType::Utf8, true)]);
+                let recovered = stream.updated_schema(compatible).unwrap();
+                assert!(recovered.field_with_name("value").is_ok());
+                assert!(recovered.field_with_name("other").is_ok());
+            }
+            let persisted = if raw_conflict {
+                Schema::empty()
+            } else {
+                Schema::new(vec![Field::new("value", DataType::Utf8, true)])
+            };
+            assert!(matches!(
+                stream.updated_schema(persisted.clone()),
+                Err(StagingError::Arrow(ArrowError::SchemaError(_)))
+            ));
+            if raw_conflict {
+                // Incompatible raw files still fail before registry access.
+                assert!(matches!(
+                    stream
+                        .restore_global_schema(persisted.clone(), &None, None, None)
+                        .await,
+                    Err(StagingError::Arrow(ArrowError::SchemaError(_)))
+                ));
+            } else {
+                assert_eq!(stream.recovery_raw_schema().unwrap(), integer_schema);
+            }
+            stream.metadata.write().unwrap().stream_type = StreamType::Internal;
+            assert!(matches!(
+                stream
+                    .restore_global_schema(persisted, &None, None, None)
+                    .await,
+                Err(StagingError::Arrow(ArrowError::SchemaError(_)))
+            ));
+            assert!(paths.iter().all(|path| path.exists()));
+            assert!(stream.global_schema.read().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn internal_streams_bypass_registry_during_conversion() {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        let temp = TempDir::new().unwrap();
+        let local = Schema::new(vec![
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            ),
+            Field::new("value", DataType::Int32, true),
+        ]);
+        let metadata = LogStreamMetadata {
+            stream_type: StreamType::Internal,
+            schema: local
+                .fields()
+                .iter()
+                .map(|field| (field.name().clone(), field.clone()))
+                .collect(),
+            ..Default::default()
+        };
+        let stream = Stream::new(
+            Arc::new(Options {
+                mode: Mode::Ingest,
+                local_staging_path: temp.path().to_path_buf(),
+                row_group_size: 2,
+                ..Default::default()
+            }),
+            "internal-registry-bypass",
+            metadata,
+            None,
+            &None,
+        );
+        assert!(!stream.can_use_global_schema());
+        assert!(!stream.uses_global_schema());
+        assert_eq!(*stream.get_schema(), local);
+        // No runtime or ingestor identity is initialized: the resolver must not
+        // even reach its metastore/lock path for an internal stream.
+        let resolution = stream.resolve_global_schema(&local, &None).unwrap();
+        assert_eq!(resolution.rename_schema(&local).unwrap(), local);
+
+        fs::create_dir_all(&stream.data_path).unwrap();
+        let source = stream.data_path.join("internal.arrows");
+        let batch = RecordBatch::try_new(
+            Arc::new(local.clone()),
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![1, 2])),
+                Arc::new(Int32Array::from(vec![11, 22])),
+            ],
+        )
+        .unwrap();
+        {
+            let mut writer = stream.writer.lock().unwrap();
+            writer.mem = Some(MemWriter::default());
+            writer
+                .mem
+                .as_mut()
+                .unwrap()
+                .push("internal", &batch)
+                .unwrap();
+        }
+        let records = stream
+            .recordbatches_cloned(&Arc::new(local.clone()))
+            .unwrap();
+        assert_eq!(records.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.schema().field_with_name("value_int32").is_err())
+        );
+        let mut writer =
+            ArrowStreamWriter::try_new(File::create(&source).unwrap(), &local).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(
+            futures::executor::block_on(stream.restore_global_schema(
+                local.clone(),
+                &None,
+                None,
+                None
+            ))
+            .unwrap(),
+            local
+        );
+        let output = stream.data_path.join("internal.parquet");
+        let outcome = stream
+            .convert_arrow_file_groups_to_parquet(
+                vec![(output.clone(), vec![source])],
+                None,
+                None,
+                &None,
+                ArrowGroupExecution::Sequential,
+            )
+            .unwrap();
+        assert!(outcome.first_error.is_none());
+        let mut reader = ParquetRecordBatchReaderBuilder::try_new(File::open(output).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert!(batch.schema().field_with_name("value_int32").is_err());
+        let values = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let mut values = values.values().to_vec();
+        values.sort_unstable();
+        assert_eq!(values, vec![11, 22]);
+    }
+
+    #[test]
+    fn resolved_conversion_preserves_conflicting_columns_for_logs_and_metrics() {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        for forward in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let options = Arc::new(Options {
+                local_staging_path: temp.path().to_path_buf(),
+                row_group_size: 2,
+                ..Default::default()
+            });
+            let mut metadata = LogStreamMetadata::default();
+            if forward {
+                metadata.log_source =
+                    vec![LogSourceEntry::new(LogSource::OtelMetrics, HashSet::new())];
+            }
+            let stream = Stream::new(options, "resolved", metadata, None, &None);
+            fs::create_dir_all(&stream.data_path).unwrap();
+            let timestamp_type = DataType::Timestamp(TimeUnit::Millisecond, None);
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(DEFAULT_TIMESTAMP_KEY, timestamp_type.clone(), true),
+                Field::new("metric_name", DataType::Utf8, true),
+                Field::new("value", DataType::Int32, true),
+            ]));
+            let mut files = Vec::new();
+            for (index, values) in [[11, 22], [33, 44]].into_iter().enumerate() {
+                let batch = RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(TimestampMillisecondArray::from(vec![
+                            (index * 2 + 1) as i64,
+                            (index * 2 + 2) as i64,
+                        ])),
+                        Arc::new(StringArray::from(vec!["cpu", "cpu"])),
+                        Arc::new(Int32Array::from(values.to_vec())),
+                    ],
+                )
+                .unwrap();
+                let path = stream.data_path.join(format!("node{index}.arrows"));
+                let mut writer =
+                    ArrowStreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+                writer.write(&batch).unwrap();
+                writer.finish().unwrap();
+                files.push(path);
+            }
+            let local_schema = Arc::new(Schema::try_merge([schema.as_ref().clone()]).unwrap());
+            let resolution = Arc::new(Resolution::from_targets(HashMap::from([
+                (
+                    (DEFAULT_TIMESTAMP_KEY.to_owned(), timestamp_type.clone()),
+                    Arc::new(Field::new(DEFAULT_TIMESTAMP_KEY, timestamp_type, true)),
+                ),
+                (
+                    ("metric_name".to_owned(), DataType::Utf8),
+                    Arc::new(Field::new("metric_name", DataType::Utf8, true)),
+                ),
+                (
+                    ("value".to_owned(), DataType::Int32),
+                    Arc::new(Field::new("value_int32", DataType::Int32, true)),
+                ),
+            ])));
+            let parquet_path = stream.data_path.join("resolved.parquet");
+            let written_schema = stream
+                .convert_arrow_group(
+                    parquet_path.clone(),
+                    files.clone(),
+                    None,
+                    None,
+                    &None,
+                    Some(local_schema),
+                    &resolution,
+                )
+                .unwrap()
+                .unwrap();
+            assert!(files.iter().all(|path| !path.exists()));
+            let reader =
+                ParquetRecordBatchReaderBuilder::try_new(File::open(&parquet_path).unwrap())
+                    .unwrap();
+            Schema::try_merge([written_schema, reader.schema().as_ref().clone()]).unwrap();
+            let batches = reader
+                .build()
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+            let mut integers = Vec::new();
+            for batch in batches {
+                assert!(batch.column_by_name("value").is_none());
+                integers.extend(
+                    batch
+                        .column_by_name("value_int32")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<Int32Array>()
+                        .unwrap()
+                        .iter()
+                        .flatten(),
+                );
+            }
+            integers.sort();
+            assert_eq!(integers, vec![11, 22, 33, 44]);
+        }
+    }
+
+    #[test]
+    fn local_raw_schema_conflicts_fail_before_resolution() {
+        let temp = TempDir::new().unwrap();
+        let stream = Stream::new(
+            Arc::new(Options {
+                local_staging_path: temp.path().to_path_buf(),
+                ..Default::default()
+            }),
+            "local-conflict",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        fs::create_dir_all(&stream.data_path).unwrap();
+        let mut files = Vec::new();
+        for (index, field) in [
+            Field::new("value", DataType::Int32, true),
+            Field::new("value", DataType::Utf8, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let schema = Arc::new(Schema::new(vec![field]));
+            let path = stream.data_path.join(format!("conflict-{index}.arrows"));
+            let mut writer =
+                ArrowStreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+            let values: ArrayRef = if index == 0 {
+                Arc::new(Int32Array::from(vec![1]))
+            } else {
+                Arc::new(StringArray::from(vec!["one"]))
+            };
+            writer
+                .write(&RecordBatch::try_new(schema, vec![values]).unwrap())
+                .unwrap();
+            writer.finish().unwrap();
+            files.push(path);
+        }
+
+        assert!(
+            stream
+                .merge_local_arrow_schema(&[(stream.data_path.join("conflict.parquet"), files)])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unresolved_sources_are_requeued_without_overwriting_new_files() {
+        let temp = TempDir::new().unwrap();
+        let stream = Stream::new(
+            Arc::new(Options {
+                local_staging_path: temp.path().to_path_buf(),
+                ..Default::default()
+            }),
+            "retry",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let processing = stream.data_path.join("processing_retry");
+        fs::create_dir_all(&processing).unwrap();
+        let name = "key.date=2026-10-06.hour=04.minute=01.host.data.arrows";
+        let original = processing.join(name);
+        let live = stream.data_path.join(name);
+        fs::write(&original, b"unresolved").unwrap();
+        fs::write(&live, b"live").unwrap();
+        stream.requeue_unresolved_arrow_files(&[(
+            stream.data_path.join("retry.parquet"),
+            vec![original.clone()],
+        )]);
+        assert!(!original.exists());
+        assert_eq!(fs::read(&live).unwrap(), b"live");
+        let queued = stream.arrow_files();
+        assert_eq!(queued.len(), 2);
+        assert!(
+            queued
+                .iter()
+                .any(|path| fs::read(path).unwrap() == b"unresolved")
+        );
+        assert!(!processing.exists());
+    }
 
     #[test]
     fn parallel_metric_writer_creates_valid_ordered_row_groups() {
@@ -3107,7 +3863,7 @@ mod tests {
 
         let record_reader =
             ConversionRecordReader::Forward(MergedForwardRecordReader::try_new(&arrow_files));
-        let merged_schema = Arc::new(record_reader.merged_schema());
+        let merged_schema = Arc::new(record_reader.merged_schema().unwrap());
         let props = WriterProperties::builder()
             .set_max_row_group_row_count(Some(5))
             .build();
@@ -3120,6 +3876,8 @@ mod tests {
                     &merged_schema,
                     &props,
                     None,
+                    merged_schema.clone(),
+                    Arc::new(Resolution::identity()),
                 )
                 .unwrap()
         );

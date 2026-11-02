@@ -51,16 +51,17 @@ use crate::{
         metastore_traits::{Metastore, MetastoreObject},
     },
     option::Mode,
-    parseable::{DEFAULT_TENANT, PARSEABLE},
+    parseable::{DEFAULT_TENANT, GlobalSchema, PARSEABLE},
     storage::{
-        ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY,
-        SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
-        TARGETS_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
+        ALERTS_ROOT_DIRECTORY, GLOBAL_SCHEMA_FILE_NAME, ObjectStorage, ObjectStorageError,
+        PARSEABLE_ROOT_DIRECTORY, SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME,
+        STREAM_ROOT_DIRECTORY, TARGETS_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
         object_storage::{
-            alert_json_path, alert_state_json_path, filter_path, manifest_path, mttr_json_path,
-            outbound_http_policy_json_path, parseable_json_path, schema_path, stream_json_path,
-            to_bytes,
+            alert_json_path, alert_state_json_path, filter_path, global_schema_lock_file_path,
+            global_schema_path, manifest_path, mttr_json_path, outbound_http_policy_json_path,
+            parseable_json_path, schema_path, stream_json_path, to_bytes,
         },
+        to_object_store_path,
     },
     users::filters::{Filter, migrate_v1_v2},
 };
@@ -77,6 +78,10 @@ pub fn is_missing_optional_dir(err: &ObjectStorageError) -> bool {
         ObjectStorageError::IoError(err) => err.kind() == std::io::ErrorKind::NotFound,
         _ => false,
     }
+}
+
+fn is_legacy_schema_file(file_name: &str) -> bool {
+    file_name.contains(".schema") && !file_name.ends_with(GLOBAL_SCHEMA_FILE_NAME)
 }
 
 #[async_trait]
@@ -1160,7 +1165,7 @@ impl Metastore for ObjectStoreMetastore {
             .storage
             .get_objects(
                 Some(&path_prefix),
-                Box::new(|file_name: String| file_name.contains(".schema")),
+                Box::new(|file_name: String| is_legacy_schema_file(&file_name)),
                 tenant_id,
             )
             .await?
@@ -1178,6 +1183,11 @@ impl Metastore for ObjectStoreMetastore {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<Bytes, MetastoreError> {
+        if let Some(global_schema) = self.get_global_schema(stream_name, tenant_id).await? {
+            let schema = to_bytes(&global_schema.schema);
+            return Ok(schema);
+        }
+
         Ok(self
             .storage
             .get_object(&schema_path(stream_name, tenant_id), tenant_id)
@@ -1194,6 +1204,87 @@ impl Metastore for ObjectStoreMetastore {
         Ok(self
             .storage
             .put_object(&path, to_bytes(&obj), tenant_id)
+            .await?)
+    }
+    async fn get_global_schema_locks(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, MetastoreError> {
+        let path = to_object_store_path(&global_schema_lock_file_path(stream_name, tenant_id));
+        let mut result_file_list = Vec::new();
+        let resp = self.storage.list_with_delimiter(Some(path)).await?;
+        for obj in resp.objects.iter() {
+            let name = obj.location.filename();
+            if let Some(name) = name
+                && name.ends_with(".lock")
+            {
+                result_file_list.push(name.to_owned());
+            }
+        }
+        Ok(result_file_list)
+    }
+    async fn put_global_schema_lock(
+        &self,
+        lock_file_path: RelativePathBuf,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError> {
+        let data = to_bytes("");
+        self.storage
+            .put_object(&lock_file_path, data, tenant_id)
+            .await?;
+        Ok(())
+    }
+    async fn delete_global_schema_lock(
+        &self,
+        path: RelativePathBuf,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError> {
+        match self.storage.delete_object(&path, tenant_id).await {
+            Ok(()) | Err(ObjectStorageError::NoSuchKey(_)) => Ok(()),
+            Err(ObjectStorageError::IoError(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+    /// Retrieve the persisted global schema and its stored content hash.
+    async fn get_global_schema(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<GlobalSchema>, MetastoreError> {
+        // LocalFS does not participate in the shared registry. Only bypass
+        // explicitly unsupported backends; propagate errors from cloud stores.
+        let path = global_schema_path(stream_name, tenant_id);
+        let global_schema = match self.storage.get_object(&path, tenant_id).await {
+            Ok(obj) => serde_json::from_slice(&obj)?,
+            Err(ObjectStorageError::NoSuchKey(_) | ObjectStorageError::PathError(_)) => {
+                return Ok(None);
+            }
+            Err(e) => {
+                tracing::error!("{e}");
+                return Err(MetastoreError::ObjectStorageError(e));
+            }
+        };
+        Ok(Some(global_schema))
+    }
+
+    /// Create a missing global schema or update one whose stored hash matches.
+    /// Callers coordinate the non-atomic hash check and update with lock files.
+    async fn put_global_schema(
+        &self,
+        obj: GlobalSchema,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+        expected: Option<u64>,
+    ) -> Result<bool, MetastoreError> {
+        let path = global_schema_path(stream_name, tenant_id);
+        Ok(self
+            .storage
+            .put_object_if(&path, to_bytes(&obj), expected, tenant_id)
             .await?)
     }
 
@@ -1468,5 +1559,41 @@ mod tests {
             storage.get_object(&path, &tenant_id).await,
             Err(ObjectStorageError::NoSuchKey(_))
         ));
+    }
+
+    #[test]
+    fn global_schema_paths_normalize_default_tenant_and_isolate_real_tenants() {
+        let no_tenant = None;
+        let default_tenant = Some(DEFAULT_TENANT.to_owned());
+        let tenant_a = Some("tenant-a".to_owned());
+        let tenant_b = Some("tenant-b".to_owned());
+
+        assert_eq!(
+            global_schema_path("events", &no_tenant).as_str(),
+            "events/.stream/.global.schema"
+        );
+        assert_eq!(
+            global_schema_path("events", &default_tenant),
+            global_schema_path("events", &no_tenant)
+        );
+        assert_eq!(
+            global_schema_lock_file_path("events", &default_tenant),
+            global_schema_lock_file_path("events", &no_tenant)
+        );
+        assert_eq!(
+            global_schema_path("events", &tenant_a).as_str(),
+            "tenant-a/events/.stream/.global.schema"
+        );
+        assert_ne!(
+            global_schema_path("events", &tenant_a),
+            global_schema_path("events", &tenant_b)
+        );
+        assert_ne!(
+            global_schema_lock_file_path("events", &tenant_a),
+            global_schema_lock_file_path("events", &tenant_b)
+        );
+        assert!(is_legacy_schema_file(".schema"));
+        assert!(is_legacy_schema_file(".ingestor.node-1.schema"));
+        assert!(!is_legacy_schema_file(GLOBAL_SCHEMA_FILE_NAME));
     }
 }

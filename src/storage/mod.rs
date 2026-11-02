@@ -16,7 +16,8 @@
  *
  */
 
-use object_store::path::Path;
+use bytes::Bytes;
+use object_store::{ObjectStoreExt, path::Path};
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinError;
@@ -29,7 +30,7 @@ use crate::{
     metadata::SchemaVersion,
     metastore::{MetastoreErrorDetail, metastore_traits::MetastoreObject},
     option::StandaloneWithDistributed,
-    parseable::StreamNotFound,
+    parseable::{GlobalSchema, StreamNotFound},
     stats::FullStats,
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
@@ -52,6 +53,10 @@ pub mod retention;
 mod s3;
 pub mod store_metadata;
 
+pub trait ComparableBytes: Sized + serde::Serialize {
+    fn get_hash(&self) -> u64;
+}
+
 /// Size of the first request issued by [`get_object_ranged`], which doubles as
 /// the size probe. Anything at or below this is fetched as one plain GET, with
 /// no generation pinning and no retry path. Sized so that a compressed manifest
@@ -72,6 +77,95 @@ pub(crate) const RANGED_GET_MAX_ATTEMPTS: u32 = 3;
 /// are small metadata objects (`stream.json` and friends) where the cost is
 /// round trip latency, so overlapping them is close to a pure win.
 pub(crate) const GET_OBJECTS_CONCURRENCY: usize = 32;
+
+/// Fetch an object's body and conditional-write token from the same GET request.
+pub(crate) async fn get_object_versioned<S: object_store::ObjectStore + ?Sized>(
+    client: &S,
+    path: &Path,
+) -> object_store::Result<Option<(bytes::Bytes, object_store::UpdateVersion)>> {
+    let result = match client
+        .get_opts(path, object_store::GetOptions::default())
+        .await
+    {
+        Ok(result) => result,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+
+    // Use the version returned by this same GET; a separate HEAD could describe
+    // a different generation from the bytes below.
+    let version = object_store::UpdateVersion {
+        e_tag: result.meta.e_tag.clone(),
+        version: result.meta.version.clone(),
+    };
+    if version.e_tag.is_none() && version.version.is_none() {
+        return Err(object_store::Error::NotSupported {
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "object store returned no validator for conditional updates",
+            )),
+        });
+    }
+
+    Ok(Some((result.bytes().await?, version)))
+}
+
+/// Atomically create or update `path`; return `false` only for a conditional
+/// precondition conflict. Every other storage failure is preserved as an error.
+/// Specific function for comparing global schema hashes
+/// (the read path doesn't know what to Deserialize the Bytes to for comparison)
+pub(crate) async fn put_schema_if<S: object_store::ObjectStore + ?Sized>(
+    client: &S,
+    path: &Path,
+    data: Bytes,
+    expected: Option<u64>,
+) -> object_store::Result<bool> {
+    use object_store::{PutMode, PutOptions};
+
+    let res = match expected {
+        None => {
+            // create
+            client
+                .put_opts(
+                    path,
+                    data.into(),
+                    PutOptions {
+                        mode: PutMode::Create,
+                        ..Default::default()
+                    },
+                )
+                .await
+        }
+        Some(version) => {
+            // Update if version matches
+            // get the object first
+            match client.get(path).await {
+                Ok(obj) => {
+                    let obj = serde_json::from_slice::<GlobalSchema>(&obj.bytes().await?).map_err(
+                        |e| object_store::Error::Generic {
+                            store: "object-store hash",
+                            source: Box::new(e),
+                        },
+                    )?;
+                    if obj.hash.ne(&version) {
+                        return Ok(false);
+                    }
+                }
+                Err(object_store::Error::NotFound { .. }) => return Ok(false),
+                Err(error) => return Err(error),
+            }
+            client.put(path, data.into()).await
+        }
+    };
+
+    match res {
+        Ok(_) => Ok(true),
+        Err(
+            object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. },
+        ) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
 
 /// Fetch an object as a series of bounded byte ranges rather than one stream.
 ///
@@ -307,6 +401,7 @@ pub const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 pub const STREAM_ROOT_DIRECTORY: &str = ".stream";
 pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
 pub const SCHEMA_FILE_NAME: &str = ".schema";
+pub const GLOBAL_SCHEMA_FILE_NAME: &str = ".global.schema";
 pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
 pub const SETTINGS_ROOT_DIRECTORY: &str = ".settings";
 pub const TARGETS_ROOT_DIRECTORY: &str = ".targets";
@@ -674,5 +769,136 @@ mod tests {
             parsed.gcs.max_object_store_requests,
             DEFAULT_MAX_OBJECT_STORE_REQUESTS
         );
+    }
+}
+
+#[cfg(test)]
+mod global_schema_storage_tests {
+    use arrow_schema::{DataType, Field, Schema};
+    use bytes::Bytes;
+    use object_store::{ObjectStoreExt, memory::InMemory, path::Path};
+
+    use crate::parseable::GlobalSchema;
+
+    use super::{get_object_versioned, put_schema_if};
+
+    #[tokio::test]
+    async fn versioned_get_reports_absence_and_returns_body_with_validator() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+
+        assert!(
+            get_object_versioned(&store, &path)
+                .await
+                .expect("missing objects are not errors")
+                .is_none()
+        );
+
+        assert!(
+            put_schema_if(&store, &path, Bytes::from_static(b"schema"), None)
+                .await
+                .expect("create-only write should succeed")
+        );
+        let (body, version) = get_object_versioned(&store, &path)
+            .await
+            .expect("read should succeed")
+            .expect("object was just created");
+        assert_eq!(body, Bytes::from_static(b"schema"));
+        assert!(version.e_tag.is_some() || version.version.is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrent_create_only_writes_have_exactly_one_winner() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+        let (first, second) = tokio::join!(
+            put_schema_if(&store, &path, Bytes::from_static(b"first"), None),
+            put_schema_if(&store, &path, Bytes::from_static(b"second"), None),
+        );
+
+        let outcomes = [
+            first.expect("first write must resolve"),
+            second.expect("second write must resolve"),
+        ];
+        assert_eq!(outcomes.iter().filter(|written| **written).count(), 1);
+        assert_eq!(outcomes.iter().filter(|written| !**written).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_update_is_rejected_without_overwriting_newer_schema() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+        let initial =
+            GlobalSchema::from_schema(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
+        let newer = GlobalSchema::from_schema(Schema::new(vec![
+            Field::new("value", DataType::Utf8, true),
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                true,
+            ),
+        ]));
+
+        assert!(
+            put_schema_if(
+                &store,
+                &path,
+                Bytes::from(serde_json::to_vec(&initial).unwrap()),
+                None,
+            )
+            .await
+            .unwrap()
+        );
+        let stored_initial: GlobalSchema =
+            serde_json::from_slice(&store.get(&path).await.unwrap().bytes().await.unwrap())
+                .unwrap();
+        assert_eq!(stored_initial.hash, initial.hash);
+
+        assert!(
+            put_schema_if(
+                &store,
+                &path,
+                Bytes::from(serde_json::to_vec(&newer).unwrap()),
+                Some(stored_initial.hash),
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !put_schema_if(
+                &store,
+                &path,
+                Bytes::from(serde_json::to_vec(&initial).unwrap()),
+                Some(initial.hash),
+            )
+            .await
+            .unwrap()
+        );
+
+        let actual: GlobalSchema =
+            serde_json::from_slice(&store.get(&path).await.unwrap().bytes().await.unwrap())
+                .unwrap();
+        assert_eq!(actual.hash, newer.hash);
+        assert_eq!(actual.schema, newer.schema);
+    }
+
+    #[tokio::test]
+    async fn update_with_expected_hash_for_missing_schema_is_a_conflict() {
+        let store = InMemory::new();
+        let path = Path::from("tenant/stream/.stream/.global.schema");
+        let schema =
+            GlobalSchema::from_schema(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
+
+        assert!(
+            !put_schema_if(
+                &store,
+                &path,
+                Bytes::from(serde_json::to_vec(&schema).unwrap()),
+                Some(schema.hash),
+            )
+            .await
+            .unwrap()
+        );
+        assert!(store.get(&path).await.is_err());
     }
 }
