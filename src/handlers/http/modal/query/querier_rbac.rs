@@ -51,7 +51,6 @@ pub async fn post_user(
     let tenant_id = get_tenant_id_from_request(&req);
     let caller_userid = get_user_from_request(&req)?;
     validator::user_role_name(&username)?;
-    let mut metadata = get_metadata(&tenant_id).await?;
 
     let user_roles: HashSet<String> = if let Some(body) = body {
         serde_json::from_value(body.into_inner())?
@@ -70,6 +69,7 @@ pub async fn post_user(
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
     let _guard = UPDATE_LOCK.lock().await;
+    let mut metadata = get_metadata(&tenant_id).await?;
     if Users.contains(&username, &tenant_id)
         || metadata
             .users
@@ -341,9 +341,9 @@ pub async fn post_gen_password(
     let mut new_hash = String::default();
     let tenant_id = get_tenant_id_from_request(&req);
     let caller_userid = get_user_from_request(&req)?;
-    let mut metadata = get_metadata(&tenant_id).await?;
 
     let _guard = UPDATE_LOCK.lock().await;
+    let mut metadata = get_metadata(&tenant_id).await?;
     let user::PassCode { password, hash } = user::Basic::gen_new_password();
     new_password.clone_from(&password);
     new_hash.clone_from(&hash);
