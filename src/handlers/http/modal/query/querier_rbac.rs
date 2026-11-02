@@ -223,6 +223,10 @@ pub async fn add_roles_to_user(
 
     put_metadata(&metadata, &tenant_id).await?;
 
+    // Keep local state aligned with the durable metadata even if cluster
+    // fan-out fails. The caller can safely retry the idempotent sync.
+    Users.add_roles(&userid, roles_to_add.clone(), &tenant_id);
+
     sync_users_with_roles_with_ingestors(
         &req,
         &userid,
@@ -232,9 +236,6 @@ pub async fn add_roles_to_user(
         &caller_userid,
     )
     .await?;
-
-    // update in mem table (this invalidates the user's session)
-    Users.add_roles(&userid.clone(), roles_to_add.clone(), &tenant_id);
 
     Ok(format!("Roles updated successfully for {username}"))
 }
@@ -278,16 +279,6 @@ pub async fn remove_roles_from_user(
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
 
-    // check for role not present with user
-    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&userid, &tenant_id));
-    let roles_not_with_user: HashSet<String> =
-        HashSet::from_iter(roles_to_remove.difference(&user_roles).cloned());
-    if !roles_not_with_user.is_empty() {
-        return Err(RBACError::RolesNotAssigned(Vec::from_iter(
-            roles_not_with_user,
-        )));
-    }
-
     // In multi-tenant, prevent removing the admin role from the tenant owner
     if PARSEABLE.options.is_multi_tenant()
         && roles_to_remove.contains("admin")
@@ -322,6 +313,10 @@ pub async fn remove_roles_from_user(
 
     put_metadata(&metadata, &tenant_id).await?;
 
+    // Removal is idempotent so a retry can finish a partially failed fan-out.
+    // Apply the durable change locally before reporting any sync failure.
+    Users.remove_roles(&userid, roles_to_remove.clone(), &tenant_id);
+
     sync_users_with_roles_with_ingestors(
         &req,
         &userid,
@@ -331,9 +326,6 @@ pub async fn remove_roles_from_user(
         &caller_userid,
     )
     .await?;
-
-    // update in mem table (this invalidates the user's session)
-    Users.remove_roles(&userid.clone(), roles_to_remove.clone(), &tenant_id);
 
     Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }

@@ -17,9 +17,9 @@ use crate::{
     parseable::DEFAULT_TENANT,
     rbac::{
         GLOBAL_INGESTOR_ROLE, GLOBAL_QUERIER_ROLE, Users,
-        map::{roles, users},
+        map::users,
         role::model::{DefaultPrivilege, Role},
-        role_exists,
+        role_exists, role_for,
         user::{User, UserType},
     },
     utils::{get_user_and_tenant_from_request, is_admin},
@@ -444,20 +444,16 @@ pub async fn list_api_keys(
 ) -> Result<impl Responder, ApiKeyError> {
     let (_, tenant_id) = verify_admin(&req)?;
     let tenant = tenant_or_default(&tenant_id);
-    let tenant_roles = roles();
     let entries: Vec<ApiKeyListEntry> = collect_tenant_api_keys(&tenant_id)
         .iter()
         .filter(|user| {
             query.priviledge.as_ref().is_none_or(|privileges| {
                 user.roles.iter().any(|role_name| {
-                    tenant_roles
-                        .get(tenant)
-                        .and_then(|roles| roles.get(role_name))
-                        .is_some_and(|role| {
-                            privileges
-                                .iter()
-                                .any(|privilege| role_has_privilege(role, privilege))
-                        })
+                    role_for(tenant, role_name).is_some_and(|role| {
+                        privileges
+                            .iter()
+                            .any(|privilege| role_has_privilege(&role, privilege))
+                    })
                 })
             })
         })

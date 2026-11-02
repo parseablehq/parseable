@@ -159,17 +159,6 @@ pub async fn remove_roles_from_user(
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
 
-    // check that user actually has these roles
-    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&userid, &tenant_id));
-    let roles_not_with_user: HashSet<String> =
-        HashSet::from_iter(roles_to_remove.difference(&user_roles).cloned());
-
-    if !roles_not_with_user.is_empty() {
-        return Err(RBACError::RolesNotAssigned(Vec::from_iter(
-            roles_not_with_user,
-        )));
-    }
-
     // update parseable.json in staging first
     let mut metadata = get_metadata(&tenant_id).await?;
     if let Some(user) = metadata
