@@ -181,6 +181,7 @@ pub async fn add_roles_to_user(
     let roles_to_add = roles_to_add.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let caller_userid = get_user_from_request(&req)?;
+    let _guard = UPDATE_LOCK.lock().await;
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
