@@ -434,20 +434,10 @@ pub struct UsersPrism {
 pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permission> {
     let mut perms = HashSet::new();
     for role in &roles {
-        if role == GLOBAL_INGESTOR_ROLE {
-            perms.insert(Permission::Resource(
-                Action::Ingest,
-                Some(ParseableResourceType::Stream("*".to_string())),
-            ));
-            continue;
-        }
-        if role == GLOBAL_QUERIER_ROLE {
-            perms.extend(
-                RoleBuilder::from(&DefaultPrivilege::Reader {
-                    resource: Some(ParseableResourceType::Stream("*".to_string())),
-                })
-                .build(),
-            );
+        if let Some(system_role) = system_role(role) {
+            for privilege in system_role.privileges() {
+                perms.extend(RoleBuilder::from(privilege).build());
+            }
             continue;
         }
         let role_map = &map::roles();

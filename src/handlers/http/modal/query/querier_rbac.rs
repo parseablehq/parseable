@@ -311,12 +311,8 @@ pub async fn remove_roles_from_user(
         return Err(RBACError::UserDoesNotExist);
     }
 
-    put_metadata(&metadata, &tenant_id).await?;
-
-    // Removal is idempotent so a retry can finish a partially failed fan-out.
-    // Apply the durable change locally before reporting any sync failure.
-    Users.remove_roles(&userid, roles_to_remove.clone(), &tenant_id);
-
+    // Sync before removing the role locally, so the UI can retry if sync fails.
+    // Ingestors accept the retry even if they already removed the role.
     sync_users_with_roles_with_ingestors(
         &req,
         &userid,
@@ -326,6 +322,9 @@ pub async fn remove_roles_from_user(
         &caller_userid,
     )
     .await?;
+
+    put_metadata(&metadata, &tenant_id).await?;
+    Users.remove_roles(&userid, roles_to_remove.clone(), &tenant_id);
 
     Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
