@@ -43,7 +43,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinSet;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
 use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date};
@@ -356,7 +356,6 @@ async fn handle_streaming_query(
         ])
         .observe(time);
 
-    let send_null = query_request.send_null;
     let with_fields = query_request.fields;
 
     let stream = if with_fields {
@@ -367,7 +366,7 @@ async fn handle_streaming_query(
         .to_string();
 
         // stream the records without fields
-        let mut batch_processor = create_batch_processor(send_null);
+        let mut batch_processor = create_batch_processor();
         let records_stream = records_stream.map(move |batch_result| {
             let batch_result = batch_result.map_err(QueryError::from);
             batch_processor(batch_result)
@@ -380,7 +379,7 @@ async fn handle_streaming_query(
         Box::pin(fields_chunk.chain(records_stream))
             as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
     } else {
-        let mut batch_processor = create_batch_processor(send_null);
+        let mut batch_processor = create_batch_processor();
         let stream = records_stream
             .map(move |batch_result| batch_processor(batch_result.map_err(QueryError::from)));
         Box::pin(stream) as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
@@ -392,25 +391,109 @@ async fn handle_streaming_query(
         .streaming(stream))
 }
 
-fn create_batch_processor(
-    send_null: bool,
-) -> impl FnMut(Result<RecordBatch, QueryError>) -> Result<Bytes, actix_web::Error> {
+fn create_batch_processor()
+-> impl FnMut(Result<RecordBatch, QueryError>) -> Result<Bytes, actix_web::Error> {
     move |batch_result| match batch_result {
         Ok(batch) => {
-            let response = QueryResponse {
-                records: vec![batch],
+            info!("Returning query results");
+            // Keep Arrow's encoded bytes rather than parsing and serializing them again.
+            let mut writer = arrow_json::ArrayWriter::new(Vec::new());
+            writer
+                .write(&batch)
+                .and_then(|_| writer.finish())
+                .map_err(|e| {
+                    error!("Failed to serialize record batch to JSON: {}", e);
+                    actix_web::error::ErrorInternalServerError(e)
+                })?;
+            let mut response = writer.into_inner();
+            response.push(b'\n');
+            Ok(Bytes::from(response))
+        }
+        Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_array::{BooleanArray, Decimal128Array, Float64Array, Int64Array};
+    use arrow_schema::Schema;
+
+    use super::*;
+
+    #[test]
+    fn streaming_batch_preserves_nulls_and_newline() {
+        let batch = RecordBatch::try_from_iter([
+            (
+                "message",
+                Arc::new(StringArray::from(vec!["first \"quoted\"\n", "snowman ☃"])) as ArrayRef,
+            ),
+            (
+                "nullable",
+                Arc::new(StringArray::from(vec![None, Some("present\tvalue")])) as ArrayRef,
+            ),
+            ("count", Arc::new(Int64Array::from(vec![7, 0])) as ArrayRef),
+            (
+                "active",
+                Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let response = create_batch_processor()(Ok(batch.clone())).unwrap();
+
+        for send_null in [false, true] {
+            let expected = QueryResponse {
+                records: vec![batch.clone()],
                 fields: Vec::new(),
                 fill_null: send_null,
                 with_fields: false,
             }
             .to_json()
-            .map_err(|e| {
-                error!("Failed to parse record batch into JSON: {}", e);
-                actix_web::error::ErrorInternalServerError(e)
-            })?;
-            Ok(Bytes::from(format!("{response}\n")))
+            .unwrap();
+            assert_eq!(response.as_ref(), format!("{expected}\n").as_bytes());
         }
-        Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response).unwrap(),
+            json!([
+                {"message": "first \"quoted\"\n", "count": 7, "active": true},
+                {"message": "snowman ☃", "nullable": "present\tvalue", "count": 0, "active": false},
+            ])
+        );
+    }
+
+    #[test]
+    fn streaming_batch_keeps_arrow_numbers() {
+        let batch = RecordBatch::try_from_iter([
+            (
+                "float",
+                Arc::new(Float64Array::from(vec![1e300])) as ArrayRef,
+            ),
+            (
+                "decimal",
+                Arc::new(
+                    Decimal128Array::from(vec![94_680_000_000_i128])
+                        .with_precision_and_scale(20, 10)
+                        .unwrap(),
+                ) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let response = create_batch_processor()(Ok(batch)).unwrap();
+        assert_eq!(
+            response.as_ref(),
+            b"[{\"float\":1.0e300,\"decimal\":9.4680000000}]\n"
+        );
+    }
+
+    #[test]
+    fn streaming_batch_handles_empty_batches_and_errors() {
+        let mut process_batch = create_batch_processor();
+        let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        assert_eq!(process_batch(Ok(batch)).unwrap().as_ref(), b"[]\n");
+        let error = process_batch(Err(QueryError::CustomError("query failed".into()))).unwrap_err();
+        assert_eq!(
+            error.as_response_error().status_code(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 }
 
