@@ -16,7 +16,8 @@
  *
  */
 
-use object_store::path::Path;
+use futures::{StreamExt, TryStreamExt};
+use object_store::{ObjectStoreExt, path::Path};
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinError;
@@ -28,16 +29,24 @@ use crate::{
     hottier::StreamHotTier,
     metadata::SchemaVersion,
     metastore::{MetastoreErrorDetail, metastore_traits::MetastoreObject},
+    metrics::{
+        increment_bytes_scanned_in_object_store_calls_by_date,
+        increment_files_scanned_in_object_store_calls_by_date,
+        increment_object_store_calls_by_date,
+        increment_partial_file_scans_in_object_store_calls_by_date,
+    },
     option::StandaloneWithDistributed,
-    parseable::StreamNotFound,
+    parseable::{DEFAULT_TENANT, LogStream, StreamNotFound},
     stats::FullStats,
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
 
 use chrono::Utc;
 
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 mod azure_blob;
 pub mod field_stats;
@@ -85,17 +94,28 @@ pub(crate) const GET_OBJECTS_CONCURRENCY: usize = 32;
 /// full length, so an object smaller than [`RANGED_GET_PROBE_BYTES`] costs
 /// exactly one request and needs no HEAD.
 ///
-/// `on_request` is invoked once per issued GET so callers can keep their own
-/// request accounting accurate.
+/// Counts each issued GET and records file/byte metrics only after a successful read.
 pub(crate) async fn get_object_ranged<S: object_store::ObjectStore>(
     client: &S,
-    src: &Path,
     log_path: &RelativePath,
-    on_request: impl Fn() + Send + Sync,
+    tenant_id: &Option<String>,
 ) -> Result<bytes::Bytes, ObjectStorageError> {
+    let src = to_object_store_path(log_path);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    let date = Utc::now().date_naive().to_string();
+    let on_request = || increment_object_store_calls_by_date("GET", &date, tenant);
     for attempt in 1..=RANGED_GET_MAX_ATTEMPTS {
-        match get_object_ranged_once(client, src, log_path, &on_request).await {
-            Ok(body) => return Ok(body),
+        match get_object_ranged_once(client, &src, log_path, &on_request).await {
+            Ok(body) => {
+                increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant);
+                increment_bytes_scanned_in_object_store_calls_by_date(
+                    "GET",
+                    body.len() as u64,
+                    &date,
+                    tenant,
+                );
+                return Ok(body);
+            }
             // The object was rewritten while its ranges were being read. Every
             // range fetched so far may belong to a different generation, so the
             // assembled buffer is discarded and the read restarts.
@@ -611,6 +631,404 @@ pub fn to_object_store_path(path: &RelativePath) -> Path {
     Path::from(path.as_str())
 }
 
+/// Strip the caller's prefix from date directories, counting LIST attempts even on failure.
+async fn list_dates<S: object_store::ObjectStore>(
+    client: &S,
+    prefix: &Path,
+    strip_prefix: &str,
+    tenant_id: &Option<String>,
+) -> Result<Vec<String>, ObjectStorageError> {
+    let resp = client.list_with_delimiter(Some(prefix)).await;
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
+
+    let resp = resp?;
+
+    let common_prefixes = resp.common_prefixes;
+
+    increment_files_scanned_in_object_store_calls_by_date(
+        "LIST",
+        common_prefixes.len() as u64,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+
+    // return prefixes at the root level
+    let dates: Vec<_> = common_prefixes
+        .iter()
+        .filter_map(|path| path.as_ref().strip_prefix(strip_prefix))
+        .map(String::from)
+        .collect();
+    tracing::Span::current().record("dates", dates.len());
+
+    Ok(dates)
+}
+
+/// Require metadata in every legacy stream directory; retain the provider's HEAD metric tenant.
+async fn list_old_streams<S: object_store::ObjectStore>(
+    client: &S,
+    head_tenant: &str,
+) -> Result<HashSet<LogStream>, ObjectStorageError> {
+    let resp = client.list_with_delimiter(None).await?;
+    let common_prefixes = resp.common_prefixes; // get all dirs
+    increment_files_scanned_in_object_store_calls_by_date(
+        "LIST",
+        common_prefixes.len() as u64,
+        &Utc::now().date_naive().to_string(),
+        DEFAULT_TENANT,
+    );
+    increment_object_store_calls_by_date(
+        "LIST",
+        &Utc::now().date_naive().to_string(),
+        DEFAULT_TENANT,
+    );
+    // return prefixes at the root level
+    let dirs: HashSet<_> = common_prefixes
+        .iter()
+        .filter_map(|path| path.parts().next())
+        .map(|name| name.as_ref().to_string())
+        .filter(|x| x != PARSEABLE_ROOT_DIRECTORY)
+        .collect();
+
+    let stream_json_check = futures::stream::FuturesUnordered::new();
+
+    for dir in &dirs {
+        let key = format!("{dir}/{STREAM_METADATA_FILE_NAME}");
+        let task = async move {
+            let result = client.head(&Path::from(key)).await;
+            increment_object_store_calls_by_date(
+                "HEAD",
+                &Utc::now().date_naive().to_string(),
+                head_tenant,
+            );
+            result.map(|_| ())
+        };
+        stream_json_check.push(task);
+    }
+    increment_files_scanned_in_object_store_calls_by_date(
+        "HEAD",
+        dirs.len() as u64,
+        &Utc::now().date_naive().to_string(),
+        DEFAULT_TENANT,
+    );
+    stream_json_check.try_collect::<()>().await?;
+
+    Ok(dirs)
+}
+
+/// Return matching partition names without the parent prefix or trailing slash.
+async fn list_partitions<S: object_store::ObjectStore>(
+    client: &S,
+    prefix: &str,
+    partition: &str,
+    tenant_id: &Option<String>,
+) -> Result<Vec<String>, ObjectStorageError> {
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    let resp = client
+        .list_with_delimiter(Some(&Path::from(prefix)))
+        .await?;
+    increment_files_scanned_in_object_store_calls_by_date(
+        "LIST",
+        resp.common_prefixes.len() as u64,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+    increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
+
+    let partitions: Vec<String> = resp
+        .common_prefixes
+        .iter()
+        .filter_map(|path| {
+            let path_str = path.as_ref();
+            if let Some(stripped) = path_str.strip_prefix(prefix) {
+                // Remove trailing slash if present, otherwise use as is
+                let clean_path = stripped.strip_suffix('/').unwrap_or(stripped);
+                Some(clean_path.to_string())
+            } else {
+                None
+            }
+        })
+        .filter(|dir| dir.starts_with(partition))
+        .collect();
+
+    Ok(partitions)
+}
+
+/// Fetch filtered filenames concurrently in listing order through the provider's traced GET.
+async fn get_objects<S: object_store::ObjectStore>(
+    client: &S,
+    provider: &impl ObjectStorage,
+    prefix: &Path,
+    filter_func: Box<dyn Fn(String) -> bool + Send>,
+    tenant_id: &Option<String>,
+) -> Result<Vec<bytes::Bytes>, ObjectStorageError> {
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    let mut list_stream = client.list(Some(prefix));
+
+    let mut paths = vec![];
+    let mut files_scanned = 0;
+
+    // Drain the listing first, then fetch. Awaiting each GET inside the
+    // listing loop serialises every download against the one before it.
+    // Note: We track each streaming list item retrieval
+    while let Some(meta_result) = list_stream.next().await {
+        let meta = meta_result?;
+
+        files_scanned += 1;
+        let ingestor_file = filter_func(meta.location.filename().unwrap().to_string());
+
+        if !ingestor_file {
+            continue;
+        }
+
+        paths.push(
+            RelativePath::from_path(meta.location.as_ref())
+                .map_err(ObjectStorageError::PathError)?
+                .to_relative_path_buf(),
+        );
+    }
+
+    // `buffered` rather than `buffer_unordered`: callers of this generic
+    // helper may rely on results following listing order.
+    let res: Vec<bytes::Bytes> = futures::stream::iter(paths)
+        .map(|path| async move { provider.get_object(&path, tenant_id).await })
+        .buffered(GET_OBJECTS_CONCURRENCY)
+        .try_collect()
+        .await?;
+
+    // Record total files scanned
+    increment_files_scanned_in_object_store_calls_by_date(
+        "LIST",
+        files_scanned as u64,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+    increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
+    Ok(res)
+}
+
+/// Count each GET attempt, recording file and byte metrics only after the full body is read.
+async fn get_object<S: object_store::ObjectStore>(
+    client: &S,
+    path: &RelativePath,
+    tenant_id: &Option<String>,
+) -> Result<bytes::Bytes, ObjectStorageError> {
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    let resp = client.get(&to_object_store_path(path)).await;
+    increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string(), tenant);
+
+    let resp = resp?;
+    let body = resp.bytes().await?;
+    tracing::Span::current().record("bytes", body.len());
+    increment_files_scanned_in_object_store_calls_by_date(
+        "GET",
+        1,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+    increment_bytes_scanned_in_object_store_calls_by_date(
+        "GET",
+        body.len() as u64,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+    Ok(body)
+}
+
+/// Count every request attempt and count a scanned file only when the request succeeds.
+fn record_request<T>(
+    result: Result<T, object_store::Error>,
+    method: &str,
+    tenant_id: &Option<String>,
+) -> Result<T, ObjectStorageError> {
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    increment_object_store_calls_by_date(method, &Utc::now().date_naive().to_string(), tenant);
+    let value = result?;
+    increment_files_scanned_in_object_store_calls_by_date(
+        method,
+        1,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+    Ok(value)
+}
+
+/// Return every component of each child prefix, retaining the providers' directory listing format.
+async fn list_dirs<S: object_store::ObjectStore>(
+    client: &S,
+    prefix: &Path,
+    tenant_id: &Option<String>,
+) -> Result<Vec<String>, ObjectStorageError> {
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+
+    let resp = client.list_with_delimiter(Some(prefix)).await;
+    increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
+    let resp = resp?;
+    increment_files_scanned_in_object_store_calls_by_date(
+        "LIST",
+        resp.common_prefixes.len() as u64,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+
+    Ok(resp
+        .common_prefixes
+        .iter()
+        .flat_map(|path| path.parts())
+        .map(|name| name.as_ref().to_string())
+        .collect::<Vec<_>>())
+}
+
+/// Select filenames starting with `ingestor`, counting all listed files in scan metrics.
+async fn get_ingestor_meta_file_paths<S: object_store::ObjectStore>(
+    client: &S,
+    prefix: &Path,
+    tenant_id: &Option<String>,
+) -> Result<Vec<relative_path::RelativePathBuf>, ObjectStorageError> {
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    let mut path_arr = vec![];
+    let mut files_scanned = 0;
+
+    let mut object_stream = client.list(Some(prefix));
+    increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
+
+    while let Some(meta_result) = object_stream.next().await {
+        let meta = meta_result?;
+
+        files_scanned += 1;
+        let flag = meta.location.filename().unwrap().starts_with("ingestor");
+
+        if flag {
+            path_arr.push(relative_path::RelativePathBuf::from(meta.location.as_ref()));
+        }
+    }
+    // Record total files scanned
+    increment_files_scanned_in_object_store_calls_by_date(
+        "LIST",
+        files_scanned as u64,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+    Ok(path_arr)
+}
+
+/// Truncate the destination and fill it with bounded concurrent ranges; count successful downloads.
+async fn parallel_download<S: object_store::ObjectStore>(
+    client: &S,
+    path: &RelativePath,
+    tenant: &str,
+    partial_path: std::path::PathBuf,
+    chunk: u64,
+    concurrency: u64,
+) -> Result<(), ObjectStorageError> {
+    let date = Utc::now().date_naive().to_string();
+    let src = to_object_store_path(path);
+
+    let meta = client.head(&src).await?;
+    increment_object_store_calls_by_date("HEAD", &date, tenant);
+    let total = meta.size;
+
+    if let Some(parent) = partial_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let file = tokio::fs::File::create(&partial_path).await?;
+    file.set_len(total).await?;
+    let std_file = Arc::new(file.into_std().await);
+
+    let ranges: Vec<std::ops::Range<u64>> = (0..total)
+        .step_by(chunk as usize)
+        .map(|s| s..(s + chunk).min(total))
+        .collect();
+    let chunk_count = ranges.len() as u64;
+    tracing::Span::current()
+        .record("total_bytes", total)
+        .record("chunks", chunk_count);
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency as usize));
+
+    futures::stream::iter(ranges)
+        .map(|r| {
+            let src = src.clone();
+            let std_file = std_file.clone();
+            let semaphore = semaphore.clone();
+            async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| ObjectStorageError::Custom(format!("semaphore closed: {e}")))?;
+                let bytes = client.get_range(&src, r.clone()).await?;
+                let offset = r.start;
+                tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                    write_all_at(&std_file, &bytes, offset)
+                })
+                .await
+                .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
+                Ok::<_, ObjectStorageError>(())
+            }
+        })
+        .buffer_unordered(concurrency as usize)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    increment_object_store_calls_by_date("GET", &date, tenant);
+    increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant);
+    increment_bytes_scanned_in_object_store_calls_by_date("GET", total, &date, tenant);
+    increment_partial_file_scans_in_object_store_calls_by_date("GET", chunk_count, &date, tenant);
+    Ok(())
+}
+
+/// Drain bulk deletion results before reporting failures, counting only successful deletes.
+async fn delete_prefix<S: object_store::ObjectStore>(
+    client: &S,
+    key: &str,
+    tenant: &str,
+) -> Result<(), ObjectStorageError> {
+    let object_stream = client.list(Some(&(key.into())));
+    increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
+
+    let locations_stream = object_stream.map(|result| result.map(|obj| obj.location));
+
+    // Use delete_stream which batches deletes via the bulk delete API
+    let mut delete_results = client.delete_stream(Box::pin(locations_stream));
+
+    let mut files_deleted: u64 = 0;
+    let mut failed_deletes: u64 = 0;
+    while let Some(result) = delete_results.next().await {
+        match result {
+            Ok(_) => files_deleted += 1,
+            Err(err) => {
+                failed_deletes += 1;
+                tracing::error!("Failed to delete object during prefix deletion: {:?}", err);
+            }
+        }
+    }
+
+    let total_files = files_deleted + failed_deletes;
+    tracing::Span::current()
+        .record("deleted", files_deleted)
+        .record("failed", failed_deletes);
+    increment_files_scanned_in_object_store_calls_by_date(
+        "LIST",
+        total_files,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+    increment_files_scanned_in_object_store_calls_by_date(
+        "DELETE",
+        files_deleted,
+        &Utc::now().date_naive().to_string(),
+        tenant,
+    );
+
+    if failed_deletes > 0 {
+        return Err(ObjectStorageError::UnhandledError(
+            anyhow::anyhow!("Failed to delete {failed_deletes} out of {total_files} objects under prefix '{key}'").into(),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Append `.partial` to the file name of a local path. Used by hot-tier
 /// downloaders to write to a sibling path and atomically rename on success.
 pub fn partial_path(
@@ -629,8 +1047,310 @@ pub fn partial_path(
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use object_store::{
+        ObjectStore, ObjectStoreExt, local::LocalFileSystem, memory::InMemory, path::Path,
+    };
+    use relative_path::RelativePath;
 
-    use super::{DEFAULT_MAX_OBJECT_STORE_REQUESTS, GcsConfig};
+    use super::{
+        DEFAULT_MAX_OBJECT_STORE_REQUESTS, GcsConfig, LocalFS, ObjectStorageError,
+        PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, delete_prefix,
+        get_ingestor_meta_file_paths, get_object, get_object_ranged, get_objects, list_dates,
+        list_dirs, list_old_streams, list_partitions, parallel_download, record_request,
+    };
+
+    #[tokio::test]
+    async fn partition_listings_keep_matching_children_with_and_without_tenant_prefixes() {
+        let store = InMemory::new();
+        for prefix in ["stream/date=2026-11-01/", "tenant/stream/date=2026-11-01/"] {
+            for suffix in [
+                "hour=00/minute=01/data",
+                "hour=00/other/data",
+                "hour=invalid/data",
+                "other/data",
+                "file",
+            ] {
+                store
+                    .put(&Path::from(format!("{prefix}{suffix}")), "data".into())
+                    .await
+                    .unwrap();
+            }
+            let hours = list_partitions(&store, prefix, "hour=", &None)
+                .await
+                .unwrap();
+            assert_eq!(hours, ["hour=00", "hour=invalid"]);
+            let prefix = format!("{prefix}hour=00/");
+            let minutes = list_partitions(&store, &prefix, "minute=", &None)
+                .await
+                .unwrap();
+            assert_eq!(minutes, ["minute=01"]);
+        }
+        assert!(
+            list_partitions(&store, "missing/", "hour=", &None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn old_stream_discovery_excludes_metadata_and_propagates_missing_stream_files() {
+        let store = InMemory::new();
+        for key in [
+            format!("{PARSEABLE_ROOT_DIRECTORY}/ignored"),
+            format!("one/{STREAM_METADATA_FILE_NAME}"),
+            format!("two/{STREAM_METADATA_FILE_NAME}"),
+        ] {
+            store.put(&Path::from(key), "data".into()).await.unwrap();
+        }
+        let streams = list_old_streams(&store, "old-stream-test").await.unwrap();
+        assert_eq!(streams, ["one".to_owned(), "two".to_owned()].into());
+        store
+            .put(&Path::from("missing/other"), "data".into())
+            .await
+            .unwrap();
+        assert!(matches!(
+            list_old_streams(&store, "old-stream-test").await,
+            Err(ObjectStorageError::NoSuchKey(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_objects_filters_filenames_and_preserves_listing_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalFileSystem::new_with_prefix(dir.path()).unwrap();
+        let provider = LocalFS::new(dir.path().to_path_buf());
+        for key in [
+            "nested/a.json",
+            "nested/b.skip",
+            "nested/c.json",
+            "outside.json",
+        ] {
+            store
+                .put(&Path::from(key), key.as_bytes().to_vec().into())
+                .await
+                .unwrap();
+        }
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let accepted = seen.clone();
+        let filter = Box::new(move |name: String| {
+            let keep = name.ends_with(".json");
+            if keep {
+                accepted.lock().unwrap().push(format!("nested/{name}"));
+            }
+            keep
+        });
+        let results = get_objects(&store, &provider, &Path::from("nested"), filter, &None)
+            .await
+            .unwrap();
+        let results: Vec<_> = results
+            .into_iter()
+            .map(|bytes| String::from_utf8(bytes.to_vec()).unwrap())
+            .collect();
+        assert_eq!(results, *seen.lock().unwrap());
+        assert_eq!(results.len(), 2);
+
+        let target = dir.path().join("nested/a.json");
+        let filter = Box::new(move |name: String| {
+            if name != "a.json" {
+                return false;
+            }
+            std::fs::remove_file(&target).unwrap();
+            true
+        });
+        let result = get_objects(&store, &provider, &Path::from("nested"), filter, &None).await;
+        assert!(matches!(result, Err(ObjectStorageError::NoSuchKey(_))));
+    }
+
+    #[test]
+    fn record_request_counts_attempts_and_successful_files() {
+        use crate::metrics::{
+            TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE as FILES,
+            TOTAL_OBJECT_STORE_CALLS_BY_DATE as CALLS,
+        };
+        let tenant = Some("storage-request-test".to_owned());
+        let date = chrono::Utc::now().date_naive().to_string();
+        for method in ["PUT", "HEAD", "DELETE"] {
+            let labels = [method, &date, tenant.as_deref().unwrap()];
+            let calls = CALLS.with_label_values(&labels);
+            let files = FILES.with_label_values(&labels);
+            let before = (calls.get(), files.get());
+            assert_eq!(record_request(Ok(7), method, &tenant).unwrap(), 7);
+            let err = object_store::Error::NotFound {
+                path: "missing".into(),
+                source: std::io::Error::from(std::io::ErrorKind::NotFound).into(),
+            };
+            assert!(matches!(
+                record_request::<()>(Err(err), method, &tenant),
+                Err(ObjectStorageError::NoSuchKey(path)) if path == "missing"
+            ));
+            assert_eq!((calls.get() - before.0, files.get() - before.1), (2, 1));
+        }
+    }
+
+    #[tokio::test]
+    async fn cloud_listings_preserve_prefixes_and_match_ingestor_filenames() {
+        let store = InMemory::new();
+        let tenant = Some("storage-listing-test".to_owned());
+        for key in [
+            "tenant/stream/file",
+            "tenant/stream/date=2026-11-01/file",
+            "tenant-other/file",
+            "ingestor-one",
+            "nested/ingestor-two",
+            "not-ingestor",
+        ] {
+            store.put(&Path::from(key), "data".into()).await.unwrap();
+        }
+        let prefix = "tenant/stream/";
+        let dates = list_dates(&store, &Path::from(prefix), prefix, &tenant)
+            .await
+            .unwrap();
+        assert_eq!(dates, ["date=2026-11-01"]);
+        let root = Path::from("/");
+        let dirs = list_dirs(&store, &root, &tenant).await.unwrap();
+        assert_eq!(dirs, ["nested", "tenant", "tenant-other"]);
+        let nested = list_dirs(&store, &Path::from("tenant"), &tenant)
+            .await
+            .unwrap();
+        assert_eq!(nested, ["tenant", "stream"]);
+        let paths = get_ingestor_meta_file_paths(&store, &root, &tenant)
+            .await
+            .unwrap();
+        let paths: Vec<_> = paths.iter().map(|path| path.as_str()).collect();
+        assert_eq!(paths, ["ingestor-one", "nested/ingestor-two"]);
+        let path = RelativePath::new("ingestor-one");
+        assert_eq!(get_object(&store, path, &tenant).await.unwrap(), "data");
+        assert_eq!(
+            get_object_ranged(&store, path, &tenant).await.unwrap(),
+            "data"
+        );
+        let path = RelativePath::new("missing");
+        assert!(matches!(
+            get_object(&store, path, &tenant).await,
+            Err(ObjectStorageError::NoSuchKey(_))
+        ));
+        assert!(matches!(
+            get_object_ranged(&store, path, &tenant).await,
+            Err(ObjectStorageError::NoSuchKey(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn parallel_download_writes_all_chunks_and_truncates_existing_file() {
+        let store = InMemory::new();
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("nested/file.partial");
+        std::fs::create_dir_all(partial.parent().unwrap()).unwrap();
+        for size in [0, 1, 4, 5, 12, 13] {
+            let data: Vec<u8> = (0..size).collect();
+            store
+                .put(&Path::from("file"), data.clone().into())
+                .await
+                .unwrap();
+            for concurrency in [1, 3] {
+                std::fs::write(&partial, [255; 32]).unwrap();
+                parallel_download(
+                    &store,
+                    RelativePath::new("file"),
+                    "download-test",
+                    partial.clone(),
+                    4,
+                    concurrency,
+                )
+                .await
+                .unwrap();
+                assert_eq!(std::fs::read(&partial).unwrap(), data);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_download_propagates_store_and_file_errors() {
+        let store = InMemory::new();
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("file.partial");
+        let result = parallel_download(
+            &store,
+            RelativePath::new("missing"),
+            "download-error-test",
+            partial.clone(),
+            4,
+            2,
+        )
+        .await;
+        assert!(matches!(result, Err(ObjectStorageError::NoSuchKey(_))));
+        assert!(!partial.exists());
+
+        store.put(&Path::from("file"), "data".into()).await.unwrap();
+        std::fs::write(&partial, "existing").unwrap();
+        let result = parallel_download(
+            &store,
+            RelativePath::new("file"),
+            "download-error-test",
+            partial.join("child"),
+            4,
+            2,
+        )
+        .await;
+        assert!(matches!(result, Err(ObjectStorageError::IoError(_))));
+        assert_eq!(std::fs::read(&partial).unwrap(), b"existing");
+    }
+
+    #[tokio::test]
+    async fn delete_prefix_preserves_other_prefixes_and_accepts_empty_results() {
+        let store = InMemory::new();
+        for key in ["stream/a", "stream/nested/b", "stream-other/a"] {
+            store.put(&Path::from(key), "data".into()).await.unwrap();
+        }
+        delete_prefix(&store, "stream/", "delete-test")
+            .await
+            .unwrap();
+        let remaining = store.list_with_delimiter(None).await.unwrap();
+        assert_eq!(remaining.common_prefixes, [Path::from("stream-other")]);
+        assert!(remaining.objects.is_empty());
+        delete_prefix(&store, "stream/", "delete-test")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_prefix_reports_listing_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("blocked"), "data").unwrap();
+        let store = LocalFileSystem::new_with_prefix(dir.path()).unwrap();
+        let prefix = Path::from("blocked/child");
+        assert!(list_dirs(&store, &prefix, &None).await.is_err());
+        assert!(
+            list_dates(&store, &prefix, "blocked/child/", &None)
+                .await
+                .is_err()
+        );
+        assert!(
+            list_partitions(&store, "blocked/child/", "hour=", &None)
+                .await
+                .is_err()
+        );
+        let provider = LocalFS::new(dir.path().to_path_buf());
+        assert!(
+            get_objects(&store, &provider, &prefix, Box::new(|_| true), &None)
+                .await
+                .is_err()
+        );
+        assert!(
+            get_ingestor_meta_file_paths(&store, &prefix, &None)
+                .await
+                .is_err()
+        );
+        let err = delete_prefix(&store, "blocked/child", "delete-error-test")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ObjectStorageError::UnhandledError(_)));
+        assert_eq!(
+            err.to_string(),
+            "Unhandled Error: Failed to delete 1 out of 1 objects under prefix 'blocked/child'"
+        );
+    }
 
     #[derive(Debug, Parser)]
     struct TestArgs {

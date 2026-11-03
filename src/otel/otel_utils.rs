@@ -219,14 +219,8 @@ pub fn value_to_string(value: serde_json::Value) -> String {
 }
 
 pub fn flatten_attributes(attributes: &[KeyValue]) -> Map<String, Value> {
-    let mut attributes_json: Map<String, Value> = Map::with_capacity(attributes.len());
-    for attribute in attributes {
-        if let Some(value) = &attribute.value
-            && let Some(value) = value.value.clone()
-        {
-            insert_json_from_value(&mut attributes_json, &attribute.key, value);
-        }
-    }
+    let mut attributes_json = Map::with_capacity(attributes.len());
+    insert_attributes(&mut attributes_json, attributes);
     attributes_json
 }
 

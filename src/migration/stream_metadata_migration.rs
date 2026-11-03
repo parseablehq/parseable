@@ -24,35 +24,41 @@ use crate::{
 };
 use serde_json::{Value, json};
 
+/// Expand required legacy stats and update versions without replacing unrelated metadata.
+fn migrate_stats_and_version(stream_metadata_map: &mut serde_json::Map<String, Value>) {
+    let stats = stream_metadata_map.get("stats").unwrap().clone();
+    let default_stats = json!({
+        "lifetime_stats": {
+            "events": stats.get("events").unwrap(),
+            "ingestion": stats.get("ingestion").unwrap(),
+            "storage": stats.get("storage").unwrap()
+        },
+        "current_stats": {
+            "events": stats.get("events").unwrap(),
+            "ingestion": stats.get("ingestion").unwrap(),
+            "storage": stats.get("storage").unwrap()
+        },
+        "deleted_stats": {
+            "events": 0,
+            "ingestion": 0,
+            "storage": 0
+        }
+    });
+    stream_metadata_map.insert("stats".to_owned(), default_stats);
+    stream_metadata_map.insert(
+        "version".to_owned(),
+        Value::String(storage::CURRENT_SCHEMA_VERSION.into()),
+    );
+    stream_metadata_map.insert(
+        "objectstore-format".to_owned(),
+        Value::String(storage::CURRENT_OBJECT_STORE_VERSION.into()),
+    );
+}
+
+/// Upgrade v1 stats and initialize an empty snapshot, preserving other metadata fields.
 pub fn v1_v4(mut stream_metadata: Value) -> Value {
     let stream_metadata_map = stream_metadata.as_object_mut().unwrap();
-    let stats = stream_metadata_map.get("stats").unwrap().clone();
-    let default_stats = json!({
-        "lifetime_stats": {
-            "events": stats.get("events").unwrap(),
-            "ingestion": stats.get("ingestion").unwrap(),
-            "storage": stats.get("storage").unwrap()
-        },
-        "current_stats": {
-            "events": stats.get("events").unwrap(),
-            "ingestion": stats.get("ingestion").unwrap(),
-            "storage": stats.get("storage").unwrap()
-        },
-        "deleted_stats": {
-            "events": 0,
-            "ingestion": 0,
-            "storage": 0
-        }
-    });
-    stream_metadata_map.insert("stats".to_owned(), default_stats);
-    stream_metadata_map.insert(
-        "version".to_owned(),
-        Value::String(storage::CURRENT_SCHEMA_VERSION.into()),
-    );
-    stream_metadata_map.insert(
-        "objectstore-format".to_owned(),
-        Value::String(storage::CURRENT_OBJECT_STORE_VERSION.into()),
-    );
+    migrate_stats_and_version(stream_metadata_map);
     stream_metadata_map.insert(
         "snapshot".to_owned(),
         json!({
@@ -63,77 +69,16 @@ pub fn v1_v4(mut stream_metadata: Value) -> Value {
     stream_metadata
 }
 
-pub fn v2_v4(mut stream_metadata: Value) -> Value {
-    let stream_metadata_map = stream_metadata.as_object_mut().unwrap();
-    let stats = stream_metadata_map.get("stats").unwrap().clone();
-    let default_stats = json!({
-        "lifetime_stats": {
-            "events": stats.get("events").unwrap(),
-            "ingestion": stats.get("ingestion").unwrap(),
-            "storage": stats.get("storage").unwrap()
-        },
-        "current_stats": {
-            "events": stats.get("events").unwrap(),
-            "ingestion": stats.get("ingestion").unwrap(),
-            "storage": stats.get("storage").unwrap()
-        },
-        "deleted_stats": {
-            "events": 0,
-            "ingestion": 0,
-            "storage": 0
-        }
-    });
-    stream_metadata_map.insert("stats".to_owned(), default_stats);
-    stream_metadata_map.insert(
-        "version".to_owned(),
-        Value::String(storage::CURRENT_SCHEMA_VERSION.into()),
-    );
-    stream_metadata_map.insert(
-        "objectstore-format".to_owned(),
-        Value::String(storage::CURRENT_OBJECT_STORE_VERSION.into()),
-    );
-
-    stream_metadata_map.insert(
-        "snapshot".to_owned(),
-        json!({
-            "version": CURRENT_SNAPSHOT_VERSION,
-            "manifest_list": []
-        }),
-    );
-    stream_metadata
+/// Apply the same stats and snapshot upgrade as v1; v2 needs no separate conversion.
+pub fn v2_v4(stream_metadata: Value) -> Value {
+    v1_v4(stream_metadata)
 }
 
+/// Upgrade legacy stats and v1 snapshots, leaving newer snapshots and other fields intact.
 pub fn v3_v4(mut stream_metadata: Value) -> Value {
     let stream_metadata_map: &mut serde_json::Map<String, Value> =
         stream_metadata.as_object_mut().unwrap();
-    let stats = stream_metadata_map.get("stats").unwrap().clone();
-    let default_stats = json!({
-        "lifetime_stats": {
-            "events": stats.get("events").unwrap(),
-            "ingestion": stats.get("ingestion").unwrap(),
-            "storage": stats.get("storage").unwrap()
-        },
-        "current_stats": {
-            "events": stats.get("events").unwrap(),
-            "ingestion": stats.get("ingestion").unwrap(),
-            "storage": stats.get("storage").unwrap()
-        },
-        "deleted_stats": {
-            "events": 0,
-            "ingestion": 0,
-            "storage": 0
-        }
-    });
-    stream_metadata_map.insert("stats".to_owned(), default_stats);
-    stream_metadata_map.insert(
-        "version".to_owned(),
-        Value::String(storage::CURRENT_SCHEMA_VERSION.into()),
-    );
-    stream_metadata_map.insert(
-        "objectstore-format".to_owned(),
-        Value::String(storage::CURRENT_OBJECT_STORE_VERSION.into()),
-    );
-
+    migrate_stats_and_version(stream_metadata_map);
     let snapshot = stream_metadata_map.get("snapshot").unwrap().clone();
     let version = snapshot
         .as_object()
@@ -297,6 +242,32 @@ fn v1_v2_snapshot_migration(mut snapshot: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use super::{v1_v4, v2_v4, v3_v4};
+
+    #[rstest::rstest]
+    #[case::v1(v1_v4)]
+    #[case::v2(v2_v4)]
+    #[case::v3(v3_v4)]
+    fn legacy_stats_and_unrelated_metadata_are_preserved(
+        #[case] migrate: fn(serde_json::Value) -> serde_json::Value,
+    ) {
+        let stats = serde_json::json!({"events": 7, "ingestion": 11, "storage": 13});
+        let snapshot = serde_json::json!({"version": crate::catalog::snapshot::CURRENT_SNAPSHOT_VERSION, "manifest_list": []});
+        let result = migrate(
+            serde_json::json!({"stats": stats, "snapshot": snapshot, "time_partition": "legacy_timestamp"}),
+        );
+        assert_eq!(
+            result,
+            serde_json::json!({
+                "version": crate::storage::CURRENT_SCHEMA_VERSION,
+                "objectstore-format": crate::storage::CURRENT_OBJECT_STORE_VERSION,
+                "stats": {"lifetime_stats": stats, "current_stats": stats, "deleted_stats": {"events": 0, "ingestion": 0, "storage": 0}},
+                "snapshot": snapshot,
+                "time_partition": "legacy_timestamp"
+            })
+        );
+    }
+
     #[test]
     fn test_v5_v6_with_log_source() {
         let stream_metadata = serde_json::json!({"version":"v5","schema_version":"v0","objectstore-format":"v5","created-at":"2025-03-10T14:38:29.355131524-04:00","first-event-at":"2025-03-10T14:38:29.356-04:00","owner":{"id":"admin","group":"admin"},"permissions":[{"id":"admin","group":"admin","access":["all"]}],"stats":{"lifetime_stats":{"events":3,"ingestion":70,"storage":1969},"current_stats":{"events":3,"ingestion":70,"storage":1969},"deleted_stats":{"events":0,"ingestion":0,"storage":0}},"snapshot":{"version":"v2","manifest_list":[{"manifest_path":"home/nikhilsinha/Parseable/parseable/data/test10/date=2025-03-10/manifest.json","time_lower_bound":"2025-03-10T00:00:00Z","time_upper_bound":"2025-03-10T23:59:59.999999999Z","events_ingested":3,"ingestion_size":70,"storage_size":1969}]},"hot_tier_enabled":false,"stream_type":"UserDefined","log_source":"OtelLogs"});

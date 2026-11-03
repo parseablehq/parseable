@@ -137,21 +137,17 @@ fn target_info_record(
     timestamp: String,
 ) -> Map<String, Value> {
     let mut target = resource_fields.clone();
-    target.insert(
-        "metric_name".to_string(),
-        Value::String("target_info".to_string()),
-    );
-    target.insert(
-        "metric_description".to_string(),
-        Value::String("Target metadata".to_string()),
-    );
-    target.insert("metric_unit".to_string(), Value::String(String::default()));
-    target.insert(
-        "metric_type".to_string(),
-        Value::String("gauge".to_string()),
-    );
-    target.insert("time_unix_nano".to_string(), Value::String(timestamp));
-    target.insert("data_point_value".to_string(), Value::Number(1.into()));
+    target.extend([
+        ("metric_name".into(), "target_info".to_string().into()),
+        (
+            "metric_description".into(),
+            "Target metadata".to_string().into(),
+        ),
+        ("metric_unit".into(), String::default().into()),
+        ("metric_type".into(), "gauge".to_string().into()),
+        ("time_unix_nano".into(), timestamp.into()),
+        ("data_point_value".into(), 1.into()),
+    ]);
     let series_hash = compute_series_hash(&target);
     target.insert(
         SERIES_HASH_COLUMN.to_string(),
@@ -306,18 +302,16 @@ fn flatten_number_data_points(
         .map(|data_point| {
             let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 8);
             insert_attributes(&mut data_point_json, &data_point.attributes);
-            data_point_json.insert(
-                "start_time_unix_nano".to_string(),
-                Value::String(convert_epoch_nano_to_timestamp(
-                    data_point.start_time_unix_nano as i64,
-                )),
-            );
-            data_point_json.insert(
-                "time_unix_nano".to_string(),
-                Value::String(convert_epoch_nano_to_timestamp(
-                    data_point.time_unix_nano as i64,
-                )),
-            );
+            data_point_json.extend([
+                (
+                    "start_time_unix_nano".into(),
+                    convert_epoch_nano_to_timestamp(data_point.start_time_unix_nano as i64).into(),
+                ),
+                (
+                    "time_unix_nano".into(),
+                    convert_epoch_nano_to_timestamp(data_point.time_unix_nano as i64).into(),
+                ),
+            ]);
 
             insert_exemplars(
                 &mut data_point_json,
@@ -379,22 +373,17 @@ fn flatten_histogram(histogram: &Histogram, flatten_exemplars: bool) -> Vec<Map<
     for data_point in &histogram.data_points {
         let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 10);
         insert_attributes(&mut data_point_json, &data_point.attributes);
-        data_point_json.insert(
-            "start_time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.start_time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "data_point_count".to_string(),
-            Value::Number(data_point.count.into()),
-        );
+        data_point_json.extend([
+            (
+                "start_time_unix_nano".into(),
+                convert_epoch_nano_to_timestamp(data_point.start_time_unix_nano as i64).into(),
+            ),
+            (
+                "time_unix_nano".into(),
+                convert_epoch_nano_to_timestamp(data_point.time_unix_nano as i64).into(),
+            ),
+            ("data_point_count".into(), data_point.count.into()),
+        ]);
         insert_number_if_some(&mut data_point_json, "data_point_sum", &data_point.sum);
         let data_point_bucket_counts = Value::Array(
             data_point
@@ -468,31 +457,22 @@ fn flatten_exp_histogram(
     for data_point in &exp_histogram.data_points {
         let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 12);
         insert_attributes(&mut data_point_json, &data_point.attributes);
-        data_point_json.insert(
-            "start_time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.start_time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "data_point_count".to_string(),
-            Value::Number(data_point.count.into()),
-        );
+        data_point_json.extend([
+            (
+                "start_time_unix_nano".into(),
+                convert_epoch_nano_to_timestamp(data_point.start_time_unix_nano as i64).into(),
+            ),
+            (
+                "time_unix_nano".into(),
+                convert_epoch_nano_to_timestamp(data_point.time_unix_nano as i64).into(),
+            ),
+            ("data_point_count".into(), data_point.count.into()),
+        ]);
         insert_number_if_some(&mut data_point_json, "data_point_sum", &data_point.sum);
-        data_point_json.insert(
-            "data_point_scale".to_string(),
-            Value::Number(data_point.scale.into()),
-        );
-        data_point_json.insert(
-            "data_point_zero_count".to_string(),
-            Value::Number(data_point.zero_count.into()),
-        );
+        data_point_json.extend([
+            ("data_point_scale".into(), data_point.scale.into()),
+            ("data_point_zero_count".into(), data_point.zero_count.into()),
+        ]);
         if let Some(positive) = &data_point.positive {
             let positive_json = flatten_buckets(positive);
             for (key, value) in positive_json {
@@ -526,53 +506,48 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
     for data_point in &summary.data_points {
         let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 6);
         insert_attributes(&mut data_point_json, &data_point.attributes);
-        data_point_json.insert(
-            "start_time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.start_time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "data_point_count".to_string(),
-            Value::Number(data_point.count.into()),
-        );
-        data_point_json.insert(
-            "data_point_sum".to_string(),
-            serde_json::Number::from_f64(data_point.sum)
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
-        );
-        data_point_json.insert(
-            "data_point_quantile_values".to_string(),
-            Value::Array(
-                data_point
-                    .quantile_values
-                    .iter()
-                    .map(|quantile_value| {
-                        let mut quantile_map = Map::with_capacity(2);
-                        quantile_map.insert(
-                            "quantile".to_string(),
-                            serde_json::Number::from_f64(quantile_value.quantile)
-                                .map(Value::Number)
-                                .unwrap_or(Value::Null),
-                        );
-                        quantile_map.insert(
-                            "value".to_string(),
-                            serde_json::Number::from_f64(quantile_value.value)
-                                .map(Value::Number)
-                                .unwrap_or(Value::Null),
-                        );
-                        Value::Object(quantile_map)
-                    })
-                    .collect(),
+        data_point_json.extend([
+            (
+                "start_time_unix_nano".into(),
+                convert_epoch_nano_to_timestamp(data_point.start_time_unix_nano as i64).into(),
             ),
-        );
+            (
+                "time_unix_nano".into(),
+                convert_epoch_nano_to_timestamp(data_point.time_unix_nano as i64).into(),
+            ),
+            ("data_point_count".into(), data_point.count.into()),
+            (
+                "data_point_sum".into(),
+                serde_json::Number::from_f64(data_point.sum)
+                    .map(Value::Number)
+                    .unwrap_or(Value::Null),
+            ),
+            (
+                "data_point_quantile_values".into(),
+                Value::Array(
+                    data_point
+                        .quantile_values
+                        .iter()
+                        .map(|quantile_value| {
+                            let mut quantile_map = Map::with_capacity(2);
+                            quantile_map.insert(
+                                "quantile".to_string(),
+                                serde_json::Number::from_f64(quantile_value.quantile)
+                                    .map(Value::Number)
+                                    .unwrap_or(Value::Null),
+                            );
+                            quantile_map.insert(
+                                "value".to_string(),
+                                serde_json::Number::from_f64(quantile_value.value)
+                                    .map(Value::Number)
+                                    .unwrap_or(Value::Null),
+                            );
+                            Value::Object(quantile_map)
+                        })
+                        .collect(),
+                ),
+            ),
+        ]);
 
         data_points_json.push(data_point_json);
     }
