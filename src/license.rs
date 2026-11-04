@@ -60,7 +60,6 @@ pub struct QuotaStatus {
     pub period: QuotaPeriod,
     pub used: u64,
     pub limit: u64,
-    #[serde(default)]
     pub remaining: u64,
     pub exceeded: bool,
     pub period_start: Option<DateTime<Utc>>,
