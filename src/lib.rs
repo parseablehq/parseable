@@ -35,6 +35,7 @@ pub mod event;
 pub mod handlers;
 pub mod hottier;
 pub mod interactive;
+pub mod license;
 mod livetail;
 pub mod metadata;
 pub mod metastore;
