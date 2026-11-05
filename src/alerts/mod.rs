@@ -1240,6 +1240,7 @@ pub enum AlertError {
 }
 
 impl actix_web::ResponseError for AlertError {
+    // Keep every error-to-status mapping explicit. skipcq: RS-R1000
     fn status_code(&self) -> StatusCode {
         match self {
             Self::ObjectStorage(_) => StatusCode::INTERNAL_SERVER_ERROR,

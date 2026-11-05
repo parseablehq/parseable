@@ -434,8 +434,13 @@ impl ObjectStorage for LocalFS {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
             Err(error) => return Err(error.into()),
         };
-        if let Err(error) = file.write_all(&resource).await {
-            fs::remove_file(path).await?;
+        let write_result = async {
+            file.write_all(&resource).await?;
+            file.flush().await
+        }
+        .await;
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&path).await;
             return Err(error.into());
         }
         Ok(true)

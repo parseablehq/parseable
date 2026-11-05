@@ -182,11 +182,11 @@ impl TargetConfigs {
         } else {
             return Err(AlertError::InvalidTargetID(target_id.to_string()));
         };
+        title_registry::release(&target.name, target.id, tenant_id).await?;
         PARSEABLE
             .metastore
             .delete_target(&target, tenant_id)
             .await?;
-        title_registry::release(&target.name, target.id, tenant_id).await?;
         if let Some(targets) = self.target_configs.write().await.get_mut(tenant) {
             targets.remove(target_id);
         }
