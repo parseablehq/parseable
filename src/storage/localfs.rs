@@ -32,7 +32,7 @@ use object_store::{ListResult, ObjectMeta, buffered::BufReader};
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{
     fs::{self, DirEntry, OpenOptions},
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
 };
 use tokio_stream::wrappers::ReadDirStream;
 
@@ -412,6 +412,33 @@ impl ObjectStorage for LocalFS {
         }
 
         res.map_err(Into::into)
+    }
+
+    async fn put_object_if_absent(
+        &self,
+        path: &RelativePath,
+        resource: Bytes,
+        _tenant_id: &Option<String>,
+    ) -> Result<bool, ObjectStorageError> {
+        let path = self.path_in_root(path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        if let Err(error) = file.write_all(&resource).await {
+            fs::remove_file(path).await?;
+            return Err(error.into());
+        }
+        Ok(true)
     }
 
     async fn delete_prefix(

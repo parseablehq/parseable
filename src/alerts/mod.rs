@@ -44,6 +44,7 @@ pub mod alert_types;
 pub mod alerts_utils;
 pub mod outbound_http_policy;
 pub mod target;
+pub mod title_registry;
 
 pub use crate::alerts::alert_enums::{
     AggregateFunction, AlertOperator, AlertQueryType, AlertState, AlertTask, AlertType,

@@ -383,6 +383,13 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         resource: Bytes,
         tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError>;
+    /// Atomically create an object, returning false if its path already exists.
+    async fn put_object_if_absent(
+        &self,
+        path: &RelativePath,
+        resource: Bytes,
+        tenant_id: &Option<String>,
+    ) -> Result<bool, ObjectStorageError>;
     async fn delete_prefix(
         &self,
         path: &RelativePath,

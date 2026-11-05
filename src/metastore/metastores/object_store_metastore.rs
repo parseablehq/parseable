@@ -1070,6 +1070,36 @@ impl Metastore for ObjectStoreMetastore {
         Ok(all_targets)
     }
 
+    async fn get_targets_for_tenant(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<Target>, MetastoreError> {
+        let tenant = tenant_id.as_deref().unwrap_or("");
+        let targets_path =
+            RelativePathBuf::from_iter([tenant, SETTINGS_ROOT_DIRECTORY, TARGETS_ROOT_DIRECTORY]);
+        let target_bytes = match self
+            .storage
+            .get_objects(
+                Some(&targets_path),
+                Box::new(|file_name| file_name.ends_with(".json")),
+                tenant_id,
+            )
+            .await
+        {
+            Ok(targets) => targets,
+            Err(err) if is_missing_optional_dir(&err) => Vec::new(),
+            Err(err) => return Err(MetastoreError::ObjectStorageError(err)),
+        };
+        Ok(target_bytes
+            .iter()
+            .filter_map(|bytes| {
+                serde_json::from_slice(bytes)
+                    .inspect_err(|err| warn!("Expected compatible json, error = {err}"))
+                    .ok()
+            })
+            .collect())
+    }
+
     async fn put_target(
         &self,
         obj: &dyn MetastoreObject,
