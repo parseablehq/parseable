@@ -1214,6 +1214,8 @@ pub enum AlertError {
     FromStrError(#[from] FromStrError),
     #[error("Invalid Target ID- {0}")]
     InvalidTargetID(String),
+    #[error("Target title {0:?} already exists")]
+    DuplicateTargetName(String),
     #[error("Invalid target modification request: {0}")]
     InvalidTargetModification(String),
     #[error("Can't delete a Target which is being used")]
@@ -1252,6 +1254,7 @@ impl actix_web::ResponseError for AlertError {
             Self::InvalidAlertModifyRequest => StatusCode::BAD_REQUEST,
             Self::FromStrError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
+            Self::DuplicateTargetName(_) => StatusCode::CONFLICT,
             Self::InvalidTargetModification(_) => StatusCode::BAD_REQUEST,
             Self::TargetInUse => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,

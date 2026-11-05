@@ -73,6 +73,29 @@ impl TargetConfigs {
         Ok(())
     }
 
+    pub async fn create(&self, target: Target) -> Result<(), AlertError> {
+        let tenant_id = target.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
+        let mut map = self.target_configs.write().await;
+        let targets = map.entry(tenant_id.to_owned()).or_default();
+        if targets
+            .values()
+            .any(|existing| existing.name == target.name)
+        {
+            return Err(AlertError::DuplicateTargetName(target.name));
+        }
+        if targets.contains_key(&target.id) {
+            return Err(AlertError::InvalidTargetModification(
+                "Target ID already exists".to_string(),
+            ));
+        }
+        PARSEABLE
+            .metastore
+            .put_target(&target, &target.tenant)
+            .await?;
+        targets.insert(target.id, target);
+        Ok(())
+    }
+
     pub async fn update(&self, target: Target) -> Result<(), AlertError> {
         PARSEABLE
             .metastore

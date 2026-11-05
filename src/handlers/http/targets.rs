@@ -48,10 +48,13 @@ pub async fn post_internal(
     tenant_id: &Option<String>,
 ) -> Result<serde_json::Value, AlertError> {
     target.tenant.clone_from(tenant_id);
+    if target.name.trim().is_empty() {
+        return Err(AlertError::ValidationFailure(
+            "Target title is required".into(),
+        ));
+    }
     target.validate_outbound_policy().await?;
-    // should check for duplicacy and liveness (??)
-    // add to the map
-    TARGETS.update(target.clone()).await?;
+    TARGETS.create(target.clone()).await?;
 
     Ok(serde_json::to_value(target.mask())?)
 }
