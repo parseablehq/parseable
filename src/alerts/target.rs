@@ -29,7 +29,7 @@ use http::header::AUTHORIZATION;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tracing::{error, trace, warn};
 use ulid::Ulid;
 use url::Url;
@@ -47,11 +47,13 @@ use crate::{
 
 pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
     target_configs: RwLock::new(HashMap::new()),
+    mutation_lock: AsyncMutex::new(()),
 });
 
 #[derive(Debug)]
 pub struct TargetConfigs {
     pub target_configs: RwLock<HashMap<String, HashMap<Ulid, Target>>>,
+    mutation_lock: AsyncMutex<()>,
 }
 
 impl TargetConfigs {
@@ -75,9 +77,9 @@ impl TargetConfigs {
 
     pub async fn update(&self, target: Target, is_create: bool) -> Result<(), AlertError> {
         let tenant_id = target.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
-        let mut map = self.target_configs.write().await;
+        let _mutation_guard = self.mutation_lock.lock().await;
         if is_create {
-            if let Some(targets) = map.get(tenant_id) {
+            if let Some(targets) = self.target_configs.read().await.get(tenant_id) {
                 if targets
                     .values()
                     .any(|existing| existing.name == target.name)
@@ -95,7 +97,10 @@ impl TargetConfigs {
             .metastore
             .put_target(&target, &target.tenant)
             .await?;
-        map.entry(tenant_id.to_owned())
+        self.target_configs
+            .write()
+            .await
+            .entry(tenant_id.to_owned())
             .or_default()
             .insert(target.id, target);
         Ok(())
@@ -135,6 +140,7 @@ impl TargetConfigs {
         tenant_id: &Option<String>,
     ) -> Result<Target, AlertError> {
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let _mutation_guard = self.mutation_lock.lock().await;
         // ensure that the target is not being used by any alert
         let guard = ALERTS.read().await;
         let alerts = if let Some(alerts) = guard.as_ref() {
@@ -148,8 +154,7 @@ impl TargetConfigs {
                 return Err(AlertError::TargetInUse);
             }
         }
-        let mut map = self.target_configs.write().await;
-        let target = if let Some(targets) = map.get(tenant) {
+        let target = if let Some(targets) = self.target_configs.read().await.get(tenant) {
             targets
                 .get(target_id)
                 .cloned()
@@ -161,7 +166,7 @@ impl TargetConfigs {
             .metastore
             .delete_target(&target, tenant_id)
             .await?;
-        if let Some(targets) = map.get_mut(tenant) {
+        if let Some(targets) = self.target_configs.write().await.get_mut(tenant) {
             targets.remove(target_id);
         }
         Ok(target)

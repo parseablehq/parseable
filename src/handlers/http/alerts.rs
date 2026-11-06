@@ -41,12 +41,16 @@ use actix_web::{
     web::{self, Json, Path},
 };
 use chrono::{DateTime, Utc};
+use tokio::sync::Mutex;
 use ulid::Ulid;
 
 // Reserved query parameter names that are not treated as other_fields filters
 const RESERVED_PARAMS: [&str; 3] = ["tags", "offset", "limit"];
 const MAX_LIMIT: usize = 1000;
 const DEFAULT_LIMIT: usize = 100;
+
+// Serialize title checks with alert creation and updates in this process.
+static ALERT_TITLE_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Query parameters for listing alerts
 struct ListQueryParams {
@@ -317,11 +321,13 @@ pub async fn post_internal(
         }
     };
 
-    let guard = ALERTS.write().await;
-    let alerts = if let Some(alerts) = guard.as_ref() {
-        alerts
-    } else {
-        return Err(AlertError::CustomError("No AlertManager set".into()));
+    let _title_guard = ALERT_TITLE_LOCK.lock().await;
+    let alerts = {
+        let guard = ALERTS.read().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| AlertError::CustomError("No AlertManager set".into()))?
     };
 
     // validate the incoming alert query
@@ -614,11 +620,13 @@ pub async fn modify_alert_internal(
     alert_request: AlertRequest,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
-    let guard = ALERTS.write().await;
-    let alerts = if let Some(alerts) = guard.as_ref() {
-        alerts
-    } else {
-        return Err(AlertError::CustomError("No AlertManager set".into()));
+    let _title_guard = ALERT_TITLE_LOCK.lock().await;
+    let alerts = {
+        let guard = ALERTS.read().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| AlertError::CustomError("No AlertManager set".into()))?
     };
 
     // Validate and prepare the new alert
