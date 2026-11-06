@@ -790,3 +790,100 @@ pub async fn list_tags_internal(tenant_id: &Option<String>) -> Result<Vec<String
     };
     Ok(alerts.list_tags(tenant_id).await)
 }
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+    use crate::alerts::target::Target;
+    use actix_web::test::TestRequest;
+    use serde_json::json;
+
+    fn request(tenant_id: &str) -> HttpRequest {
+        TestRequest::default()
+            .insert_header(("authorization", "Basic YWRtaW46YWRtaW4="))
+            .insert_header(("x-p-tenant", tenant_id))
+            .to_http_request()
+    }
+
+    async fn cache_target(name: &str, tenant_id: &str) {
+        let target: Target = serde_json::from_value(json!({
+            "name": name,
+            "type": "webhook",
+            "endpoint": "https://example.com/alerts",
+            "tenantId": tenant_id,
+        }))
+        .unwrap();
+        TARGETS
+            .target_configs
+            .write()
+            .await
+            .entry(tenant_id.to_owned())
+            .or_default()
+            .insert(target.id, target);
+    }
+
+    #[actix_web::test]
+    async fn import_resolves_existing_target_title() {
+        let tenant_id = format!("import-test-{}", Ulid::new());
+        cache_target("payments", &tenant_id).await;
+
+        // The title resolves; the incomplete alert then fails request validation.
+        let result =
+            import_alert(request(&tenant_id), Json(json!({"targets": ["payments"]}))).await;
+
+        TARGETS.target_configs.write().await.remove(&tenant_id);
+        assert!(
+            matches!(result, Err(AlertError::ValidationFailure(message)) if message.starts_with("invalid alert import:"))
+        );
+    }
+
+    #[actix_web::test]
+    async fn import_rejects_title_only_in_another_tenant() {
+        let tenant_id = format!("import-test-{}", Ulid::new());
+        let other_tenant_id = format!("import-test-{}", Ulid::new());
+        cache_target("payments", &other_tenant_id).await;
+
+        let result =
+            import_alert(request(&tenant_id), Json(json!({"targets": ["payments"]}))).await;
+
+        TARGETS
+            .target_configs
+            .write()
+            .await
+            .remove(&other_tenant_id);
+        assert!(
+            matches!(result, Err(AlertError::ValidationFailure(message)) if message.contains("not found"))
+        );
+    }
+
+    #[actix_web::test]
+    async fn import_rejects_ambiguous_title() {
+        let tenant_id = format!("import-test-{}", Ulid::new());
+        cache_target("payments", &tenant_id).await;
+        cache_target("payments", &tenant_id).await;
+
+        let result =
+            import_alert(request(&tenant_id), Json(json!({"targets": ["payments"]}))).await;
+
+        TARGETS.target_configs.write().await.remove(&tenant_id);
+        assert!(
+            matches!(result, Err(AlertError::ValidationFailure(message)) if message.contains("ambiguous"))
+        );
+    }
+
+    #[actix_web::test]
+    async fn import_rejects_malformed_targets() {
+        let tenant_id = format!("import-test-{}", Ulid::new());
+        for payload in [
+            json!({}),
+            json!({"targets": null}),
+            json!({"targets": "payments"}),
+            json!({"targets": []}),
+            json!({"targets": [42]}),
+            json!({"targets": [" "]}),
+        ] {
+            let result = import_alert(request(&tenant_id), Json(payload)).await;
+            assert!(matches!(result, Err(AlertError::ValidationFailure(_))));
+        }
+    }
+}
