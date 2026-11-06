@@ -345,6 +345,13 @@ impl Server {
                     .route(web::post().to(alerts::post).authorize(Action::PutAlert)),
             )
             .service(
+                web::resource("/import").route(
+                    web::post()
+                        .to(alerts::import_alert)
+                        .authorize(Action::PutAlert),
+                ),
+            )
+            .service(
                 web::resource("/list_tags").route(
                     web::get()
                         .to(alerts::list_tags)

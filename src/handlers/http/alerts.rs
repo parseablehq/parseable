@@ -28,7 +28,7 @@ use crate::{
         },
         alert_traits::AlertTrait,
         alert_types::ThresholdAlert,
-        target::Retry,
+        target::{Retry, TARGETS},
         user_auth_for_alert_config,
     },
     metastore::metastore_traits::MetastoreObject,
@@ -41,6 +41,7 @@ use actix_web::{
     web::{self, Json, Path},
 };
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use ulid::Ulid;
 
 // Reserved query parameter names that are not treated as other_fields filters
@@ -253,6 +254,60 @@ pub async fn list_internal(
     let paginated_alerts = paginate_alerts(alerts_summary, params.offset, params.limit);
 
     Ok(paginated_alerts)
+}
+
+// POST /alerts/import
+/// Accept alert create payloads with target titles instead of target IDs.
+pub async fn import_alert(
+    req: HttpRequest,
+    Json(mut payload): Json<Value>,
+) -> Result<impl Responder, AlertError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let session_key = extract_session_key_from_req(&req)?;
+    let targets = payload
+        .get_mut("targets")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            AlertError::ValidationFailure("targets must be a nonempty list of target titles".into())
+        })?;
+    if targets.is_empty() {
+        return Err(AlertError::ValidationFailure(
+            "targets must be a nonempty list of target titles".into(),
+        ));
+    }
+
+    let mut ids_by_title = HashMap::new();
+    for target in TARGETS.list(&tenant_id).await? {
+        ids_by_title
+            .entry(target.name)
+            .or_insert_with(Vec::new)
+            .push(target.id);
+    }
+    for target in targets {
+        let title = target
+            .as_str()
+            .filter(|title| !title.trim().is_empty())
+            .ok_or_else(|| {
+                AlertError::ValidationFailure("each target must be a nonempty title".into())
+            })?;
+        let ids = ids_by_title.get(title).ok_or_else(|| {
+            AlertError::ValidationFailure(format!(
+                "target {title:?} not found; create it before importing the alert"
+            ))
+        })?;
+        if ids.len() != 1 {
+            return Err(AlertError::ValidationFailure(format!(
+                "target {title:?} is ambiguous; target titles must be unique"
+            )));
+        }
+        *target = Value::String(ids[0].to_string());
+    }
+
+    let alert: AlertRequest = serde_json::from_value(payload)
+        .map_err(|error| AlertError::ValidationFailure(format!("invalid alert import: {error}")))?;
+    Ok(web::Json(
+        post_internal(alert, &session_key, &tenant_id).await?,
+    ))
 }
 
 // POST /alerts
