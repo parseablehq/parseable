@@ -54,7 +54,7 @@ pub async fn post_internal(
         ));
     }
     target.validate_outbound_policy().await?;
-    TARGETS.create(target.clone()).await?;
+    TARGETS.update(target.clone(), true).await?;
 
     Ok(serde_json::to_value(target.mask())?)
 }
@@ -168,9 +168,7 @@ pub async fn update_internal(
     target.id = target_id;
     target.tenant.clone_from(tenant_id);
     target.validate_outbound_policy().await?;
-    // should check for duplicacy and liveness (??)
-    // add to the map
-    TARGETS.update(target.clone()).await?;
+    TARGETS.update(target.clone(), false).await?;
 
     Ok(serde_json::to_value(target.mask())?)
 }
