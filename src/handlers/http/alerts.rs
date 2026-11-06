@@ -49,8 +49,8 @@ const RESERVED_PARAMS: [&str; 3] = ["tags", "offset", "limit"];
 const MAX_LIMIT: usize = 1000;
 const DEFAULT_LIMIT: usize = 100;
 
-// Serialize title checks with alert creation and updates in this process.
-static ALERT_TITLE_LOCK: Mutex<()> = Mutex::const_new(());
+// Serialize alert creation, updates, and deletion in this process.
+static ALERT_MUTATION_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Query parameters for listing alerts
 struct ListQueryParams {
@@ -321,7 +321,7 @@ pub async fn post_internal(
         }
     };
 
-    let _title_guard = ALERT_TITLE_LOCK.lock().await;
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let alerts = {
         let guard = ALERTS.read().await;
         guard
@@ -413,11 +413,13 @@ pub async fn delete_internal(
     alert_id: Ulid,
     tenant_id: &Option<String>,
 ) -> Result<String, AlertError> {
-    let guard = ALERTS.write().await;
-    let alerts = if let Some(alerts) = guard.as_ref() {
-        alerts
-    } else {
-        return Err(AlertError::CustomError("No AlertManager set".into()));
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
+    let alerts = {
+        let guard = ALERTS.read().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| AlertError::CustomError("No AlertManager set".into()))?
     };
 
     let alert = alerts.get_alert_by_id(alert_id, tenant_id).await?;
@@ -620,7 +622,7 @@ pub async fn modify_alert_internal(
     alert_request: AlertRequest,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
-    let _title_guard = ALERT_TITLE_LOCK.lock().await;
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let alerts = {
         let guard = ALERTS.read().await;
         guard

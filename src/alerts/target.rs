@@ -78,19 +78,17 @@ impl TargetConfigs {
     pub async fn update(&self, target: Target, is_create: bool) -> Result<(), AlertError> {
         let tenant_id = target.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
         let _mutation_guard = self.mutation_lock.lock().await;
-        if is_create {
-            if let Some(targets) = self.target_configs.read().await.get(tenant_id) {
-                if targets
-                    .values()
-                    .any(|existing| existing.name == target.name)
-                {
-                    return Err(AlertError::DuplicateTargetName(target.name));
-                }
-                if targets.contains_key(&target.id) {
-                    return Err(AlertError::InvalidTargetModification(
-                        "Target ID already exists".to_string(),
-                    ));
-                }
+        if is_create && let Some(targets) = self.target_configs.read().await.get(tenant_id) {
+            if targets
+                .values()
+                .any(|existing| existing.name == target.name)
+            {
+                return Err(AlertError::DuplicateTargetName(target.name));
+            }
+            if targets.contains_key(&target.id) {
+                return Err(AlertError::InvalidTargetModification(
+                    "Target ID already exists".to_string(),
+                ));
             }
         }
         PARSEABLE
