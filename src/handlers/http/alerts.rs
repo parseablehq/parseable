@@ -484,6 +484,7 @@ pub async fn update_notification_state(
         }
     };
 
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -525,6 +526,7 @@ pub async fn disable_alert_internal(
     alert_id: Ulid,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -566,6 +568,7 @@ pub async fn enable_alert_internal(
     alert_id: Ulid,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
