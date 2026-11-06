@@ -1214,6 +1214,10 @@ pub enum AlertError {
     FromStrError(#[from] FromStrError),
     #[error("Invalid Target ID- {0}")]
     InvalidTargetID(String),
+    #[error("Target title {0:?} already exists")]
+    DuplicateTargetName(String),
+    #[error("Alert title {0:?} already exists")]
+    DuplicateAlertTitle(String),
     #[error("Invalid target modification request: {0}")]
     InvalidTargetModification(String),
     #[error("Can't delete a Target which is being used")]
@@ -1237,6 +1241,7 @@ pub enum AlertError {
 }
 
 impl actix_web::ResponseError for AlertError {
+    // Keep every error-to-status mapping explicit. skipcq: RS-R1000
     fn status_code(&self) -> StatusCode {
         match self {
             Self::ObjectStorage(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1252,6 +1257,8 @@ impl actix_web::ResponseError for AlertError {
             Self::InvalidAlertModifyRequest => StatusCode::BAD_REQUEST,
             Self::FromStrError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
+            Self::DuplicateTargetName(_) => StatusCode::CONFLICT,
+            Self::DuplicateAlertTitle(_) => StatusCode::CONFLICT,
             Self::InvalidTargetModification(_) => StatusCode::BAD_REQUEST,
             Self::TargetInUse => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,

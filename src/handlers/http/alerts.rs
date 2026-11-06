@@ -41,12 +41,16 @@ use actix_web::{
     web::{self, Json, Path},
 };
 use chrono::{DateTime, Utc};
+use tokio::sync::Mutex;
 use ulid::Ulid;
 
 // Reserved query parameter names that are not treated as other_fields filters
 const RESERVED_PARAMS: [&str; 3] = ["tags", "offset", "limit"];
 const MAX_LIMIT: usize = 1000;
 const DEFAULT_LIMIT: usize = 100;
+
+// Serialize alert creation, updates, and deletion in this process.
+static ALERT_MUTATION_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Query parameters for listing alerts
 struct ListQueryParams {
@@ -317,16 +321,29 @@ pub async fn post_internal(
         }
     };
 
-    let guard = ALERTS.write().await;
-    let alerts = if let Some(alerts) = guard.as_ref() {
-        alerts
-    } else {
-        return Err(AlertError::CustomError("No AlertManager set".into()));
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
+    let alerts = {
+        let guard = ALERTS.read().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| AlertError::CustomError("No AlertManager set".into()))?
     };
 
     // validate the incoming alert query
     // does the user have access to these tables or not?
     alert.validate(session_key).await?;
+
+    if alerts
+        .get_all_alerts(tenant_id)
+        .await
+        .values()
+        .any(|existing| existing.get_title() == alert.get_title())
+    {
+        return Err(AlertError::DuplicateAlertTitle(
+            alert.get_title().to_owned(),
+        ));
+    }
 
     // update persistent storage first
     PARSEABLE
@@ -396,11 +413,13 @@ pub async fn delete_internal(
     alert_id: Ulid,
     tenant_id: &Option<String>,
 ) -> Result<String, AlertError> {
-    let guard = ALERTS.write().await;
-    let alerts = if let Some(alerts) = guard.as_ref() {
-        alerts
-    } else {
-        return Err(AlertError::CustomError("No AlertManager set".into()));
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
+    let alerts = {
+        let guard = ALERTS.read().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| AlertError::CustomError("No AlertManager set".into()))?
     };
 
     let alert = alerts.get_alert_by_id(alert_id, tenant_id).await?;
@@ -465,6 +484,7 @@ pub async fn update_notification_state(
         }
     };
 
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -506,6 +526,7 @@ pub async fn disable_alert_internal(
     alert_id: Ulid,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -547,6 +568,7 @@ pub async fn enable_alert_internal(
     alert_id: Ulid,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -603,14 +625,13 @@ pub async fn modify_alert_internal(
     alert_request: AlertRequest,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
-    // Get alerts manager reference without holding the global lock
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let alerts = {
         let guard = ALERTS.read().await;
-        if let Some(alerts) = guard.as_ref() {
-            alerts.clone()
-        } else {
-            return Err(AlertError::CustomError("No AlertManager set".into()));
-        }
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| AlertError::CustomError("No AlertManager set".into()))?
     };
 
     // Validate and prepare the new alert
@@ -658,6 +679,20 @@ pub async fn modify_alert_internal(
     };
 
     new_alert.validate(session_key).await?;
+
+    if new_alert.get_title() != alert.get_title()
+        && alerts
+            .get_all_alerts(tenant_id)
+            .await
+            .values()
+            .any(|existing| {
+                existing.get_id() != &alert_id && existing.get_title() == new_alert.get_title()
+            })
+    {
+        return Err(AlertError::DuplicateAlertTitle(
+            new_alert.get_title().to_owned(),
+        ));
+    }
 
     // Perform I/O operations
     PARSEABLE
