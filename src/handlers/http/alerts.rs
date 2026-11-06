@@ -28,7 +28,7 @@ use crate::{
         },
         alert_traits::AlertTrait,
         alert_types::ThresholdAlert,
-        target::Retry,
+        target::{Retry, TARGETS},
         user_auth_for_alert_config,
     },
     metastore::metastore_traits::MetastoreObject,
@@ -41,6 +41,7 @@ use actix_web::{
     web::{self, Json, Path},
 };
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use ulid::Ulid;
 
 // Reserved query parameter names that are not treated as other_fields filters
@@ -253,6 +254,60 @@ pub async fn list_internal(
     let paginated_alerts = paginate_alerts(alerts_summary, params.offset, params.limit);
 
     Ok(paginated_alerts)
+}
+
+// POST /alerts/import
+/// Accept alert create payloads with target titles instead of target IDs.
+pub async fn import_alert(
+    req: HttpRequest,
+    Json(mut payload): Json<Value>,
+) -> Result<impl Responder, AlertError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let session_key = extract_session_key_from_req(&req)?;
+    let targets = payload
+        .get_mut("targets")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            AlertError::ValidationFailure("targets must be a nonempty list of target titles".into())
+        })?;
+    if targets.is_empty() {
+        return Err(AlertError::ValidationFailure(
+            "targets must be a nonempty list of target titles".into(),
+        ));
+    }
+
+    let mut ids_by_title = HashMap::new();
+    for target in TARGETS.list(&tenant_id).await? {
+        ids_by_title
+            .entry(target.name)
+            .or_insert_with(Vec::new)
+            .push(target.id);
+    }
+    for target in targets {
+        let title = target
+            .as_str()
+            .filter(|title| !title.trim().is_empty())
+            .ok_or_else(|| {
+                AlertError::ValidationFailure("each target must be a nonempty title".into())
+            })?;
+        let ids = ids_by_title.get(title).ok_or_else(|| {
+            AlertError::ValidationFailure(format!(
+                "target {title:?} not found; create it before importing the alert"
+            ))
+        })?;
+        if ids.len() != 1 {
+            return Err(AlertError::ValidationFailure(format!(
+                "target {title:?} is ambiguous; target titles must be unique"
+            )));
+        }
+        *target = Value::String(ids[0].to_string());
+    }
+
+    let alert: AlertRequest = serde_json::from_value(payload)
+        .map_err(|error| AlertError::ValidationFailure(format!("invalid alert import: {error}")))?;
+    Ok(web::Json(
+        post_internal(alert, &session_key, &tenant_id).await?,
+    ))
 }
 
 // POST /alerts
@@ -734,4 +789,101 @@ pub async fn list_tags_internal(tenant_id: &Option<String>) -> Result<Vec<String
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
     Ok(alerts.list_tags(tenant_id).await)
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+    use crate::alerts::target::Target;
+    use actix_web::test::TestRequest;
+    use serde_json::json;
+
+    fn request(tenant_id: &str) -> HttpRequest {
+        TestRequest::default()
+            .insert_header(("authorization", "Basic YWRtaW46YWRtaW4="))
+            .insert_header(("x-p-tenant", tenant_id))
+            .to_http_request()
+    }
+
+    async fn cache_target(name: &str, tenant_id: &str) {
+        let target: Target = serde_json::from_value(json!({
+            "name": name,
+            "type": "webhook",
+            "endpoint": "https://example.com/alerts",
+            "tenantId": tenant_id,
+        }))
+        .unwrap();
+        TARGETS
+            .target_configs
+            .write()
+            .await
+            .entry(tenant_id.to_owned())
+            .or_default()
+            .insert(target.id, target);
+    }
+
+    #[actix_web::test]
+    async fn import_resolves_existing_target_title() {
+        let tenant_id = format!("import-test-{}", Ulid::new());
+        cache_target("payments", &tenant_id).await;
+
+        // The title resolves; the incomplete alert then fails request validation.
+        let result =
+            import_alert(request(&tenant_id), Json(json!({"targets": ["payments"]}))).await;
+
+        TARGETS.target_configs.write().await.remove(&tenant_id);
+        assert!(
+            matches!(result, Err(AlertError::ValidationFailure(message)) if message.starts_with("invalid alert import:"))
+        );
+    }
+
+    #[actix_web::test]
+    async fn import_rejects_title_only_in_another_tenant() {
+        let tenant_id = format!("import-test-{}", Ulid::new());
+        let other_tenant_id = format!("import-test-{}", Ulid::new());
+        cache_target("payments", &other_tenant_id).await;
+
+        let result =
+            import_alert(request(&tenant_id), Json(json!({"targets": ["payments"]}))).await;
+
+        TARGETS
+            .target_configs
+            .write()
+            .await
+            .remove(&other_tenant_id);
+        assert!(
+            matches!(result, Err(AlertError::ValidationFailure(message)) if message.contains("not found"))
+        );
+    }
+
+    #[actix_web::test]
+    async fn import_rejects_ambiguous_title() {
+        let tenant_id = format!("import-test-{}", Ulid::new());
+        cache_target("payments", &tenant_id).await;
+        cache_target("payments", &tenant_id).await;
+
+        let result =
+            import_alert(request(&tenant_id), Json(json!({"targets": ["payments"]}))).await;
+
+        TARGETS.target_configs.write().await.remove(&tenant_id);
+        assert!(
+            matches!(result, Err(AlertError::ValidationFailure(message)) if message.contains("ambiguous"))
+        );
+    }
+
+    #[actix_web::test]
+    async fn import_rejects_malformed_targets() {
+        let tenant_id = format!("import-test-{}", Ulid::new());
+        for payload in [
+            json!({}),
+            json!({"targets": null}),
+            json!({"targets": "payments"}),
+            json!({"targets": []}),
+            json!({"targets": [42]}),
+            json!({"targets": [" "]}),
+        ] {
+            let result = import_alert(request(&tenant_id), Json(payload)).await;
+            assert!(matches!(result, Err(AlertError::ValidationFailure(_))));
+        }
+    }
 }
