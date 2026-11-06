@@ -37,7 +37,6 @@ use url::Url;
 use super::{
     ALERTS,
     outbound_http_policy::{self, AlertTargetKind},
-    title_registry,
 };
 use crate::{
     alerts::{AlertError, AlertState, Context, alert_traits::CallableTarget},
@@ -79,30 +78,23 @@ impl TargetConfigs {
     pub async fn create(&self, target: Target) -> Result<(), AlertError> {
         let tenant_id = target.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
         let _mutation_guard = self.mutation_lock.lock().await;
-        // Another node may have created a target since this node loaded its cache.
-        let saved = PARSEABLE
-            .metastore
-            .get_targets_for_tenant(&target.tenant)
-            .await?;
-        if saved.iter().any(|item| item.name == target.name) {
-            return Err(AlertError::DuplicateTargetName(target.name));
+        if let Some(targets) = self.target_configs.read().await.get(tenant_id) {
+            if targets
+                .values()
+                .any(|existing| existing.name == target.name)
+            {
+                return Err(AlertError::DuplicateTargetName(target.name));
+            }
+            if targets.contains_key(&target.id) {
+                return Err(AlertError::InvalidTargetModification(
+                    "Target ID already exists".to_string(),
+                ));
+            }
         }
-        if saved.iter().any(|item| item.id == target.id) {
-            return Err(AlertError::InvalidTargetModification(
-                "Target ID already exists".to_string(),
-            ));
-        }
-        if !title_registry::reserve(&target.name, target.id, &target.tenant).await? {
-            return Err(AlertError::DuplicateTargetName(target.name));
-        }
-        if let Err(error) = PARSEABLE
+        PARSEABLE
             .metastore
             .put_target(&target, &target.tenant)
-            .await
-        {
-            title_registry::release(&target.name, target.id, &target.tenant).await?;
-            return Err(error.into());
-        }
+            .await?;
         self.target_configs
             .write()
             .await
@@ -182,7 +174,6 @@ impl TargetConfigs {
         } else {
             return Err(AlertError::InvalidTargetID(target_id.to_string()));
         };
-        title_registry::release(&target.name, target.id, tenant_id).await?;
         PARSEABLE
             .metastore
             .delete_target(&target, tenant_id)

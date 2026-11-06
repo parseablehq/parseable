@@ -138,10 +138,6 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
 
     /// targets
     async fn get_targets(&self) -> Result<HashMap<String, Vec<Target>>, MetastoreError>;
-    async fn get_targets_for_tenant(
-        &self,
-        tenant_id: &Option<String>,
-    ) -> Result<Vec<Target>, MetastoreError>;
     async fn put_target(
         &self,
         obj: &dyn MetastoreObject,

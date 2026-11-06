@@ -801,30 +801,6 @@ impl ObjectStorage for Gcs {
         Ok(())
     }
 
-    async fn put_object_if_absent(
-        &self,
-        path: &RelativePath,
-        resource: Bytes,
-        _tenant_id: &Option<String>,
-    ) -> Result<bool, ObjectStorageError> {
-        match self
-            .client
-            .put_opts(
-                &to_object_store_path(path),
-                resource.into(),
-                object_store::PutOptions {
-                    mode: object_store::PutMode::Create,
-                    ..Default::default()
-                },
-            )
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(object_store::Error::AlreadyExists { .. }) => Ok(false),
-            Err(error) => Err(error.into()),
-        }
-    }
-
     async fn delete_prefix(
         &self,
         path: &RelativePath,

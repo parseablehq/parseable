@@ -44,7 +44,6 @@ pub mod alert_types;
 pub mod alerts_utils;
 pub mod outbound_http_policy;
 pub mod target;
-pub mod title_registry;
 
 pub use crate::alerts::alert_enums::{
     AggregateFunction, AlertOperator, AlertQueryType, AlertState, AlertTask, AlertType,
@@ -1217,6 +1216,8 @@ pub enum AlertError {
     InvalidTargetID(String),
     #[error("Target title {0:?} already exists")]
     DuplicateTargetName(String),
+    #[error("Alert title {0:?} already exists")]
+    DuplicateAlertTitle(String),
     #[error("Invalid target modification request: {0}")]
     InvalidTargetModification(String),
     #[error("Can't delete a Target which is being used")]
@@ -1257,6 +1258,7 @@ impl actix_web::ResponseError for AlertError {
             Self::FromStrError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
             Self::DuplicateTargetName(_) => StatusCode::CONFLICT,
+            Self::DuplicateAlertTitle(_) => StatusCode::CONFLICT,
             Self::InvalidTargetModification(_) => StatusCode::BAD_REQUEST,
             Self::TargetInUse => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,

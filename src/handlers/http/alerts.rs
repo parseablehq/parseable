@@ -41,12 +41,16 @@ use actix_web::{
     web::{self, Json, Path},
 };
 use chrono::{DateTime, Utc};
+use tokio::sync::Mutex;
 use ulid::Ulid;
 
 // Reserved query parameter names that are not treated as other_fields filters
 const RESERVED_PARAMS: [&str; 3] = ["tags", "offset", "limit"];
 const MAX_LIMIT: usize = 1000;
 const DEFAULT_LIMIT: usize = 100;
+
+// Serialize alert title checks with writes in this process.
+static ALERT_TITLE_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Query parameters for listing alerts
 struct ListQueryParams {
@@ -317,6 +321,7 @@ pub async fn post_internal(
         }
     };
 
+    let _title_guard = ALERT_TITLE_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -327,6 +332,17 @@ pub async fn post_internal(
     // validate the incoming alert query
     // does the user have access to these tables or not?
     alert.validate(session_key).await?;
+
+    if alerts
+        .get_all_alerts(tenant_id)
+        .await
+        .values()
+        .any(|existing| existing.get_title() == alert.get_title())
+    {
+        return Err(AlertError::DuplicateAlertTitle(
+            alert.get_title().to_owned(),
+        ));
+    }
 
     // update persistent storage first
     PARSEABLE
@@ -603,6 +619,7 @@ pub async fn modify_alert_internal(
     alert_request: AlertRequest,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
+    let _title_guard = ALERT_TITLE_LOCK.lock().await;
     // Get alerts manager reference without holding the global lock
     let alerts = {
         let guard = ALERTS.read().await;
@@ -658,6 +675,20 @@ pub async fn modify_alert_internal(
     };
 
     new_alert.validate(session_key).await?;
+
+    if new_alert.get_title() != alert.get_title()
+        && alerts
+            .get_all_alerts(tenant_id)
+            .await
+            .values()
+            .any(|existing| {
+                existing.get_id() != &alert_id && existing.get_title() == new_alert.get_title()
+            })
+    {
+        return Err(AlertError::DuplicateAlertTitle(
+            new_alert.get_title().to_owned(),
+        ));
+    }
 
     // Perform I/O operations
     PARSEABLE
