@@ -89,7 +89,6 @@ static RESERVED_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "empty",
         "password",
         "username",
-        "preferences",
     ]
     .into_iter()
     .collect()

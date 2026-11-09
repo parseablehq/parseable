@@ -811,9 +811,17 @@ impl Server {
     }
 
     pub fn get_user_preferences_resource() -> Resource {
-        web::resource("/preferences")
-            .route(web::get().to(preferences::get).authorize(Action::Login))
-            .route(web::put().to(preferences::put).authorize(Action::Login))
+        web::resource("/{userid}/preferences")
+            .route(
+                web::get()
+                    .to(preferences::get)
+                    .authorize_for_user(Action::GetUserPreferences),
+            )
+            .route(
+                web::put()
+                    .to(preferences::put)
+                    .authorize_for_user(Action::PutUserPreferences),
+            )
     }
 
     // get the live check

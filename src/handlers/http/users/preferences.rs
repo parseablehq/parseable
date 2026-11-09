@@ -10,18 +10,25 @@
 use actix_web::{
     HttpRequest, HttpResponse, Responder,
     http::{StatusCode, header::ContentType},
-    web::Json,
+    web::{Json, Path},
 };
 
 use crate::{
-    handlers::http::rbac::RBACError,
     metastore::MetastoreError,
+    rbac::Users,
     users::preferences::{USER_PREFERENCES, UserPreferences},
-    utils::{get_hash, get_user_and_tenant_from_request},
+    utils::{get_hash, get_tenant_id_from_request},
 };
 
-pub async fn get(req: HttpRequest) -> Result<impl Responder, UserPreferencesError> {
-    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
+pub async fn get(
+    req: HttpRequest,
+    user_id: Path<String>,
+) -> Result<impl Responder, UserPreferencesError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let user_id = user_id.into_inner();
+    if !Users.contains(&user_id, &tenant_id) {
+        return Err(UserPreferencesError::UserDoesNotExist);
+    }
     let user_id = get_hash(&user_id);
 
     let preferences = USER_PREFERENCES.get(&user_id, &tenant_id).await;
@@ -31,9 +38,14 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, UserPreferencesErro
 
 pub async fn put(
     req: HttpRequest,
+    user_id: Path<String>,
     Json(mut preferences): Json<UserPreferences>,
 ) -> Result<impl Responder, UserPreferencesError> {
-    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
+    let tenant_id = get_tenant_id_from_request(&req);
+    let user_id = user_id.into_inner();
+    if !Users.contains(&user_id, &tenant_id) {
+        return Err(UserPreferencesError::UserDoesNotExist);
+    }
     preferences.set_metadata(get_hash(&user_id), tenant_id.clone());
     USER_PREFERENCES.put(&preferences, &tenant_id).await?;
 
@@ -43,7 +55,7 @@ pub async fn put(
 #[derive(Debug, thiserror::Error)]
 pub enum UserPreferencesError {
     #[error("User does not exist")]
-    UserDoesNotExist(#[from] RBACError),
+    UserDoesNotExist,
     #[error(transparent)]
     Metastore(#[from] MetastoreError),
 }
@@ -51,7 +63,7 @@ pub enum UserPreferencesError {
 impl actix_web::ResponseError for UserPreferencesError {
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::UserDoesNotExist(error) => error.status_code(),
+            Self::UserDoesNotExist => StatusCode::NOT_FOUND,
             Self::Metastore(error) => error.status_code(),
         }
     }

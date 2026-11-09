@@ -47,6 +47,8 @@ pub enum Action {
     DeleteUser,
     PutUserRoles,
     GetUserRoles,
+    GetUserPreferences,
+    PutUserPreferences,
     PutRole,
     GetRole,
     DeleteRole,
@@ -117,6 +119,8 @@ impl RoleBuilder {
                 | Action::PatchUser
                 | Action::PutUserRoles
                 | Action::GetUserRoles
+                | Action::GetUserPreferences
+                | Action::PutUserPreferences
                 | Action::DeleteUser
                 | Action::GetAbout
                 | Action::PutRole
