@@ -38,6 +38,7 @@ use crate::handlers::http::resource_check;
 use crate::handlers::http::targets;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
+use crate::handlers::http::users::preferences;
 use crate::hottier::GLOBAL_HOTTIER;
 use crate::hottier::HotTierManager;
 use crate::hottier::HotTierMessage;
@@ -94,6 +95,7 @@ impl ParseableServer for Server {
                     .service(Self::get_readiness_factory())
                     .service(Self::get_about_factory())
                     .service(Self::get_logstream_webscope())
+                    .service(Self::get_user_preferences_webscope())
                     .service(Self::get_user_webscope())
                     .service(Self::get_users_webscope())
                     .service(Self::get_dashboards_webscope())
@@ -806,6 +808,14 @@ impl Server {
                             .wrap(DisAllowRootUser),
                     ),
             )
+    }
+
+    pub fn get_user_preferences_webscope() -> Scope {
+        web::scope("/user/preferences").service(
+            web::resource("")
+                .route(web::get().to(preferences::get).authorize(Action::Login))
+                .route(web::put().to(preferences::put).authorize(Action::Login)),
+        )
     }
 
     // get the live check
