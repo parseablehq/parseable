@@ -411,9 +411,15 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    Ok(web::Json(
-        get_internal(&session_key, alert_id, &tenant_id).await?,
-    ))
+    let response = get_internal(&session_key, alert_id, &tenant_id).await?;
+    let mut titles = Vec::with_capacity(response.targets.len());
+    for target_id in &response.targets {
+        titles.push(TARGETS.get_target_by_id(target_id, &tenant_id).await?.name);
+    }
+
+    let mut response = serde_json::to_value(response)?;
+    response["targets"] = Value::Array(titles.into_iter().map(Value::String).collect());
+    Ok(web::Json(response))
 }
 
 /// Shared alert lookup implementation for HTTP handlers and in-process callers.
