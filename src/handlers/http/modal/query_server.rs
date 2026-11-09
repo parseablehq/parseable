@@ -189,6 +189,7 @@ impl QueryServer {
     // get the user webscope
     pub fn get_user_webscope() -> Scope {
         web::scope("/user")
+            .service(Server::get_user_preferences_resource())
             .service(
                 web::resource("")
                     // GET /user => List all users

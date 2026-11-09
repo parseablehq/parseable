@@ -198,6 +198,16 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
 
+    /// user preferences
+    async fn get_all_user_preferences(
+        &self,
+    ) -> Result<HashMap<String, HashMap<String, Bytes>>, MetastoreError>;
+    async fn put_user_preferences(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+
     /// stream metadata
     /// `get_base` when set to true, will fetch the stream.json present at the base of
     /// the stream (independent of Mode of server)

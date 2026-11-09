@@ -38,6 +38,7 @@ use crate::handlers::http::resource_check;
 use crate::handlers::http::targets;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
+use crate::handlers::http::users::preferences;
 use crate::hottier::GLOBAL_HOTTIER;
 use crate::hottier::HotTierManager;
 use crate::hottier::HotTierMessage;
@@ -270,6 +271,11 @@ impl Server {
             .service(
                 resource("/{key_id}")
                     .route(web::get().to(apikeys::get_api_key).authorize(Action::All))
+                    .route(
+                        web::patch()
+                            .to(apikeys::patch_api_key)
+                            .authorize(Action::All),
+                    )
                     .route(
                         web::delete()
                             .to(apikeys::delete_api_key)
@@ -734,6 +740,7 @@ impl Server {
     // get the user webscope
     pub fn get_user_webscope() -> Scope {
         web::scope("/user")
+            .service(Self::get_user_preferences_resource())
             .service(
                 web::resource("")
                     // GET /user => List all users
@@ -800,6 +807,20 @@ impl Server {
                             .authorize(Action::PutUser)
                             .wrap(DisAllowRootUser),
                     ),
+            )
+    }
+
+    pub fn get_user_preferences_resource() -> Resource {
+        web::resource("/{userid}/preferences")
+            .route(
+                web::get()
+                    .to(preferences::get)
+                    .authorize_for_user(Action::GetUserPreferences),
+            )
+            .route(
+                web::put()
+                    .to(preferences::put)
+                    .authorize_for_user(Action::PutUserPreferences),
             )
     }
 

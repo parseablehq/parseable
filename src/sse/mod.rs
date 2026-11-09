@@ -32,6 +32,7 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use ulid::Ulid;
 
+use crate::license::LicenseStatus;
 use crate::{
     alerts::AlertState,
     parseable::DEFAULT_TENANT,
@@ -214,9 +215,10 @@ pub enum Message {
     AlertEvent(SSEAlertInfo),
     ControlPlaneEvent(ControlPlaneEvent),
     Consent(Consent),
+    LicenseEvent(LicenseEvent),
 }
 
-#[derive(Serialize, Debug, Deserialize)]
+#[derive(Clone, Copy, Serialize, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Criticality {
     Info,
@@ -242,4 +244,11 @@ pub struct ControlPlaneEvent {
 #[serde(rename_all = "camelCase")]
 pub struct Consent {
     pub given: bool,
+}
+
+#[derive(Serialize, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LicenseEvent {
+    pub status: LicenseStatus,
+    pub time_tampered: bool,
 }

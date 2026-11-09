@@ -18,6 +18,7 @@
 
 pub mod dashboards;
 pub mod filters;
+pub mod preferences;
 
 pub const USERS_ROOT_DIR: &str = ".users";
 pub const DASHBOARDS_DIR: &str = "dashboards";

@@ -27,6 +27,7 @@ use actix_web::{
 
 use crate::rbac::map::roles;
 use crate::rbac::role::model::{Role, RoleType, RoleUI};
+use crate::rbac::{GLOBAL_INGESTOR_ROLE, GLOBAL_QUERIER_ROLE, is_system_role, system_role};
 use crate::{
     parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::map::{DEFAULT_ROLE, mut_roles, mut_sessions, read_user_groups, users},
@@ -42,14 +43,17 @@ pub async fn put(
     name: web::Path<String>,
     Json(role): Json<Role>,
 ) -> Result<impl Responder, RoleError> {
+    let name = name.into_inner();
     // internal role manipulation not allowed
+    if is_system_role(&name) {
+        return Err(RoleError::SystemRolePrivilegesLocked(name));
+    }
     if role.role_type().eq(&RoleType::Internal) {
         return Err(RoleError::ProtectedRole);
     }
     if role.deny_super_admin() {
         return Err(RoleError::SuperAdminPrivilege);
     }
-    let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
 
     // validate the role name
@@ -104,6 +108,9 @@ pub async fn get(req: HttpRequest, name: web::Path<String>) -> Result<impl Respo
 
 /// Shared role lookup implementation for HTTP handlers and in-process callers.
 pub async fn get_internal(name: &str, tenant_id: &Option<String>) -> Result<Role, RoleError> {
+    if let Some(role) = system_role(name) {
+        return Ok(role);
+    }
     let metadata = get_metadata(tenant_id).await?;
     let role = metadata.roles.get(name).cloned().unwrap_or_default();
     if role.role_type().eq(&RoleType::Internal) {
@@ -130,6 +137,11 @@ pub async fn list_internal(
             roles.insert(k, RoleUI(r));
         }
     }
+    for name in [GLOBAL_INGESTOR_ROLE, GLOBAL_QUERIER_ROLE] {
+        if let Some(role) = system_role(name) {
+            roles.insert(name.to_string(), RoleUI(role));
+        }
+    }
 
     Ok(roles)
 }
@@ -141,6 +153,9 @@ pub async fn delete(
     name: web::Path<String>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    if is_system_role(&name) {
+        return Err(RoleError::SystemRoleDeletion(name));
+    }
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     if let Some(tenant_roles) = roles().get(tenant)
@@ -257,6 +272,10 @@ pub enum RoleError {
     RoleInUse,
     #[error("Cannot perform this operation as role is assigned to a protected user.")]
     ProtectedRole,
+    #[error("System role '{0}' cannot be deleted.")]
+    SystemRoleDeletion(String),
+    #[error("Privileges of system role '{0}' are fixed; you cannot add or remove them.")]
+    SystemRolePrivilegesLocked(String),
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
     #[error("{0}")]
@@ -276,6 +295,9 @@ impl actix_web::ResponseError for RoleError {
             Self::RoleInUse => StatusCode::BAD_REQUEST,
             Self::SuperAdminPrivilege => StatusCode::BAD_REQUEST,
             Self::ProtectedRole => StatusCode::BAD_REQUEST,
+            Self::SystemRoleDeletion(_) | Self::SystemRolePrivilegesLocked(_) => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::Network(_) => StatusCode::BAD_GATEWAY,
