@@ -95,7 +95,6 @@ impl ParseableServer for Server {
                     .service(Self::get_readiness_factory())
                     .service(Self::get_about_factory())
                     .service(Self::get_logstream_webscope())
-                    .service(Self::get_user_preferences_webscope())
                     .service(Self::get_user_webscope())
                     .service(Self::get_users_webscope())
                     .service(Self::get_dashboards_webscope())
@@ -741,6 +740,7 @@ impl Server {
     // get the user webscope
     pub fn get_user_webscope() -> Scope {
         web::scope("/user")
+            .service(Self::get_user_preferences_resource())
             .service(
                 web::resource("")
                     // GET /user => List all users
@@ -810,12 +810,10 @@ impl Server {
             )
     }
 
-    pub fn get_user_preferences_webscope() -> Scope {
-        web::scope("/user/preferences").service(
-            web::resource("")
-                .route(web::get().to(preferences::get).authorize(Action::Login))
-                .route(web::put().to(preferences::put).authorize(Action::Login)),
-        )
+    pub fn get_user_preferences_resource() -> Resource {
+        web::resource("/preferences")
+            .route(web::get().to(preferences::get).authorize(Action::Login))
+            .route(web::put().to(preferences::put).authorize(Action::Login))
     }
 
     // get the live check

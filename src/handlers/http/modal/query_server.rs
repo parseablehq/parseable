@@ -62,7 +62,6 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_readiness_factory())
                     .service(Server::get_about_factory())
                     .service(Self::get_logstream_webscope())
-                    .service(Server::get_user_preferences_webscope())
                     .service(Self::get_user_webscope())
                     .service(Server::get_users_webscope())
                     .service(Server::get_dashboards_webscope())
@@ -190,6 +189,7 @@ impl QueryServer {
     // get the user webscope
     pub fn get_user_webscope() -> Scope {
         web::scope("/user")
+            .service(Server::get_user_preferences_resource())
             .service(
                 web::resource("")
                     // GET /user => List all users
