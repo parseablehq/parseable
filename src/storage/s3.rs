@@ -1420,7 +1420,7 @@ impl ObjectStorage for S3 {
         Ok(resp
             .common_prefixes
             .iter()
-            .flat_map(|path| path.parts())
+            .filter_map(|path| path.parts().next_back())
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>())
     }

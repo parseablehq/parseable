@@ -62,7 +62,10 @@ use crate::{
             to_bytes,
         },
     },
-    users::filters::{Filter, migrate_v1_v2},
+    users::{
+        filters::{Filter, migrate_v1_v2},
+        preferences::user_preferences_path,
+    },
 };
 
 /// Using PARSEABLE's storage as a metastore (default)
@@ -764,6 +767,54 @@ impl Metastore for ObjectStoreMetastore {
         Ok(self
             .storage
             .delete_object(&RelativePathBuf::from(path), tenant_id)
+            .await?)
+    }
+
+    async fn get_all_user_preferences(
+        &self,
+    ) -> Result<HashMap<String, HashMap<String, Bytes>>, MetastoreError> {
+        let mut preferences = HashMap::new();
+        for tenant in PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]) {
+            let tenant_id = if tenant.is_empty() {
+                None
+            } else {
+                Some(tenant.clone())
+            };
+            let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
+            let mut tenant_preferences = HashMap::new();
+
+            for user_id in self
+                .storage
+                .list_dirs_relative(&users_dir, &tenant_id)
+                .await?
+            {
+                let path = user_preferences_path(&user_id, &tenant_id);
+                match self.storage.get_object(&path, &tenant_id).await {
+                    Ok(bytes) => {
+                        tenant_preferences.insert(user_id, bytes);
+                    }
+                    Err(err) if is_missing_optional_dir(&err) => {}
+                    Err(err) => return Err(MetastoreError::ObjectStorageError(err)),
+                }
+            }
+
+            preferences.insert(
+                tenant_id.unwrap_or_else(|| DEFAULT_TENANT.to_owned()),
+                tenant_preferences,
+            );
+        }
+        Ok(preferences)
+    }
+
+    async fn put_user_preferences(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError> {
+        let path = RelativePathBuf::from(obj.get_object_path());
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(obj), tenant_id)
             .await?)
     }
 
