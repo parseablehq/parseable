@@ -572,6 +572,10 @@ impl actix_web::ResponseError for PostError {
             | CreateStream(CreateStreamError::StreamNameValidation(_))
             | OtelNotSupported(_) => StatusCode::BAD_REQUEST,
 
+            Event(EventError::Staging(crate::parseable::StagingError::StreamDeleting(_))) => {
+                StatusCode::CONFLICT
+            }
+
             Event(_)
             | CreateStream(_)
             | CustomError(_)
@@ -618,6 +622,35 @@ mod tests {
         event::format::{EventFormat, json},
         metadata::SchemaVersion,
     };
+
+    #[test]
+    fn event_staging_deleting_returns_conflict() {
+        use actix_web::{ResponseError, http::StatusCode};
+
+        let error = super::PostError::Event(crate::event::error::EventError::Staging(
+            crate::parseable::StagingError::StreamDeleting("teststream".to_owned()),
+        ));
+
+        assert_eq!(error.status_code(), StatusCode::CONFLICT);
+        assert_eq!(error.error_response().status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn event_staging_io_failure_returns_internal_server_error() {
+        use actix_web::{ResponseError, http::StatusCode};
+
+        let error = super::PostError::Event(crate::event::error::EventError::Staging(
+            crate::parseable::StagingError::ObjectStorage(std::io::Error::other(
+                "staging write failed",
+            )),
+        ));
+
+        assert_eq!(error.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            error.error_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 
     trait TestExt {
         fn as_int64_arr(&self) -> Option<&Int64Array>;

@@ -248,6 +248,9 @@ pub struct Stream {
     pub writer: Mutex<Writer>,
     schema_writer: Mutex<()>,
     pub ingestor_id: Option<String>,
+    // Ingestion/local sync hold read access; staging cleanup holds write access.
+    // Acquire before schema_writer or writer when an operation needs both.
+    staging_activity: RwLock<()>,
 }
 
 /// Startup conversion owns this immutable processing-file snapshot. Periodic
@@ -283,6 +286,20 @@ impl ArrowFileConversionOutcome {
 
 impl StartupSyncPlan {
     pub(crate) fn execute(self) -> Result<(), StagingError> {
+        // Preparation and execution are separate: reacquire activity access and
+        // recheck deletion before using the captured files. Hold through schema
+        // finalization so cleanup cannot remove staging during conversion.
+        let _staging_activity = self.stream.staging_activity.read().map_err(|err| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Staging activity lock poisoned during startup conversion for {} - {}",
+                self.stream.stream_name, err
+            )))
+        })?;
+
+        if self.stream.is_deleting() {
+            return Ok(());
+        }
+
         let time_partition = self.stream.get_time_partition();
         let custom_partition = self.stream.get_custom_partition();
         let outcome = self.stream.convert_arrow_file_groups_to_parquet(
@@ -315,6 +332,7 @@ impl Stream {
             writer: Mutex::new(Writer::default()),
             schema_writer: Mutex::new(()),
             ingestor_id,
+            staging_activity: RwLock::new(()),
         })
     }
 
@@ -352,6 +370,11 @@ impl Stream {
                 }
             }
         };
+        // Recheck after waiting for the writer lock: an earlier validation may
+        // predate deletion. Cleanup takes this same lock before removing files.
+        if self.is_deleting() {
+            return Err(StagingError::StreamDeleting(self.stream_name.clone()));
+        }
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             let filename =
                 self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
@@ -703,7 +726,12 @@ impl Stream {
             )))
         })?;
 
-        // schema is dynamic, read from staging and merge if present
+        if self.is_deleting() {
+            return Err(StagingError::StreamDeleting(self.stream_name.clone()));
+        }
+
+        // The deletion check above runs under the schema lock shared with
+        // cleanup, preventing a late schema write from recreating staging.
         fs::create_dir_all(&self.data_path)?;
 
         // need to add something before .schema to make the file have an extension of type `schema`
@@ -769,24 +797,22 @@ impl Stream {
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn flush(&self, forced: bool) -> Result<(), StagingError> {
         let _span = info_span!("flush", stream_name = %self.stream_name, forced).entered();
-        // Swap out stale writers under the lock, drop them after releasing it.
-        // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
-        // outside the lock avoids blocking concurrent push() calls.
-        let stale_writers = {
-            let mut writer = self.writer.lock().map_err(|poisoned| {
-                StagingError::PoisonError(PoisonError::new(format!(
-                    "Writer lock poisoned while flushing data for stream {} - {}",
-                    self.stream_name, poisoned
-                )))
-            })?;
 
-            if let Some(mem) = writer.mem.as_mut() {
-                mem.clear();
-            }
-            writer.take_flushable_disk(forced)
-        };
-        // DiskWriter::Drop I/O happens here, outside the lock
-        drop(stale_writers);
+        let mut writer = self.writer.lock().map_err(|poisoned| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Writer lock poisoned while flushing data for stream {} - {}",
+                self.stream_name, poisoned
+            )))
+        })?;
+
+        if let Some(mem) = writer.mem.as_mut() {
+            mem.clear();
+        }
+
+        // Finalize and rename files while holding the writer lock so staging
+        // deletion cannot remove them before DiskWriter::drop completes.
+        drop(writer.take_flushable_disk(forced));
+
         Ok(())
     }
 
@@ -1473,6 +1499,52 @@ impl Stream {
         self.cleanup_arrow_files_and_dir(arrow_files, tenant_id);
     }
 
+    /// Drains participating local work, finalizes disk writers, and removes
+    /// staging and dataset stats. The stream must already be marked deleting;
+    /// callers must prevent recreation while cleaning and evicting this entry.
+    /// Does not delete object storage or evict the entry itself.
+    pub fn remove_staging(&self, tenant_id: &Option<String>) -> Result<(), StagingError> {
+        // Keep the order activity -> schema -> writer. Exclusive activity access
+        // waits for ingestion (including stats updates) and local conversion.
+        let _staging_activity = self.staging_activity.write().map_err(|err| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Staging activity lock poisoned while deleting stream {} - {}",
+                self.stream_name, err
+            )))
+        })?;
+        let _schema_writer = self.schema_writer.lock().map_err(|poisoned| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Schema writer lock poisoned while deleting stream {} - {}",
+                self.stream_name, poisoned
+            )))
+        })?;
+        let mut writer = self.writer.lock().map_err(|poisoned| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Writer lock poisoned while deleting stream {} - {}",
+                self.stream_name, poisoned
+            )))
+        })?;
+        // Disk writers finish and rename their files when dropped.
+        drop(writer.take_flushable_disk(true));
+
+        match fs::remove_dir_all(&self.data_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        // Reset under exclusive activity access so an old Event::process cannot
+        // update counters after cleanup has reset them.
+        if let Err(err) = crate::stats::delete_stats(&self.stream_name, "json", tenant_id) {
+            warn!(
+                "failed to clear stats for deleted stream {}: {err}",
+                self.stream_name
+            );
+        }
+
+        Ok(())
+    }
+
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
         let staging_files = self.arrow_files();
         let record_reader = MergedReverseRecordReader::try_new(&staging_files);
@@ -1625,20 +1697,34 @@ impl Stream {
         self.metadata.read().expect(LOCK_EXPECT).hot_tier_enabled
     }
 
-    /// Marks this stream as being deleted. Once set, this flag is never
-    /// cleared for this in-memory entry — a deletion in progress runs to
-    /// completion (or is resumed on restart), it is never cancelled.
+    /// Blocks new ingestion on this object. After a durable deletion starts,
+    /// keep the flag set even after eviction so outstanding handles stay blocked.
+    /// Only roll it back if persisting the deletion tombstone fails.
     pub fn mark_deleting(&self) {
         self.metadata.write().expect(LOCK_EXPECT).deleting = true;
     }
+    /// Holds shared activity access through an event's writes and stats updates.
+    /// Check deletion after acquiring access; do not reacquire this activity lock
+    /// in nested calls, as a waiting cleanup writer can make that deadlock.
+    pub(crate) fn ingestion_guard(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, ()>, StagingError> {
+        let guard = self.staging_activity.read().map_err(|err| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Staging activity lock poisoned during ingestion for {} - {}",
+                self.stream_name, err
+            )))
+        })?;
 
-    /// Undoes a `mark_deleting()` call, in one of two cases: the tombstone
-    /// write that would have made it durable just failed, or the caller has
-    /// independently confirmed (via `is_tombstoned()`) that the tombstone is
-    /// already gone and this flag is just a stale leftover on a node that
-    /// doesn't run the background deletion job itself. Unlike
-    /// `mark_deleting()`, this is not part of the monotonic contract, and
-    /// must never be called while the tombstone still exists in storage.
+        if self.is_deleting() {
+            return Err(StagingError::StreamDeleting(self.stream_name.clone()));
+        }
+
+        Ok(guard)
+    }
+    /// Rolls back this request's deletion flag when its tombstone write fails.
+    /// Do not use to reactivate an old entry after completed deletion: clean and
+    /// evict it instead. Never clear another request's ongoing deletion flag.
     pub fn clear_deleting(&self) {
         self.metadata.write().expect(LOCK_EXPECT).deleting = false;
     }
@@ -1878,6 +1964,21 @@ impl Stream {
         self: &Arc<Self>,
         tenant_id: Option<String>,
     ) -> Result<StartupSyncPlan, StagingError> {
+        // Protect recovery, flushing, and the file snapshot from staging cleanup.
+        // The returned plan reacquires access when executed; no guard spans tasks.
+        let _staging_activity = self.staging_activity.read().map_err(|err| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Staging activity lock poisoned for stream {} - {}",
+                self.stream_name, err
+            )))
+        })?;
+        if self.is_deleting() {
+            return Ok(StartupSyncPlan {
+                stream: Arc::clone(self),
+                tenant_id,
+                staging_files: Vec::new(),
+            });
+        }
         self.recover_orphan_part_files();
 
         let start_flush = Instant::now();
@@ -1917,6 +2018,17 @@ impl Stream {
         shutdown_signal: bool,
         tenant_id: &Option<String>,
     ) -> Result<(), StagingError> {
+        // Cover the entire local sync, not just flush: conversion and schema
+        // finalization also touch staging after the writer mutex is released.
+        let _staging_activity = self.staging_activity.read().map_err(|err| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Staging activity lock poisoned for stream {} - {}",
+                self.stream_name, err
+            )))
+        })?;
+        if self.is_deleting() {
+            return Ok(());
+        }
         // On init, recover any orphaned .part files from previous interrupted runs
         if init_signal {
             self.recover_orphan_part_files();

@@ -1044,7 +1044,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         info!("Starting object_store_sync for stream- {stream_name}");
 
-        let stream = PARSEABLE.get_or_create_stream(stream_name, &tenant_id);
+        let stream = PARSEABLE.get_stream(stream_name, &tenant_id)?;
         let upload_context = UploadContext::new(stream);
 
         // Process parquet files concurrently and collect results
@@ -1377,6 +1377,51 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
         let _guard = StreamDeletionGuard(Some(key.clone()));
         let (tenant_id, stream_name) = &key;
         let storage = PARSEABLE.storage.get_object_store();
+        {
+            let creation_lock = if PARSEABLE.options.mode == Mode::Query {
+                &crate::handlers::http::modal::query::querier_logstream::CREATE_STREAM_LOCK
+            } else {
+                &crate::handlers::http::logstream::CREATE_STREAM_LOCK
+            };
+            let _creation_guard = creation_lock.lock().await;
+
+            match is_tombstoned(storage.as_ref(), stream_name, tenant_id).await {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(err) => {
+                    warn!("failed to check deletion tombstone for {stream_name}: {err}");
+                    return;
+                }
+            }
+
+            let cleanup: Result<(), crate::parseable::StagingError> =
+                match PARSEABLE.get_stream(stream_name, tenant_id) {
+                    Ok(stream) => {
+                        stream.mark_deleting();
+                        stream.remove_staging(tenant_id)
+                    }
+                    Err(_) => {
+                        // Recovery may have no resident Stream to clean through.
+                        let path = PARSEABLE
+                            .options
+                            .local_stream_data_path(stream_name, tenant_id);
+
+                        match std::fs::remove_dir_all(path) {
+                            Ok(()) => Ok(()),
+                            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                            Err(err) => Err(err.into()),
+                        }
+                    }
+                };
+
+            if let Err(err) = cleanup {
+                warn!(
+                    "failed to clean staging for deleting stream {stream_name}: \
+                     {err}; retaining tombstone for retry"
+                );
+                return;
+            }
+        }
         match storage.delete_stream(stream_name, tenant_id).await {
             Ok(()) => {
                 // Clear the map entry and stats *before* the tombstone, not
@@ -1447,15 +1492,31 @@ fn spawn_deleting_stream_reconciliation(
                     }
                 }
                 Ok(false) if !is_deletion_owner => {
-                    // Deletion already finished elsewhere and the tombstone
-                    // is gone, but this node's resident entry was never
-                    // dropped -- e.g. an ingestor, which doesn't run the
-                    // background deletion job itself. Reap it so a stream
-                    // recreated under the same name doesn't inherit a stuck
-                    // deleting=true state.
-                    PARSEABLE
-                        .streams
-                        .delete_if_still_deleting(&stream_name, &tenant_id);
+                    let _creation_guard =
+                        crate::handlers::http::modal::ingest::ingestor_logstream::CREATE_STREAM_LOCK
+            .lock()
+            .await;
+
+                    if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id)
+                        && stream.is_deleting()
+                    {
+                        match stream.remove_staging(&tenant_id) {
+                            Ok(()) => {
+                                if let Err(err) = stats::delete_stats(&stream_name, "json", &tenant_id) {
+                                    warn!("failed to clear stats for deleted stream {stream_name}: {err}");
+                                }
+                                PARSEABLE
+                                    .streams
+                                    .delete_if_still_deleting(&stream_name, &tenant_id);
+                            }
+                            Err(err) => {
+                                warn!(
+                                    "failed to clean staging for deleting stream \
+                     {stream_name}, retrying next sync interval: {err}"
+                                );
+                            }
+                        }
+                    }
                 }
                 Ok(false) => {
                     // On the owning node, an absent tombstone can also just
@@ -1529,6 +1590,15 @@ async fn reconcile_one_tombstoned_stream(
     stream_name: String,
     is_deletion_owner: bool,
 ) {
+    let creation_lock = match PARSEABLE.options.mode {
+        Mode::Ingest => {
+            &crate::handlers::http::modal::ingest::ingestor_logstream::CREATE_STREAM_LOCK
+        }
+        Mode::Query => &crate::handlers::http::modal::query::querier_logstream::CREATE_STREAM_LOCK,
+        _ => &crate::handlers::http::logstream::CREATE_STREAM_LOCK,
+    };
+
+    let _creation_guard = creation_lock.lock().await;
     match PARSEABLE.get_stream(&stream_name, tenant_id) {
         Ok(stream) if !stream.is_deleting() => {
             // list_tombstoned_streams is a snapshot -- by the time we get
@@ -1539,7 +1609,16 @@ async fn reconcile_one_tombstoned_stream(
             // stream can't be flagged deleting based on stale snapshot data
             // with no tombstone left to ever clear it again.
             match is_tombstoned(object_store, &stream_name, tenant_id).await {
-                Ok(true) => stream.mark_deleting(),
+                Ok(true) => {
+                    stream.mark_deleting();
+
+                    if let Err(err) = stream.remove_staging(tenant_id) {
+                        warn!(
+                            "failed to remove local staging for deleting stream \
+                            {stream_name}: {err}"
+                        );
+                    }
+                }
                 Ok(false) => {}
                 // A real error here (as opposed to "no tombstone") is not
                 // evidence the tombstone is gone -- folding it into Ok(false)

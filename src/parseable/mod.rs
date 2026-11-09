@@ -758,34 +758,24 @@ impl Parseable {
         Ok(())
     }
 
-    /// Rejects a create/update call blocked by an in-progress or stale
-    /// deletion, self-healing a stale `is_deleting()` flag once its
-    /// tombstone is confirmed gone. Returns the (possibly corrected) value
-    /// of `stream_in_memory_dont_update` for the caller's subsequent
-    /// "already exists" check.
+    /// Rejects creation/update while a deletion tombstone exists. Once it is
+    /// gone, cleans staging and evicts a stale deleting entry before proceeding.
+    /// Returns the corrected value for the caller's "already exists" check.
+    /// Callers must hold their mode's creation lock through cleanup and creation.
     async fn reject_if_stream_deleting(
         &self,
         stream_name: &str,
         tenant_id: &Option<String>,
         stream_in_memory_dont_update: bool,
     ) -> Result<bool, StreamError> {
-        // A stream still resident with is_deleting()=true is functionally
-        // gone (reads/writes are already rejected elsewhere), but its entry
-        // isn't removed from memory until the background deletion job
-        // finishes -- surface that distinctly rather than telling the
-        // caller it "already exists", which reads as if nothing were wrong.
+        // A resident entry may outlive deletion elsewhere, especially on an
+        // ingestor. Distinguish an active deletion from an entry awaiting eviction.
         if stream_in_memory_dont_update
             && let Ok(stream) = self.get_stream(stream_name, tenant_id)
             && stream.is_deleting()
         {
-            // The flag can be stale on a node that never runs the
-            // background deletion job itself (e.g. an ingestor: see its
-            // `delete()` handler) -- it only self-heals once
-            // `sync_all_streams` next notices the tombstone is gone, which
-            // can lag well behind a client recreating the stream right
-            // away. Re-check the durable tombstone before trusting the
-            // in-memory flag, and clear it here instead of blocking
-            // creation for up to a full sync interval.
+            // Recheck the durable marker instead of waiting for the next sync
+            // tick to evict an old entry. A present tombstone still blocks reuse.
             if is_tombstoned(
                 self.storage.get_object_store().as_ref(),
                 stream_name,
@@ -798,29 +788,22 @@ impl Parseable {
                     status: StatusCode::CONFLICT,
                 });
             }
-            stream.clear_deleting();
-
-            // The stale entry itself (data path, schema, old metadata) must
-            // go too, not just the flag -- otherwise the "already exists"
-            // check just below still trips on it, and get_or_create's
-            // resident-entry short-circuit would hand back this same stale
-            // Arc<Stream> instead of actually recreating it. Dropping it
-            // here makes this indistinguishable from a stream that was
-            // never resident in the first place.
+            // Keep the old object marked deleting while draining local work and
+            // removing staging. On failure, retain the entry and reject recreation
+            // so a replacement cannot inherit old schema/data files.
+            stream.remove_staging(tenant_id).map_err(|err| StreamError::Custom {
+                msg: format!("Failed to clean staging for deleting logstream {stream_name}: {err}"),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            })?;
+            // Evict rather than clear the flag: outstanding Arc<Stream> handles
+            // must remain unable to ingest. Returning false lets creation build
+            // a fresh entry instead of reusing the old schema and metadata.
             self.streams.delete(stream_name, tenant_id);
             return Ok(false);
         }
 
-        // A tombstoned-but-not-yet-purged stream must be rejected the same
-        // way even when it isn't resident in memory on this node yet (e.g. a
-        // query node before restart-recovery has resumed it, or a node that
-        // never loaded it in the first place). create_stream_and_schema_from_storage
-        // below already checks this internally and returns Ok(false) for a
-        // tombstoned stream, but that's indistinguishable from "doesn't
-        // exist" to its caller -- without this explicit check, the client
-        // could recreate the name while the background deletion job is
-        // still sweeping its prefix, and that job would delete the freshly
-        // created data too.
+        // Check the tombstone even without an "already exists" result. Missing
+        // local metadata does not authorize reuse while object deletion is active.
         if !stream_in_memory_dont_update {
             if is_tombstoned(
                 self.storage.get_object_store().as_ref(),
@@ -835,16 +818,18 @@ impl Parseable {
                 });
             }
 
-            // Self-heal a stale is_deleting flag on this path too (e.g. an
-            // ingestor's resident copy, flagged by the delete handler's
-            // fan-out push, whose tombstone has since cleared without
-            // sync_all_streams having noticed yet) -- otherwise this update
-            // succeeds but ingestion keeps being rejected here for up to
-            // another sync interval regardless.
+            // The update path can also encounter a resident deleting entry.
+            // Apply the same cleanup-before-eviction rule; never reactivate the
+            // old object or allow leftover staging to reach its replacement.
             if let Ok(stream) = self.get_stream(stream_name, tenant_id)
                 && stream.is_deleting()
             {
-                stream.clear_deleting();
+                stream.remove_staging(tenant_id).map_err(|err| StreamError::Custom {
+                    msg: format!(
+                        "Failed to clean staging for deleting logstream {stream_name}: {err}"
+                    ),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                })?;
                 self.streams.delete(stream_name, tenant_id);
             }
         }

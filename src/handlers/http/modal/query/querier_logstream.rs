@@ -17,7 +17,7 @@
  */
 
 use core::str;
-use std::{collections::HashMap, fs};
+use std::collections::HashMap;
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -29,6 +29,8 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 
+// Serializes creation/update and deletion cleanup on this querier. Background
+// deletion and reconciliation use the same lock before local cleanup.
 pub static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 use crate::handlers::http::middleware::{CLUSTER_SECRET, CLUSTER_SECRET_HEADER};
@@ -65,25 +67,14 @@ pub async fn delete(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    // Hold through ingestor notification and local/hot-tier cleanup. A background
+    // job must wait for this guard, so it cannot finish deletion and permit
+    // recreation while this handler still has cleanup left to perform.
+    let _creation_guard = CREATE_STREAM_LOCK.lock().await;
 
-    // Fetched once, up front: every step below this point is either
-    // infallible or best-effort, so nothing after this line can bail out
-    // with "stream not found" partway through an already-durably-started
-    // deletion.
     let stream = {
-        // Shared with put_stream: without it, a concurrent create/update on
-        // this node could read is_deleting()=false right before this
-        // handler flips it and writes the tombstone, then go on to write
-        // fresh stream data that the background deletion job -- already
-        // committed to running by that point -- would sweep up from
-        // underneath it. Scoped to just this check-through-tombstone-write
-        // window: everything after is already guarded by is_deleting()/
-        // is_tombstoned() checks on the read/write paths.
-        let _guard = CREATE_STREAM_LOCK.lock().await;
-
-        // if the stream not found in memory map,
-        //check if it exists in the storage
-        //create stream and schema from storage
+        // A querier may not have this dataset resident; try loading its metadata
+        // from object storage before treating it as missing.
         if !PARSEABLE.streams.contains(&stream_name, &tenant_id)
             && !PARSEABLE
                 .create_stream_and_schema_from_storage(&stream_name, &tenant_id)
@@ -115,10 +106,16 @@ pub async fn delete(
 
         let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
 
-        // Flip the in-memory guard before any `.await` point: check_or_load_stream's
-        // resident-stream fast path doesn't itself consult is_tombstoned, so a
-        // concurrent request on this node could otherwise slip through in the
-        // window between the tombstone becoming durable and this flag being set.
+        // Do not rewrite an existing deletion's tombstone: failure would reach
+        // clear_deleting() and incorrectly roll back another request's deletion.
+        if stream.is_deleting() {
+            return Ok((
+                format!("log stream {stream_name} deletion already in progress"),
+                StatusCode::ACCEPTED,
+            ));
+        }
+        // Block new local operations before awaiting the durable tombstone.
+        // Ingestors receive their own local guard via the notification below.
         stream.mark_deleting();
 
         let objectstore = PARSEABLE.storage.get_object_store();
@@ -158,16 +155,10 @@ pub async fn delete(
         );
     }
 
-    // Best-effort: the tombstone is already durable and the stream is
-    // already flagged, so a fan-out failure must not turn an
-    // already-accepted deletion into an error response. An ingestor that
-    // misses this push doesn't self-heal on its own next sync tick (its
-    // local is_deleting() stays false, which is exactly what the resident-
-    // stream self-heal check keys off) -- recovery instead comes from
-    // sync_all_streams' separate tombstone-directory scan, which lists
-    // tombstones directly rather than depending on the flag already being
-    // set locally, at the cost of taking up to one sync interval rather
-    // than being immediate.
+    // Notify live ingestors to stop local ingestion and clean their staging.
+    // Failure is best-effort because deletion is already durable. An ingestor
+    // that misses notification can discover the marker through sync's tombstone
+    // directory scan while the tombstone remains present.
     let fanout_stream_name = stream_name.clone();
     if let Err(e) = cluster::for_each_live_node(&tenant_id, move |node| {
         let url = format!(
@@ -183,7 +174,9 @@ pub async fn delete(
         warn!("failed to notify all ingestors of deletion of {stream_name}: {e}");
     }
 
-    if let Err(err) = fs::remove_dir_all(&stream.data_path) {
+    // Drain participating local work and finalize writers before removing this
+    // querier's staging. The background job retries local cleanup if it fails.
+    if let Err(err) = stream.remove_staging(&tenant_id) {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,
@@ -191,6 +184,7 @@ pub async fn delete(
         )
     }
 
+    // Hot-tier cleanup is best-effort; failure does not undo a durable deletion.
     if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
         && hot_tier_manager.check_stream_hot_tier_exists(&stream_name, &tenant_id)
         && let Err(e) = hot_tier_manager
@@ -200,10 +194,9 @@ pub async fn delete(
         warn!("failed to delete hot tier for stream {stream_name}: {e}");
     }
 
-    // Scheduled only once every other cleanup step above has run, so the
-    // background job (which clears the tombstone on completion) can't race
-    // ahead of them and let a stream recreated under this name get swept up
-    // by leftover fan-out/local/hot-tier cleanup that's still in flight.
+    // Schedule bulk object-storage deletion without waiting for completion.
+    // Jobs also acquire the creation lock, including those already scheduled by
+    // reconciliation, so their protected cleanup waits until this handler exits.
     spawn_stream_deletion(stream_name.clone(), tenant_id.clone());
 
     Ok((
