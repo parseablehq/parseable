@@ -680,14 +680,13 @@ pub async fn modify_alert_internal(
     new_alert.validate(session_key).await?;
 
     let _title_guard = ALERT_TITLE_MUTATION_LOCK.lock().await;
-    if new_alert.get_title() != alert.get_title()
-        && alerts
-            .get_all_alerts(tenant_id)
-            .await
-            .values()
-            .any(|existing| {
-                existing.get_id() != &alert_id && existing.get_title() == new_alert.get_title()
-            })
+    if alerts
+        .get_all_alerts(tenant_id)
+        .await
+        .values()
+        .any(|existing| {
+            existing.get_id() != &alert_id && existing.get_title() == new_alert.get_title()
+        })
     {
         return Err(AlertError::Conflict(format!(
             "Alert title {:?} already exists",
