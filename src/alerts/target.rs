@@ -29,7 +29,7 @@ use http::header::AUTHORIZATION;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tracing::{error, trace, warn};
 use ulid::Ulid;
 use url::Url;
@@ -47,11 +47,13 @@ use crate::{
 
 pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
     target_configs: RwLock::new(HashMap::new()),
+    mutation_lock: AsyncMutex::new(()),
 });
 
 #[derive(Debug)]
 pub struct TargetConfigs {
     pub target_configs: RwLock<HashMap<String, HashMap<Ulid, Target>>>,
+    mutation_lock: AsyncMutex<()>,
 }
 
 impl TargetConfigs {
@@ -71,6 +73,29 @@ impl TargetConfigs {
         }
 
         Ok(())
+    }
+
+    pub async fn create(&self, target: Target) -> Result<(), AlertError> {
+        let _guard = self.mutation_lock.lock().await;
+        let tenant_id = target.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
+        if let Some(targets) = self.target_configs.read().await.get(tenant_id) {
+            if targets.contains_key(&target.id) {
+                return Err(AlertError::Conflict(format!(
+                    "Target ID {} already exists",
+                    target.id
+                )));
+            }
+            if targets
+                .values()
+                .any(|existing| existing.name == target.name)
+            {
+                return Err(AlertError::Conflict(format!(
+                    "Target name {:?} already exists",
+                    target.name
+                )));
+            }
+        }
+        self.update(target).await
     }
 
     pub async fn update(&self, target: Target) -> Result<(), AlertError> {

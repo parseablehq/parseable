@@ -324,6 +324,23 @@ pub async fn post_internal(
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
 
+    let existing = alerts.get_all_alerts(tenant_id).await;
+    if existing.contains_key(alert.get_id()) {
+        return Err(AlertError::Conflict(format!(
+            "Alert ID {} already exists",
+            alert.get_id()
+        )));
+    }
+    if existing
+        .values()
+        .any(|current| current.get_title() == alert.get_title())
+    {
+        return Err(AlertError::Conflict(format!(
+            "Alert title {:?} already exists",
+            alert.get_title()
+        )));
+    }
+
     // validate the incoming alert query
     // does the user have access to these tables or not?
     alert.validate(session_key).await?;
@@ -658,6 +675,21 @@ pub async fn modify_alert_internal(
     };
 
     new_alert.validate(session_key).await?;
+
+    if new_alert.get_title() != alert.get_title()
+        && alerts
+            .get_all_alerts(tenant_id)
+            .await
+            .values()
+            .any(|existing| {
+                existing.get_id() != &alert_id && existing.get_title() == new_alert.get_title()
+            })
+    {
+        return Err(AlertError::Conflict(format!(
+            "Alert title {:?} already exists",
+            new_alert.get_title()
+        )));
+    }
 
     // Perform I/O operations
     PARSEABLE

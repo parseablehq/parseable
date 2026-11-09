@@ -1202,6 +1202,8 @@ pub enum AlertError {
     DatafusionError(#[from] datafusion::error::DataFusionError),
     #[error("Error: {0}")]
     CustomError(String),
+    #[error("{0}")]
+    Conflict(String),
     #[error("Invalid State Change: {0}")]
     InvalidStateChange(String),
     #[error("{0}")]
@@ -1253,7 +1255,7 @@ impl actix_web::ResponseError for AlertError {
             Self::FromStrError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetModification(_) => StatusCode::BAD_REQUEST,
-            Self::TargetInUse => StatusCode::CONFLICT,
+            Self::TargetInUse | Self::Conflict(_) => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidAlertQuery(_) => StatusCode::BAD_REQUEST,
             Self::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
