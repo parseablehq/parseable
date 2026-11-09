@@ -442,13 +442,19 @@ pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyh
         match task {
             AlertTask::Create(alert) => {
                 // check if the alert already exists
-                if alert_tasks.contains_key(alert.get_id()) {
+                let id = *alert.get_id();
+                let tenant = alert
+                    .get_tenant_id()
+                    .as_deref()
+                    .unwrap_or(crate::parseable::DEFAULT_TENANT)
+                    .to_owned();
+                let key = (tenant, id);
+                if alert_tasks.contains_key(&key) {
                     error!("Alert with id {} already exists", alert.get_id());
                     continue;
                 }
 
                 let alert = alert.clone_box();
-                let id = *alert.get_id();
                 let handle = tokio::spawn(async move {
                     let mut retry_counter = 0;
                     loop {
@@ -479,11 +485,11 @@ pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyh
                 });
 
                 // store the handle in the map, since it is not awaited, it will keep on running
-                alert_tasks.insert(id, handle);
+                alert_tasks.insert(key, handle);
             }
-            AlertTask::Delete(ulid) => {
+            AlertTask::Delete(ulid, tenant) => {
                 // check if the alert exists
-                if let Some(handle) = alert_tasks.remove(&ulid) {
+                if let Some(handle) = alert_tasks.remove(&(tenant, ulid)) {
                     // cancel the task
                     handle.abort();
                     trace!("Alert with id {} deleted from evaluation tasks list", ulid);

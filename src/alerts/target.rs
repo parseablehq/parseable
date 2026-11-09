@@ -715,6 +715,115 @@ pub struct Auth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actix_web::{ResponseError, http::StatusCode};
+
+    fn test_target(name: &str, id: Ulid) -> Target {
+        Target {
+            name: name.to_owned(),
+            id,
+            tenant: Some("target-conflict-test".to_owned()),
+            target: TargetType::Other(OtherWebHook {
+                endpoint: "https://example.com/hook".parse().unwrap(),
+                headers: HashMap::new(),
+                skip_tls_check: false,
+            }),
+        }
+    }
+
+    fn test_configs() -> TargetConfigs {
+        TargetConfigs {
+            target_configs: RwLock::new(HashMap::new()),
+            mutation_lock: AsyncMutex::new(()),
+        }
+    }
+
+    async fn assert_original_unchanged(configs: &TargetConfigs, original: &Target) {
+        let targets = configs.list(&original.tenant).await.unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id, original.id);
+        assert_eq!(targets[0].name, original.name);
+        assert_eq!(targets[0].target, original.target);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_duplicate_id_without_changing_original() {
+        let configs = test_configs();
+        let original = test_target("original", Ulid::new());
+        configs
+            .target_configs
+            .write()
+            .await
+            .entry("target-conflict-test".to_owned())
+            .or_default()
+            .insert(original.id, original.clone());
+
+        let error = configs
+            .create(test_target("different", original.id))
+            .await
+            .unwrap_err();
+        assert_eq!(error.status_code(), StatusCode::CONFLICT);
+        assert_original_unchanged(&configs, &original).await;
+    }
+
+    #[tokio::test]
+    async fn create_rejects_duplicate_name_without_changing_original() {
+        let configs = test_configs();
+        let original = test_target("original", Ulid::new());
+        configs
+            .target_configs
+            .write()
+            .await
+            .entry("target-conflict-test".to_owned())
+            .or_default()
+            .insert(original.id, original.clone());
+
+        let error = configs
+            .create(test_target("original", Ulid::new()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.status_code(), StatusCode::CONFLICT);
+        assert_original_unchanged(&configs, &original).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_creates_recheck_after_a_target_is_saved() {
+        let configs = Arc::new(test_configs());
+        let original = test_target("original", Ulid::new());
+        let guard = configs.mutation_lock.lock().await;
+
+        let first_configs = Arc::clone(&configs);
+        let first_id = original.id;
+        let first = tokio::spawn(async move {
+            first_configs
+                .create(test_target("different", first_id))
+                .await
+                .unwrap_err()
+                .status_code()
+        });
+        let second_configs = Arc::clone(&configs);
+        let second = tokio::spawn(async move {
+            second_configs
+                .create(test_target("original", Ulid::new()))
+                .await
+                .unwrap_err()
+                .status_code()
+        });
+        tokio::task::yield_now().await;
+
+        configs
+            .target_configs
+            .write()
+            .await
+            .entry("target-conflict-test".to_owned())
+            .or_default()
+            .insert(original.id, original.clone());
+        drop(guard);
+
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(first.unwrap(), StatusCode::CONFLICT);
+        assert_eq!(second.unwrap(), StatusCode::CONFLICT);
+        assert_original_unchanged(&configs, &original).await;
+    }
 
     #[test]
     fn test_masked_target_hides_secrets() {
