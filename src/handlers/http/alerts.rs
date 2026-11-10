@@ -48,7 +48,7 @@ use ulid::Ulid;
 const RESERVED_PARAMS: [&str; 3] = ["tags", "offset", "limit"];
 const MAX_LIMIT: usize = 1000;
 const DEFAULT_LIMIT: usize = 100;
-static ALERT_TITLE_MUTATION_LOCK: Mutex<()> = Mutex::const_new(());
+pub static ALERT_MUTATION_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Query parameters for listing alerts
 struct ListQueryParams {
@@ -275,6 +275,7 @@ pub async fn post_internal(
     session_key: &SessionKey,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let mut alert: AlertConfig = alert.into(tenant_id.clone()).await?;
 
     if alert.notification_config.interval > alert.get_eval_frequency() {
@@ -319,7 +320,6 @@ pub async fn post_internal(
         }
     };
 
-    let _title_guard = ALERT_TITLE_MUTATION_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -416,6 +416,7 @@ pub async fn delete_internal(
     alert_id: Ulid,
     tenant_id: &Option<String>,
 ) -> Result<String, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -623,6 +624,7 @@ pub async fn modify_alert_internal(
     alert_request: AlertRequest,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     // Get alerts manager reference without holding the global lock
     let alerts = {
         let guard = ALERTS.read().await;
@@ -679,7 +681,6 @@ pub async fn modify_alert_internal(
 
     new_alert.validate(session_key).await?;
 
-    let _title_guard = ALERT_TITLE_MUTATION_LOCK.lock().await;
     if alerts
         .get_all_alerts(tenant_id)
         .await
