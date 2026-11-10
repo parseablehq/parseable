@@ -1078,7 +1078,16 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             process_parquet_files(&upload_context, stream_name, tenant_id.clone()).await?;
 
         // Update snapshot with collected manifest files
-        update_snapshot_with_manifests(stream_name, &uploaded_files, &tenant_id).await?;
+        if let Err(err) =
+            update_snapshot_with_manifests(stream_name, &uploaded_files, &tenant_id).await
+        {
+            // Nothing can be deleted locally until publication succeeds. Let
+            // the next cycle retry these still-staged files instead.
+            for uploaded_file in &uploaded_files {
+                ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&uploaded_file.file_path);
+            }
+            return Err(err);
+        }
 
         // Calculate stats after snapshot update so uploads are visible before stats work starts.
         calculate_stats_for_uploaded_files(
@@ -1152,7 +1161,7 @@ async fn process_parquet_files(
         span.record("largest_date", tracing::field::display(dt));
     }
     // Spawn upload tasks for each parquet file
-    for path in parquet_paths {
+    for path in parquet_paths.iter().cloned() {
         spawn_parquet_upload_task(
             &mut join_set,
             semaphore.clone(),
@@ -1166,7 +1175,7 @@ async fn process_parquet_files(
     }
 
     // Collect results from all upload tasks
-    collect_upload_results(join_set).await
+    collect_upload_results(join_set, &parquet_paths).await
 }
 
 /// Spawns an individual parquet file upload task
@@ -1208,8 +1217,11 @@ async fn spawn_parquet_upload_task(
 /// Collects results from all upload tasks
 async fn collect_upload_results(
     mut join_set: JoinSet<Result<UploadResult, (PathBuf, ObjectStorageError)>>,
+    parquet_paths: &[PathBuf],
 ) -> Result<Vec<UploadedParquetFile>, ObjectStorageError> {
     let mut uploaded_files = Vec::new();
+    let mut rejected_paths = Vec::new();
+    let mut upload_error = None;
 
     while let Some(result) = join_set.join_next().await {
         match result {
@@ -1225,21 +1237,33 @@ async fn collect_upload_results(
                         "Parquet file upload size validation failed for {:?}, preserving in staging for retry",
                         upload_result.file_path
                     );
-                    ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&upload_result.file_path);
+                    rejected_paths.push(upload_result.file_path);
                 }
             }
-            Ok(Err((path, e))) => {
+            Ok(Err((_, e))) => {
                 error!("Error uploading parquet file: {e}");
-                ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&path);
-                return Err(e);
+                upload_error.get_or_insert(e);
             }
             Err(e) => {
                 error!("Task panicked: {e}");
-                return Err(ObjectStorageError::UnhandledError(Box::new(e)));
+                upload_error.get_or_insert(ObjectStorageError::UnhandledError(Box::new(e)));
             }
         }
     }
 
+    if let Some(err) = upload_error {
+        // Drain the entire batch before releasing its claims: a sibling may
+        // still be writing its object when another upload fails or panics.
+        // No files from this batch have been published or deleted locally.
+        for path in parquet_paths {
+            ACTIVE_OBJECT_STORE_SYNC_FILES.remove(path);
+        }
+        return Err(err);
+    }
+
+    for path in rejected_paths {
+        ACTIVE_OBJECT_STORE_SYNC_FILES.remove(&path);
+    }
     Ok(uploaded_files)
 }
 
@@ -1689,6 +1713,74 @@ pub fn own_manifest_file_name() -> String {
 #[inline]
 pub fn manifest_segment_matches(manifest_path_str: &str, file_name: &str) -> bool {
     manifest_path_str.rsplit('/').next() == Some(file_name)
+}
+
+#[cfg(test)]
+mod upload_batch_tests {
+    use super::{UploadResult, claim_staged_file_for_upload, collect_upload_results};
+    use crate::{storage::ObjectStorageError, sync::ACTIVE_OBJECT_STORE_SYNC_FILES};
+    use futures::poll;
+    use rstest::rstest;
+    use temp_dir::TempDir;
+    use tokio::{sync::oneshot, task::JoinSet};
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn failed_batch_releases_all_claims_after_siblings_finish(#[case] task_panics: bool) {
+        let dir = TempDir::new().unwrap();
+        let paths: Vec<_> = ["failed.parquet", "healthy.parquet", "rejected.parquet"]
+            .into_iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+        for path in &paths {
+            assert!(claim_staged_file_for_upload(path.clone()).is_some());
+        }
+
+        let mut tasks = JoinSet::new();
+        let failed = paths[0].clone();
+        let first = tasks.spawn(async move {
+            assert!(!task_panics, "upload task panic");
+            Err((failed, ObjectStorageError::Custom("upload failed".into())))
+        });
+        while !first.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let (finish, wait) = oneshot::channel();
+        let healthy = paths[1].clone();
+        tasks.spawn(async move {
+            wait.await.unwrap();
+            Ok(UploadResult {
+                file_path: healthy,
+                manifest_file: Some(Default::default()),
+            })
+        });
+        let rejected = paths[2].clone();
+        tasks.spawn(async move {
+            Ok(UploadResult {
+                file_path: rejected,
+                manifest_file: None,
+            })
+        });
+
+        let collect = collect_upload_results(tasks, &paths);
+        tokio::pin!(collect);
+        assert!(poll!(&mut collect).is_pending());
+        for path in &paths {
+            assert!(claim_staged_file_for_upload(path.clone()).is_none());
+        }
+        finish.send(()).unwrap();
+        let err = collect.await.err().expect("batch must report its failure");
+        if !task_panics {
+            assert_eq!(err.to_string(), "upload failed");
+        }
+        for path in &paths {
+            assert!(!ACTIVE_OBJECT_STORE_SYNC_FILES.contains_key(path));
+            assert!(claim_staged_file_for_upload(path.clone()).is_some());
+            ACTIVE_OBJECT_STORE_SYNC_FILES.remove(path);
+        }
+    }
 }
 
 #[cfg(test)]
