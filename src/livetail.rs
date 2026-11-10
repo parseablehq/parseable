@@ -34,6 +34,7 @@ pub static LIVETAIL: Lazy<LiveTail> = Lazy::new(LiveTail::default);
 
 pub type LiveTailRegistry = RwLock<HashMap<String, Vec<SenderPipe>>>;
 
+#[derive(Default)]
 pub struct LiveTail {
     pipes: Arc<LiveTailRegistry>,
 }
@@ -57,14 +58,6 @@ impl LiveTail {
         };
         for pipe in pipes {
             pipe.send(rb.clone())
-        }
-    }
-}
-
-impl Default for LiveTail {
-    fn default() -> Self {
-        Self {
-            pipes: Arc::new(RwLock::default()),
         }
     }
 }

@@ -262,13 +262,7 @@ impl ObjectStorage for LocalFS {
         let mut files_scanned = 0u64;
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
-        let entries_result = fs::read_dir(&self.root).await;
-        let mut entries = match entries_result {
-            Ok(entries) => entries,
-            Err(err) => {
-                return Err(err.into());
-            }
-        };
+        let mut entries = fs::read_dir(&self.root).await?;
 
         while let Some(entry) = entries.next_entry().await? {
             files_scanned += 1;
@@ -317,13 +311,7 @@ impl ObjectStorage for LocalFS {
         };
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
-        let entries_result = fs::read_dir(&prefix).await;
-        let mut entries = match entries_result {
-            Ok(entries) => entries,
-            Err(err) => {
-                return Err(err.into());
-            }
-        };
+        let mut entries = fs::read_dir(&prefix).await?;
 
         let mut res = Vec::new();
         let mut files_scanned = 0;
@@ -537,32 +525,8 @@ impl ObjectStorage for LocalFS {
             TOMBSTONE_ROOT_DIRECTORY,
         ];
 
-        let result = fs::read_dir(&self.root).await;
-        let directories = match result {
-            Ok(read_dir) => {
-                increment_object_store_calls_by_date(
-                    "LIST",
-                    &Utc::now().date_naive().to_string(),
-                    DEFAULT_TENANT,
-                );
-                ReadDirStream::new(read_dir)
-            }
-            Err(err) => {
-                return Err(err.into());
-            }
-        };
-
-        let entries: Vec<DirEntry> = directories.try_collect().await?;
-        let entries = entries
-            .into_iter()
-            .map(|entry| dir_with_stream(entry, ignore_dir));
-
-        let logstream_dirs: Vec<Option<String>> =
-            FuturesUnordered::from_iter(entries).try_collect().await?;
-
-        let logstreams = logstream_dirs.into_iter().flatten().collect();
-
-        Ok(logstreams)
+        let metadata_path = PathBuf::from(STREAM_ROOT_DIRECTORY).join(STREAM_METADATA_FILE_NAME);
+        stream_directories(&self.root, ignore_dir, &metadata_path).await
     }
 
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
@@ -575,32 +539,8 @@ impl ObjectStorage for LocalFS {
             TOMBSTONE_ROOT_DIRECTORY,
         ];
 
-        let result = fs::read_dir(&self.root).await;
-        let directories = match result {
-            Ok(read_dir) => {
-                increment_object_store_calls_by_date(
-                    "LIST",
-                    &Utc::now().date_naive().to_string(),
-                    DEFAULT_TENANT,
-                );
-                ReadDirStream::new(read_dir)
-            }
-            Err(err) => {
-                return Err(err.into());
-            }
-        };
-
-        let entries: Vec<DirEntry> = directories.try_collect().await?;
-        let entries = entries
-            .into_iter()
-            .map(|entry| dir_with_old_stream(entry, ignore_dir));
-
-        let logstream_dirs: Vec<Option<String>> =
-            FuturesUnordered::from_iter(entries).try_collect().await?;
-
-        let logstreams = logstream_dirs.into_iter().flatten().collect();
-
-        Ok(logstreams)
+        let metadata_path = PathBuf::from(STREAM_METADATA_FILE_NAME);
+        stream_directories(&self.root, ignore_dir, &metadata_path).await
     }
 
     async fn list_dirs(
@@ -627,20 +567,7 @@ impl ObjectStorage for LocalFS {
             }
         };
 
-        let dirs = ReadDirStream::new(read_dir)
-            .try_collect::<Vec<DirEntry>>()
-            .await?
-            .into_iter()
-            .map(dir_name);
-
-        let dirs = FuturesUnordered::from_iter(dirs)
-            .try_collect::<Vec<_>>()
-            .await?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-
-        Ok(dirs)
+        directory_names(read_dir).await
     }
 
     async fn list_dirs_relative(
@@ -662,20 +589,7 @@ impl ObjectStorage for LocalFS {
             }
         };
 
-        let dirs = ReadDirStream::new(read_dir)
-            .try_collect::<Vec<DirEntry>>()
-            .await?
-            .into_iter()
-            .map(dir_name);
-
-        let dirs = FuturesUnordered::from_iter(dirs)
-            .try_collect::<Vec<_>>()
-            .await?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-
-        Ok(dirs)
+        directory_names(read_dir).await
     }
 
     async fn list_dates(
@@ -705,12 +619,7 @@ impl ObjectStorage for LocalFS {
             }
         };
 
-        let directories = ReadDirStream::new(read_dir);
-        let entries: Vec<DirEntry> = directories.try_collect().await?;
-        let entries = entries.into_iter().map(dir_name);
-        let dates: Vec<_> = FuturesUnordered::from_iter(entries).try_collect().await?;
-
-        Ok(dates.into_iter().flatten().collect())
+        directory_names(read_dir).await
     }
 
     async fn list_hours(
@@ -720,13 +629,9 @@ impl ObjectStorage for LocalFS {
         _tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let path = self.root.join(stream_name).join(date);
-        let directories = ReadDirStream::new(fs::read_dir(&path).await?);
-        let entries: Vec<DirEntry> = directories.try_collect().await?;
-        let entries = entries.into_iter().map(dir_name);
-        let hours: Vec<_> = FuturesUnordered::from_iter(entries).try_collect().await?;
-        Ok(hours
+        Ok(directory_names(fs::read_dir(&path).await?)
+            .await?
             .into_iter()
-            .flatten()
             .filter(|dir| dir.starts_with("hour="))
             .collect())
     }
@@ -740,14 +645,9 @@ impl ObjectStorage for LocalFS {
     ) -> Result<Vec<String>, ObjectStorageError> {
         let path = self.root.join(stream_name).join(date).join(hour);
         // Propagate any read_dir errors instead of swallowing them
-        let directories = ReadDirStream::new(fs::read_dir(&path).await?);
-        let entries: Vec<DirEntry> = directories.try_collect().await?;
-        let entries = entries.into_iter().map(dir_name);
-        let minutes: Vec<_> = FuturesUnordered::from_iter(entries).try_collect().await?;
-        // Filter down to only the "minute=" prefixed directories
-        Ok(minutes
+        Ok(directory_names(fs::read_dir(&path).await?)
+            .await?
             .into_iter()
-            .flatten()
             .filter(|dir| dir.starts_with("minute="))
             .collect())
     }
@@ -826,43 +726,53 @@ impl ObjectStorage for LocalFS {
     }
 }
 
-async fn dir_with_old_stream(
-    entry: DirEntry,
-    ignore_dirs: &[&str],
-) -> Result<Option<String>, ObjectStorageError> {
-    let dir_name = entry
-        .path()
-        .file_name()
-        .expect("valid path")
-        .to_str()
-        .expect("valid unicode")
-        .to_owned();
-
-    if ignore_dirs.contains(&dir_name.as_str()) {
-        return Ok(None);
-    }
-
-    if entry.file_type().await?.is_dir() {
-        let path = entry.path();
-
-        // even in ingest mode, we should only look for the global stream metadata file
-        let stream_json_path = path.join(STREAM_METADATA_FILE_NAME);
-
-        if stream_json_path.exists() {
-            Ok(Some(dir_name))
-        } else {
-            let err: Box<dyn std::error::Error + Send + Sync + 'static> =
-                format!("found {}", entry.path().display()).into();
-            Err(ObjectStorageError::UnhandledError(err))
-        }
-    } else {
-        Ok(None)
-    }
+/// Collect directory names in completion order, propagating entry and file-type errors.
+async fn directory_names(read_dir: fs::ReadDir) -> Result<Vec<String>, ObjectStorageError> {
+    let entries = ReadDirStream::new(read_dir)
+        .try_collect::<Vec<DirEntry>>()
+        .await?;
+    Ok(
+        FuturesUnordered::from_iter(entries.into_iter().map(dir_name))
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .flatten()
+            .collect(),
+    )
 }
 
+/// Discover streams using the caller's ignore list and metadata layout; missing roots are errors.
+async fn stream_directories(
+    root: &Path,
+    ignore_dirs: &[&str],
+    metadata_path: &Path,
+) -> Result<HashSet<LogStream>, ObjectStorageError> {
+    let read_dir = fs::read_dir(root).await?;
+    increment_object_store_calls_by_date(
+        "LIST",
+        &Utc::now().date_naive().to_string(),
+        DEFAULT_TENANT,
+    );
+    let entries = ReadDirStream::new(read_dir)
+        .try_collect::<Vec<DirEntry>>()
+        .await?;
+    Ok(FuturesUnordered::from_iter(
+        entries
+            .into_iter()
+            .map(|entry| dir_with_stream(entry, ignore_dirs, metadata_path)),
+    )
+    .try_collect::<Vec<_>>()
+    .await?
+    .into_iter()
+    .flatten()
+    .collect())
+}
+
+/// Skip ignored entries and files; a stream directory without its metadata is an error.
 async fn dir_with_stream(
     entry: DirEntry,
     ignore_dirs: &[&str],
+    metadata_path: &Path,
 ) -> Result<Option<String>, ObjectStorageError> {
     let dir_name = entry
         .path()
@@ -880,9 +790,7 @@ async fn dir_with_stream(
         let path = entry.path();
 
         // even in ingest mode, we should only look for the global stream metadata file
-        let stream_json_path = path
-            .join(STREAM_ROOT_DIRECTORY)
-            .join(STREAM_METADATA_FILE_NAME);
+        let stream_json_path = path.join(metadata_path);
 
         if stream_json_path.exists() {
             Ok(Some(dir_name))
@@ -914,5 +822,57 @@ async fn dir_name(entry: DirEntry) -> Result<Option<String>, ObjectStorageError>
 impl From<fs_extra::error::Error> for ObjectStorageError {
     fn from(e: fs_extra::error::Error) -> Self {
         ObjectStorageError::UnhandledError(Box::new(e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn directory_listing_keeps_metadata_layouts_and_missing_path_rules() {
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalFS::new(root.path().to_path_buf());
+        let new_metadata = root
+            .path()
+            .join("new")
+            .join(STREAM_ROOT_DIRECTORY)
+            .join(STREAM_METADATA_FILE_NAME);
+        let old_metadata = root.path().join("old").join(STREAM_METADATA_FILE_NAME);
+        std::fs::create_dir_all(new_metadata.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(old_metadata.parent().unwrap()).unwrap();
+        std::fs::write(new_metadata, "{}").unwrap();
+        std::fs::write(old_metadata, "{}").unwrap();
+        std::fs::write(root.path().join("file"), "data").unwrap();
+        let new = stream_directories(
+            root.path(),
+            &["old"],
+            &PathBuf::from(STREAM_ROOT_DIRECTORY).join(STREAM_METADATA_FILE_NAME),
+        )
+        .await
+        .unwrap();
+        let old = stream_directories(root.path(), &["new"], Path::new(STREAM_METADATA_FILE_NAME))
+            .await
+            .unwrap();
+        assert_eq!(new, ["new".to_owned()].into());
+        assert_eq!(old, ["old".to_owned()].into());
+        let mut names = store.list_dirs(&None).await.unwrap();
+        names.sort();
+        assert_eq!(names, ["new", "old"]);
+        assert!(store.list_dates("missing", &None).await.unwrap().is_empty());
+        assert!(
+            store
+                .list_dirs_relative(RelativePath::new("missing"), &None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.list_hours("missing", "date", &None).await.is_err());
+        assert!(
+            store
+                .list_minutes("missing", "date", "hour", &None)
+                .await
+                .is_err()
+        );
     }
 }
