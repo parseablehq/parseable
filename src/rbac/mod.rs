@@ -368,19 +368,20 @@ impl Users {
             return true;
         }
 
-        let authenticated_user = {
-            let users = users();
-            users.get(tenant_id).and_then(|tenant_users| {
-                tenant_users.values().find_map(|user| {
-                    matches!(
-                        &user.ty,
-                        UserType::Native(basic)
-                            if basic.username == username && basic.verify_password(password)
-                    )
-                    .then(|| user.clone())
-                })
+        // Keep the users guard until the session is saved. User mutation paths
+        // take the users lock before removing sessions, so a password change or
+        // deletion cannot slip between verification and caching the credentials.
+        let users = users();
+        let authenticated_user = users.get(tenant_id).and_then(|tenant_users| {
+            tenant_users.values().find_map(|user| {
+                matches!(
+                    &user.ty,
+                    UserType::Native(basic)
+                        if basic.username == username && basic.verify_password(password)
+                )
+                .then(|| user.clone())
             })
-        };
+        });
 
         let Some(user) = authenticated_user else {
             return false;

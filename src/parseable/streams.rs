@@ -52,6 +52,8 @@ use rayon::{
 };
 use relative_path::RelativePathBuf;
 use std::sync::PoisonError;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions, remove_file, write},
@@ -391,22 +393,16 @@ pub struct Stream {
     pub writer: Mutex<Writer>,
     push_queue: Mutex<PushQueue>,
     push_queue_empty: Condvar,
+    #[cfg(test)]
+    push_drain_tasks: AtomicUsize,
     schema_writer: Mutex<()>,
     pub ingestor_id: Option<String>,
 }
 
+#[derive(Default)]
 struct PushQueue {
     scheduled: bool,
     jobs: VecDeque<QueuedPush>,
-}
-
-impl Default for PushQueue {
-    fn default() -> Self {
-        Self {
-            scheduled: false,
-            jobs: VecDeque::new(),
-        }
-    }
 }
 
 struct QueuedPush {
@@ -725,7 +721,9 @@ impl Stream {
             options,
             writer: Mutex::new(Writer::default()),
             push_queue: Mutex::new(PushQueue::default()),
-            push_queue_empty: Condvar::new(),
+            push_queue_empty: Condvar::default(),
+            #[cfg(test)]
+            push_drain_tasks: AtomicUsize::new(0),
             schema_writer: Mutex::new(()),
             ingestor_id,
         })
@@ -789,7 +787,7 @@ impl Stream {
 
         if should_schedule {
             let stream = Arc::clone(self);
-            INGEST_WRITER_THREADPOOL.spawn(move || stream.drain_push_queue());
+            INGEST_WRITER_THREADPOOL.spawn_fifo(move || stream.drain_push_queue());
         }
 
         receiver
@@ -804,32 +802,58 @@ impl Stream {
     fn drain_push_queue(self: Arc<Self>) {
         const MAX_COMBINED_PUSHES: usize = 8;
 
+        #[cfg(test)]
+        self.push_drain_tasks.fetch_add(1, AtomicOrdering::Relaxed);
+
         // Give requests already racing for the stream a chance to join this
         // write without adding a fixed batching delay.
         std::thread::yield_now();
 
-        loop {
-            let jobs = {
-                let mut queue = match self.push_queue.lock() {
-                    Ok(queue) => queue,
-                    Err(poisoned) => {
-                        error!(
-                            "Push queue lock poisoned for stream {} - {}",
-                            self.stream_name, poisoned
-                        );
-                        return;
-                    }
-                };
-                if queue.jobs.is_empty() {
-                    queue.scheduled = false;
-                    self.push_queue_empty.notify_all();
+        let jobs = {
+            let mut queue = match self.push_queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => {
+                    error!(
+                        "Push queue lock poisoned for stream {} - {}",
+                        self.stream_name, poisoned
+                    );
                     return;
                 }
-                let count = queue.jobs.len().min(MAX_COMBINED_PUSHES);
-                queue.jobs.drain(..count).collect_vec()
             };
+            if queue.jobs.is_empty() {
+                queue.scheduled = false;
+                self.push_queue_empty.notify_all();
+                return;
+            }
+            let count = queue.jobs.len().min(MAX_COMBINED_PUSHES);
+            queue.jobs.drain(..count).collect_vec()
+        };
 
-            self.write_queued_pushes(jobs);
+        self.write_queued_pushes(jobs);
+
+        let should_reschedule = {
+            let mut queue = match self.push_queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => {
+                    error!(
+                        "Push queue lock poisoned for stream {} - {}",
+                        self.stream_name, poisoned
+                    );
+                    return;
+                }
+            };
+            if queue.jobs.is_empty() {
+                queue.scheduled = false;
+                self.push_queue_empty.notify_all();
+                false
+            } else {
+                true
+            }
+        };
+
+        if should_reschedule {
+            let stream = Arc::clone(&self);
+            INGEST_WRITER_THREADPOOL.spawn_fifo(move || stream.drain_push_queue());
         }
     }
 
@@ -3504,6 +3528,51 @@ mod tests {
         let combined = reader.next().unwrap().unwrap();
         assert_eq!(combined.num_rows(), 6);
         assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn push_queue_reschedules_after_bounded_batch() {
+        let stream = Stream::new(
+            Arc::new(Options::default()),
+            "fair_push_queue",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+        let mut receivers = Vec::new();
+
+        {
+            let mut queue = stream.push_queue.lock().unwrap();
+            queue.scheduled = true;
+            for _ in 0..9 {
+                let (sender, receiver) = sync_channel(1);
+                queue.jobs.push_back(QueuedPush {
+                    schema_key: "schema".to_owned(),
+                    record: batch.clone(),
+                    disk: None,
+                    result: sender,
+                });
+                receivers.push(receiver);
+            }
+        }
+
+        Arc::clone(&stream).drain_push_queue();
+        for receiver in receivers {
+            assert!(
+                receiver
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .is_ok()
+            );
+        }
+
+        assert_eq!(stream.push_drain_tasks.load(AtomicOrdering::Relaxed), 2);
+        let queue = stream.push_queue.lock().unwrap();
+        assert!(!queue.scheduled);
+        assert!(queue.jobs.is_empty());
     }
 
     #[test]
