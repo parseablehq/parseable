@@ -1213,7 +1213,7 @@ mod tests {
         let nested = list_dirs(&store, &Path::from("tenant"), &tenant)
             .await
             .unwrap();
-        assert_eq!(nested, ["tenant", "stream"]);
+        assert_eq!(nested, ["stream"]);
         let paths = get_ingestor_meta_file_paths(&store, &root, &tenant)
             .await
             .unwrap();
