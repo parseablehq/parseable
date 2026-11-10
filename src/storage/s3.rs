@@ -552,6 +552,10 @@ impl S3 {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
 
+            tracing::Span::current()
+                .record("total_bytes", total_size)
+                .record("parts", total_size.div_ceil(min_multipart_size));
+
             for part_data in data[..total_size].chunks(min_multipart_size) {
                 async_writer.put_part(part_data.to_vec().into()).await?;
                 increment_object_store_calls_by_date(
