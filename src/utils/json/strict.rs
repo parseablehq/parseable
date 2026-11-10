@@ -21,186 +21,6 @@ use serde::{
     de::{Error as _, Visitor},
 };
 
-enum InterimValue {
-    Null,
-    Bool(bool),
-    I64(i64),
-    I128(i128),
-    U64(u64),
-    U128(u128),
-    F64(f64),
-    String(String),
-    Array(Vec<InterimValue>),
-    Object(Vec<(String, InterimValue)>),
-}
-
-impl TryFrom<InterimValue> for serde_json::Value {
-    type Error = &'static str;
-
-    fn try_from(value: InterimValue) -> Result<Self, Self::Error> {
-        Ok(match value {
-            InterimValue::Null => Self::Null,
-            InterimValue::Bool(b) => Self::Bool(b),
-            InterimValue::I64(i) => Self::Number(i.into()),
-            InterimValue::I128(i) => {
-                Self::Number(if let Some(num) = serde_json::Number::from_i128(i) {
-                    num
-                } else {
-                    // Number is a i64
-                    (i as i64).into()
-                })
-            }
-            InterimValue::U64(u) => Self::Number(u.into()),
-            InterimValue::U128(u) => {
-                Self::Number(if let Some(num) = serde_json::Number::from_u128(u) {
-                    num
-                } else {
-                    // Number is a u64
-                    (u as u64).into()
-                })
-            }
-            InterimValue::F64(f) => {
-                Self::Number(serde_json::Number::from_f64(f).ok_or("not a valid JSON number")?)
-            }
-            InterimValue::String(s) => Self::String(s),
-            InterimValue::Array(a) => Self::Array(
-                a.into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_, _>>()?,
-            ),
-            InterimValue::Object(o) => {
-                let mut map = serde_json::Map::with_capacity(o.len());
-                for (k, v) in o {
-                    if map.contains_key(&k) {
-                        return Err("duplicate key in JSON");
-                    }
-                    map.insert(k, v.try_into()?);
-                }
-                Self::Object(map)
-            }
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for InterimValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct StrictValueVisitor;
-
-        impl<'de> Visitor<'de> for StrictValueVisitor {
-            type Value = InterimValue;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("any valid JSON value")
-            }
-
-            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(InterimValue::Bool(v))
-            }
-
-            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(InterimValue::I64(v))
-            }
-
-            fn visit_i128<E>(self, v: i128) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(InterimValue::I128(v))
-            }
-
-            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(InterimValue::U64(v))
-            }
-
-            fn visit_u128<E>(self, v: u128) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(InterimValue::U128(v))
-            }
-
-            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(InterimValue::F64(v))
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(InterimValue::String(v.to_owned()))
-            }
-
-            fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(InterimValue::String(v))
-            }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(InterimValue::Null)
-            }
-
-            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                Deserialize::deserialize(deserializer)
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(InterimValue::Null)
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::SeqAccess<'de>,
-            {
-                let mut arr = Vec::new();
-
-                while let Some(v) = seq.next_element::<InterimValue>()? {
-                    arr.push(v);
-                }
-
-                Ok(InterimValue::Array(arr))
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let mut obj = Vec::new();
-
-                while let Some((key, value)) = map.next_entry::<String, InterimValue>()? {
-                    obj.push((key, value));
-                }
-
-                Ok(InterimValue::Object(obj))
-            }
-        }
-
-        deserializer.deserialize_any(StrictValueVisitor)
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct StrictValue {
     inner: serde_json::Value,
@@ -226,9 +46,120 @@ impl<'de> Deserialize<'de> for StrictValue {
     where
         D: serde::Deserializer<'de>,
     {
-        let interim: InterimValue = Deserialize::deserialize(deserializer)?;
-        Ok(Self {
-            inner: interim.try_into().map_err(D::Error::custom)?,
+        deserializer.deserialize_any(StrictValueVisitor)
+    }
+}
+
+struct StrictValueVisitor;
+
+impl<'de> Visitor<'de> for StrictValueVisitor {
+    type Value = StrictValue;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("any valid JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(StrictValue {
+            inner: serde_json::Value::Bool(value),
+        })
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(StrictValue {
+            inner: serde_json::Value::Number(value.into()),
+        })
+    }
+
+    fn visit_i128<E>(self, value: i128) -> Result<Self::Value, E> {
+        let number = serde_json::Number::from_i128(value).unwrap_or_else(|| (value as i64).into());
+        Ok(StrictValue {
+            inner: serde_json::Value::Number(number),
+        })
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(StrictValue {
+            inner: serde_json::Value::Number(value.into()),
+        })
+    }
+
+    fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E> {
+        let number = serde_json::Number::from_u128(value).unwrap_or_else(|| (value as u64).into());
+        Ok(StrictValue {
+            inner: serde_json::Value::Number(number),
+        })
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let number = serde_json::Number::from_f64(value)
+            .ok_or_else(|| E::custom("not a valid JSON number"))?;
+        Ok(StrictValue {
+            inner: serde_json::Value::Number(number),
+        })
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(StrictValue {
+            inner: serde_json::Value::String(value.to_owned()),
+        })
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(StrictValue {
+            inner: serde_json::Value::String(value),
+        })
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(StrictValue {
+            inner: serde_json::Value::Null,
+        })
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Deserialize::deserialize(deserializer)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(StrictValue {
+            inner: serde_json::Value::Null,
+        })
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut values = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(value) = seq.next_element::<StrictValue>()? {
+            values.push(value.inner);
+        }
+        Ok(StrictValue {
+            inner: serde_json::Value::Array(values),
+        })
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut object = serde_json::Map::with_capacity(map.size_hint().unwrap_or(0));
+        while let Some(key) = map.next_key::<String>()? {
+            if object.contains_key(&key) {
+                return Err(A::Error::custom("duplicate key in JSON"));
+            }
+            let value = map.next_value::<StrictValue>()?;
+            object.insert(key, value.inner);
+        }
+        Ok(StrictValue {
+            inner: serde_json::Value::Object(object),
         })
     }
 }

@@ -43,7 +43,7 @@ static MAX_PERIODIC_LOCAL_SYNC_CYCLES: Lazy<usize> = Lazy::new(|| {
     {
         var as usize
     } else {
-        2
+        1
     }
 });
 static LOCAL_SYNC_SLOTS: Lazy<Arc<Semaphore>> =

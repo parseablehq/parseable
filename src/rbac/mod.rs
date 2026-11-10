@@ -27,7 +27,7 @@ use actix_web::dev::ServiceRequest;
 use actix_web::http::header::{HeaderName, HeaderValue};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
 use itertools::Itertools;
-use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
 use url::Url;
 
@@ -353,17 +353,46 @@ impl Users {
         password: &str,
         tenant_id: &str,
     ) -> bool {
-        users()
-            .get(tenant_id)
-            .is_some_and(|tenant_users| {
-                tenant_users
-                    .values()
-                    .par_bridge()
-                    .find_any(|user| {
-                        matches!(&user.ty, UserType::Native(basic) if basic.username.eq(username) && basic.verify_password(password))
-                    })
-                    .is_some()
+        let key = SessionKey::BasicAuth {
+            username: username.to_owned(),
+            password: password.to_owned(),
+        };
+
+        // Basic credentials are the session key already. Reuse a successful
+        // authentication until the user/password is changed, at which point
+        // the user mutation paths remove its sessions.
+        if sessions()
+            .get_user_and_tenant_id(&key)
+            .is_some_and(|(_, active_tenant)| active_tenant == tenant_id)
+        {
+            return true;
+        }
+
+        let authenticated_user = {
+            let users = users();
+            users.get(tenant_id).and_then(|tenant_users| {
+                tenant_users.values().find_map(|user| {
+                    matches!(
+                        &user.ty,
+                        UserType::Native(basic)
+                            if basic.username == username && basic.verify_password(password)
+                    )
+                    .then(|| user.clone())
+                })
             })
+        };
+
+        let Some(user) = authenticated_user else {
+            return false;
+        };
+        mut_sessions().track_new(
+            user.userid().to_owned(),
+            key,
+            DateTime::<Utc>::MAX_UTC,
+            roles_to_permission(user.roles(), tenant_id),
+            &user.tenant,
+        );
+        true
     }
 
     pub fn mutate_request_with_basic_user(

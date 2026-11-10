@@ -29,6 +29,7 @@ use tokio::sync::oneshot;
 use tracing::{error, instrument, warn};
 
 use crate::{
+    LOCK_EXPECT,
     event::{
         FORMAT_KEY, SOURCE_IP_KEY, USER_AGENT_KEY,
         format::{EventFormat, LogSource, json},
@@ -304,19 +305,23 @@ pub fn push_logs(
     tenant_id: &Option<String>,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
-    let time_partition_limit = stream.get_time_partition_limit();
-    let static_schema_flag = stream.get_static_schema_flag();
-    let custom_partition = stream.get_custom_partition();
-    let schema_version = stream.get_schema_version();
-    let schema = stream.get_schema_raw();
-    let infer_timestamp = stream.get_infer_timestamp();
+    // Hold one shared metadata snapshot while converting the request. This
+    // avoids six lock acquisitions and an O(fields) HashMap/Arc clone on every
+    // batch. The guard is dropped before Event::process can update the schema.
+    let metadata = stream.metadata.read().expect(LOCK_EXPECT);
+    let time_partition_limit = metadata.time_partition_limit;
+    let static_schema_flag = metadata.static_schema_flag;
+    let custom_partition = metadata.custom_partition.as_ref();
+    let schema_version = metadata.schema_version;
+    let schema = &metadata.schema;
+    let infer_timestamp = metadata.infer_timestamp;
     let p_timestamp = Utc::now();
 
     let data = convert_array_to_object(
         json,
         time_partition.as_ref(),
         time_partition_limit,
-        custom_partition.as_ref(),
+        custom_partition,
         schema_version,
         log_source,
     )?;
@@ -341,7 +346,7 @@ pub fn push_logs(
             p_timestamp,
         })
         .into_recordbatch(
-            &schema,
+            schema,
             static_schema_flag,
             time_partition.as_ref(),
             schema_version,
@@ -362,6 +367,7 @@ pub fn push_logs(
             telemetry_type,
             tenant_id: tenant_id.to_owned(),
         };
+        drop(metadata);
         event.process()?;
     } else {
         // Per-record path for custom-partitioned streams
@@ -372,9 +378,9 @@ pub fn push_logs(
                 (json::Event { json, p_timestamp }).into_event(
                     stream_name.to_owned(),
                     origin_size,
-                    &schema,
+                    schema,
                     static_schema_flag,
-                    custom_partition.as_ref(),
+                    custom_partition,
                     time_partition.as_ref(),
                     schema_version,
                     StreamType::UserDefined,
@@ -385,6 +391,7 @@ pub fn push_logs(
                 )
             })
             .collect();
+        drop(metadata);
         for event in events.map_err(PostError::Invalid)? {
             event.process()?;
         }
