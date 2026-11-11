@@ -417,92 +417,68 @@ mod tests {
     use super::{JsonFlattenError, flatten};
     use serde_json::{Map, Value, json};
 
-    #[test]
-    fn flatten_single_key_string() {
-        let mut obj = json!({"key": "value"});
-        let expected = obj.clone();
-        flatten(&mut obj, "_", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn flatten_single_key_int() {
-        let mut obj = json!({"key": 1});
-        let expected = obj.clone();
-        flatten(&mut obj, "_", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn flatten_multiple_key_value() {
-        let mut obj = json!({"key1": 1, "key2": "value2"});
-        let expected = obj.clone();
-        flatten(&mut obj, "_", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn flatten_nested_single_key_value() {
-        let mut obj = json!({"key": "value", "nested_key": {"key":"value"}});
-        let expected = json!({"key": "value", "nested_key.key": "value"});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn nested_multiple_key_value() {
-        let mut obj = json!({"key": "value", "nested_key": {"key1":"value1", "key2": "value2"}});
-        let expected =
-            json!({"key": "value", "nested_key.key1": "value1", "nested_key.key2": "value2"});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn nested_key_value_with_array() {
-        let mut obj = json!({"key": "value", "nested_key": {"key1":[1,2,3]}});
-        let expected = json!({"key": "value", "nested_key.key1": [1,2,3]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn nested_obj_array() {
-        let mut obj = json!({"key": [{"a": "value0"}, {"a": "value1"}]});
-        let expected = json!({"key.a": ["value0", "value1"]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn nested_obj_array_nulls() {
-        let mut obj = json!({"key": [{"a": "value0"}, {"a": "value1", "b": "value1"}]});
-        let expected = json!({"key.a": ["value0", "value1"], "key.b": [null, "value1"]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn nested_obj_array_nulls_reversed() {
-        let mut obj = json!({"key": [{"a": "value0", "b": "value0"}, {"a": "value1"}]});
-        let expected = json!({"key.a": ["value0", "value1"], "key.b": ["value0", null]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn nested_obj_array_nested_obj() {
-        let mut obj = json!({"key": [{"a": {"p": 0}, "b": "value0"}, {"b": "value1"}]});
-        let expected = json!({"key.a.p": [0, null], "key.b": ["value0", "value1"]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
-        assert_eq!(obj, expected);
-    }
-
-    #[test]
-    fn nested_obj_array_nested_obj_array() {
-        let mut obj = json!({"key": [{"a": [{"p": "value0", "q": "value0"}, {"p": "value1", "q": null}], "b": "value0"}, {"b": "value1"}]});
-        let expected = json!({"key.a.p": [["value0", "value1"], null], "key.a.q": [["value0", null], null], "key.b": ["value0", "value1"]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
+    #[rstest::rstest]
+    #[case::flatten_single_key_string(
+        json!({"key": "value"}),
+        "_",
+        json!({"key": "value"})
+    )]
+    #[case::flatten_single_key_int(
+        json!({"key": 1}),
+        "_",
+        json!({"key": 1})
+    )]
+    #[case::flatten_multiple_key_value(
+        json!({"key1": 1, "key2": "value2"}),
+        "_",
+        json!({"key1": 1, "key2": "value2"})
+    )]
+    #[case::flatten_nested_single_key_value(
+        json!({"key": "value", "nested_key": {"key":"value"}}),
+        ".",
+        json!({"key": "value", "nested_key.key": "value"})
+    )]
+    #[case::nested_multiple_key_value(
+        json!({"key": "value", "nested_key": {"key1":"value1", "key2": "value2"}}),
+        ".",
+        json!({"key": "value", "nested_key.key1": "value1", "nested_key.key2": "value2"})
+    )]
+    #[case::nested_key_value_with_array(
+        json!({"key": "value", "nested_key": {"key1":[1,2,3]}}),
+        ".",
+        json!({"key": "value", "nested_key.key1": [1,2,3]})
+    )]
+    #[case::nested_obj_array(
+        json!({"key": [{"a": "value0"}, {"a": "value1"}]}),
+        ".",
+        json!({"key.a": ["value0", "value1"]})
+    )]
+    #[case::nested_obj_array_nulls(
+        json!({"key": [{"a": "value0"}, {"a": "value1", "b": "value1"}]}),
+        ".",
+        json!({"key.a": ["value0", "value1"], "key.b": [null, "value1"]})
+    )]
+    #[case::nested_obj_array_nulls_reversed(
+        json!({"key": [{"a": "value0", "b": "value0"}, {"a": "value1"}]}),
+        ".",
+        json!({"key.a": ["value0", "value1"], "key.b": ["value0", null]})
+    )]
+    #[case::nested_obj_array_nested_obj(
+        json!({"key": [{"a": {"p": 0}, "b": "value0"}, {"b": "value1"}]}),
+        ".",
+        json!({"key.a.p": [0, null], "key.b": ["value0", "value1"]})
+    )]
+    #[case::nested_obj_array_nested_obj_array(
+        json!({"key": [{"a": [{"p": "value0", "q": "value0"}, {"p": "value1", "q": null}], "b": "value0"}, {"b": "value1"}]}),
+        ".",
+        json!({"key.a.p": [["value0", "value1"], null], "key.a.q": [["value0", null], null], "key.b": ["value0", "value1"]})
+    )]
+    fn flatten_object_cases(
+        #[case] mut obj: Value,
+        #[case] separator: &str,
+        #[case] expected: Value,
+    ) {
+        flatten(&mut obj, separator, None, None, None, false).unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -512,163 +488,69 @@ mod tests {
         assert!(flatten(&mut obj, ".", None, None, None, false).is_err());
     }
 
-    #[test]
-    fn flatten_array_nulls_at_start() {
-        let Value::Array(mut arr) = json!([
+    #[rstest::rstest]
+    #[case::flatten_array_nulls_at_start(
+        json!([
             null,
             {"p": 2, "q": 2},
             {"q": 3},
-        ]) else {
-            unreachable!()
-        };
-
-        let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
-
-        assert_eq!(map.len(), 2);
-        assert_eq!(map.get("key.p").unwrap(), &json!([null, 2, null]));
-        assert_eq!(map.get("key.q").unwrap(), &json!([null, 2, 3]));
-    }
-
-    #[test]
-    fn flatten_array_objects_nulls_at_end() {
-        let Value::Array(mut arr) = json!([{"a": 1, "b": 1}, {"a": 2}, null]) else {
-            unreachable!()
-        };
-
-        let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
-
-        assert_eq!(map.len(), 2);
-        assert_eq!(map.get("key.a").unwrap(), &json!([1, 2, null]));
-        assert_eq!(map.get("key.b").unwrap(), &json!([1, null, null]));
-    }
-
-    #[test]
-    fn flatten_array_objects_nulls_in_middle() {
-        let Value::Array(mut arr) = json!([{"a": 1, "b": 1}, null, {"a": 3, "c": 3}]) else {
-            unreachable!()
-        };
-
-        let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
-
-        assert_eq!(map.len(), 3);
-        assert_eq!(map.get("key.a").unwrap(), &json!([1, null, 3]));
-        assert_eq!(map.get("key.b").unwrap(), &json!([1, null, null]));
-        assert_eq!(map.get("key.c").unwrap(), &json!([null, null, 3]));
-    }
-
-    #[test]
-    fn flatten_array_test() {
-        let Value::Array(mut arr) = json!([
+        ]),
+        json!({"key.p": [null, 2, null], "key.q": [null, 2, 3]})
+    )]
+    #[case::flatten_array_objects_nulls_at_end(
+        json!([{"a": 1, "b": 1}, {"a": 2}, null]),
+        json!({"key.a": [1, 2, null], "key.b": [1, null, null]})
+    )]
+    #[case::flatten_array_objects_nulls_in_middle(
+        json!([{"a": 1, "b": 1}, null, {"a": 3, "c": 3}]),
+        json!({"key.a": [1, null, 3], "key.b": [1, null, null], "key.c": [null, null, 3]})
+    )]
+    #[case::flatten_array_test(
+        json!([
             {"p": 1, "q": 1},
             {"r": 2, "q": 2},
             {"p": 3, "r": 3}
-        ]) else {
-            unreachable!()
-        };
-
-        let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
-
-        assert_eq!(map.len(), 3);
-        assert_eq!(map.get("key.p").unwrap(), &json!([1, null, 3]));
-        assert_eq!(map.get("key.q").unwrap(), &json!([1, 2, null]));
-        assert_eq!(map.get("key.r").unwrap(), &json!([null, 2, 3]));
-    }
-
-    #[test]
-    fn flatten_array_nested_test() {
-        let Value::Array(mut arr) = json!([
+        ]),
+        json!({"key.p": [1, null, 3], "key.q": [1, 2, null], "key.r": [null, 2, 3]})
+    )]
+    #[case::flatten_array_nested_test(
+        json!([
             {"p": 1, "q": [{"x": 1}, {"x": 2}]},
             {"r": 2, "q": [{"x": 1}]},
             {"p": 3, "r": 3}
-        ]) else {
-            unreachable!()
-        };
-
+        ]),
+        json!({"key.p": [1, null, 3], "key.q.x": [[1, 2], [1], null], "key.r": [null, 2, 3]})
+    )]
+    fn flatten_array_objects_cases(#[case] mut value: Value, #[case] expected: Value) {
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
-
-        assert_eq!(map.len(), 3);
-        assert_eq!(map.get("key.p").unwrap(), &json!([1, null, 3]));
-        assert_eq!(map.get("key.q.x").unwrap(), &json!([[1, 2], [1], null]));
-        assert_eq!(map.get("key.r").unwrap(), &json!([null, 2, 3]));
+        flatten_array_objects(&mut map, "key", value.as_array_mut().unwrap(), ".").unwrap();
+        assert_eq!(Value::Object(map), expected);
     }
 
-    #[test]
-    fn acceptable_value_custom_parition_test() {
-        let mut value = json!({
-            "a": 1,
-        });
-        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
-
-        let mut value = json!({
-            "a": true,
-        });
-        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
-
-        let mut value = json!({
-            "a": "yes",
-        });
-        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
-
-        let mut value = json!({
-            "a": -1,
-        });
-        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
+    #[rstest::rstest]
+    #[case::integer(json!(1))]
+    #[case::boolean(json!(true))]
+    #[case::string(json!("yes"))]
+    #[case::negative_integer(json!(-1))]
+    fn acceptable_value_custom_parition_test(#[case] value: Value) {
+        let mut value = json!({"a": value});
+        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_owned()), true).is_ok());
     }
 
-    #[test]
-    fn unacceptable_value_custom_partition_test() {
-        let mut value = json!({
-            "a": null,
-        });
-        matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
-            JsonFlattenError::FieldEmptyOrNull(_)
-        );
-
-        let mut value = json!({
-            "a": "",
-        });
-        matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
-            JsonFlattenError::FieldEmptyOrNull(_)
-        );
-
-        let mut value = json!({
-            "a": {"b": 1},
-        });
-        matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
-            JsonFlattenError::FieldIsObject(_)
-        );
-
-        let mut value = json!({
-            "a": ["b", "c"],
-        });
-        matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
-            JsonFlattenError::FieldIsArray(_)
-        );
-
-        let mut value = json!({
-            "a": "b.c",
-        });
-        matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
-            JsonFlattenError::FieldContainsPeriod(_)
-        );
-
-        let mut value = json!({
-            "a": 1.0,
-        });
-        matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
-            JsonFlattenError::FieldContainsPeriod(_)
-        );
+    #[rstest::rstest]
+    #[case::null(json!(null), JsonFlattenError::FieldEmptyOrNull("a".into()))]
+    #[case::empty_string(json!(""), JsonFlattenError::FieldEmptyOrNull("a".into()))]
+    #[case::object(json!({"b": 1}), JsonFlattenError::FieldIsObject("a".into()))]
+    #[case::array(json!(["b", "c"]), JsonFlattenError::FieldIsArray("a".into()))]
+    #[case::period(json!("b.c"), JsonFlattenError::FieldContainsPeriod("a".into()))]
+    #[case::float(json!(1.0), JsonFlattenError::FieldContainsPeriod("a".into()))]
+    fn unacceptable_value_custom_partition_test(
+        #[case] value: Value,
+        #[case] expected: JsonFlattenError,
+    ) {
+        let mut value = json!({"a": value});
+        let error = flatten(&mut value, "_", None, None, Some(&"a".to_owned()), true).unwrap_err();
+        assert_eq!(error.to_string(), expected.to_string());
     }
 
     #[test]
