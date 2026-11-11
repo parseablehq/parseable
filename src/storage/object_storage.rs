@@ -1428,10 +1428,11 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
         let (tenant_id, stream_name) = &key;
         let storage = PARSEABLE.storage.get_object_store();
         {
-            let creation_lock = if PARSEABLE.options.mode == Mode::Query {
-                &crate::handlers::http::modal::query::querier_logstream::CREATE_STREAM_LOCK
-            } else {
-                &crate::handlers::http::logstream::CREATE_STREAM_LOCK
+            let creation_lock = match PARSEABLE.options.mode {
+                Mode::Query | Mode::Prism => {
+                    &crate::handlers::http::modal::query::querier_logstream::CREATE_STREAM_LOCK
+                }
+                _ => &crate::handlers::http::logstream::CREATE_STREAM_LOCK,
             };
             let creation_guard = Arc::new(creation_lock.lock().await);
 
@@ -1532,15 +1533,12 @@ fn spawn_deleting_stream_reconciliation(
     tenant_id: Option<String>,
     stream_name: String,
 ) {
-    // Only a node type that can actually receive a client's original DELETE
-    // request (query/standalone) ever resumes the physical delete here. An
-    // ingestor only ever gets is_deleting()=true via the delete handler's
-    // own fan-out push, which never starts a job on the ingestor itself --
-    // letting it also spawn one here would mean every ingestor independently
-    // runs a redundant, uncoordinated bulk delete against the same prefix
-    // for the entire (possibly long) duration of every deletion, not just
-    // the rare case of a genuinely missed notification.
-    let is_deletion_owner = PARSEABLE.options.mode != Mode::Ingest;
+    // Only the designated coordinator resumes physical deletion: Query in
+    // OSS, Prism in Enterprise, or All in standalone mode.
+    let is_deletion_owner = matches!(
+        PARSEABLE.options.mode,
+        Mode::Query | Mode::Prism | Mode::All
+    );
     joinset.spawn_on(
         async move {
             match is_tombstoned(object_store.as_ref(), &stream_name, &tenant_id).await {
@@ -1549,7 +1547,7 @@ fn spawn_deleting_stream_reconciliation(
                         spawn_stream_deletion(stream_name, tenant_id);
                     }
                 }
-                Ok(false) if !is_deletion_owner => {
+                Ok(false) if PARSEABLE.options.mode == Mode::Ingest => {
                     let creation_guard = Arc::new(
                         crate::handlers::http::modal::ingest::ingestor_logstream::CREATE_STREAM_LOCK
                             .lock()
@@ -1577,16 +1575,7 @@ fn spawn_deleting_stream_reconciliation(
                         }
                     }
                 }
-                Ok(false) => {
-                    // On the owning node, an absent tombstone can also just
-                    // mean this delete hasn't written it yet (mark_deleting()
-                    // runs first, with the tombstone write still in flight).
-                    // Reaping here would race that window and let a
-                    // concurrent reload resurrect the stream mid-deletion --
-                    // the owner's own spawn_stream_deletion job removes this
-                    // entry once the actual delete (and tombstone clear)
-                    // completes.
-                }
+                Ok(false) => {}
                 Err(e) => error!("failed to check tombstone status for {stream_name}: {e}"),
             }
             Ok(())
@@ -1618,7 +1607,10 @@ fn spawn_tombstone_directory_reconciliation(
     object_store: Arc<dyn ObjectStorage>,
     tenant_id: Option<String>,
 ) {
-    let is_deletion_owner = PARSEABLE.options.mode != Mode::Ingest;
+    let is_deletion_owner = matches!(
+        PARSEABLE.options.mode,
+        Mode::Query | Mode::Prism | Mode::All
+    );
     joinset.spawn_on(
         async move {
             match list_tombstoned_streams(object_store.as_ref(), &tenant_id).await {
@@ -1653,7 +1645,9 @@ async fn reconcile_one_tombstoned_stream(
         Mode::Ingest => {
             &crate::handlers::http::modal::ingest::ingestor_logstream::CREATE_STREAM_LOCK
         }
-        Mode::Query => &crate::handlers::http::modal::query::querier_logstream::CREATE_STREAM_LOCK,
+        Mode::Query | Mode::Prism => {
+            &crate::handlers::http::modal::query::querier_logstream::CREATE_STREAM_LOCK
+        }
         _ => &crate::handlers::http::logstream::CREATE_STREAM_LOCK,
     };
 
