@@ -188,9 +188,16 @@ pub fn delete_stats(
     format: &'static str,
     tenant_id: &Option<String>,
 ) -> prometheus::Result<()> {
-    // delete stats only for ingest server or standalone server
-    // else skip
-    if PARSEABLE.options.mode != Mode::Ingest && PARSEABLE.options.mode != Mode::All {
+    delete_stats_for_mode(PARSEABLE.options.mode, stream_name, format, tenant_id)
+}
+
+pub(crate) fn delete_stats_for_mode(
+    mode: Mode,
+    stream_name: &str,
+    format: &'static str,
+    tenant_id: &Option<String>,
+) -> prometheus::Result<()> {
+    if mode != Mode::Ingest && mode != Mode::All {
         return Ok(());
     }
     let event_labels = event_labels(stream_name, format, tenant_id);

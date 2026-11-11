@@ -2368,7 +2368,12 @@ impl Stream {
 
         // Reset under exclusive activity access so an old Event::process cannot
         // update counters after cleanup has reset them.
-        if let Err(err) = crate::stats::delete_stats(&self.stream_name, "json", tenant_id) {
+        if let Err(err) = crate::stats::delete_stats_for_mode(
+            self.options.mode,
+            &self.stream_name,
+            "json",
+            tenant_id,
+        ) {
             warn!(
                 "failed to clear stats for deleted stream {}: {err}",
                 self.stream_name
