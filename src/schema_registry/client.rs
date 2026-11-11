@@ -215,15 +215,14 @@ async fn attempt(req: &ResolveRequest) -> Attempt {
             ErrorCode::StreamDeleting => Attempt::Done(Err(ResolveFailure::StreamDeleting)),
             ErrorCode::UnsupportedProtocol => Attempt::Done(Err(ResolveFailure::AuthorityTooOld)),
             ErrorCode::BadRequest => Attempt::Done(Err(ResolveFailure::Rejected(body.message))),
-            ErrorCode::NotAuthority => {
-                invalidate_authority();
-                Attempt::Retry(body.message)
-            }
             ErrorCode::Unavailable => Attempt::Retry(body.message),
         },
         // Not one of our error bodies: an authority without the route answers a bare 404.
         Err(_) => match status {
             StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => {
+                // Also a node that never serves resolution (an enterprise querier picked
+                // before Prism registered): re-discover on the next attempt.
+                invalidate_authority();
                 Attempt::Done(Err(ResolveFailure::AuthorityTooOld))
             }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Attempt::Done(Err(

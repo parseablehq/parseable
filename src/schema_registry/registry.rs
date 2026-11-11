@@ -65,6 +65,9 @@ impl StreamRegistry {
     pub fn resolve(&self, proposals: &[Field]) -> Resolution {
         let mut overlay: HashMap<String, DataType> = HashMap::new();
         let mut out = Resolution::default();
+        // A rename target must not be a column the same files already carry, or renaming
+        // would leave two columns with one name in a file (e.g. `a` and `a_utf8` together).
+        let proposed_names: HashSet<&str> = proposals.iter().map(|f| f.name().as_str()).collect();
 
         for proposal in proposals {
             let proposed = proposal.data_type();
@@ -80,8 +83,9 @@ impl StreamRegistry {
             let mut name = original.clone();
             let mut depth = 0;
             let resolution = loop {
+                let taken_by_request = depth > 0 && proposed_names.contains(name.as_str());
                 match lookup(&name, &overlay) {
-                    None => {
+                    None if !taken_by_request => {
                         overlay.insert(name.clone(), proposed.clone());
                         out.registered.push((name.clone(), proposed.clone()));
                         break FieldResolution {
@@ -101,7 +105,7 @@ impl StreamRegistry {
                             },
                         };
                     }
-                    Some(existing) if compatible(&existing, proposed) => {
+                    Some(existing) if !taken_by_request && compatible(&existing, proposed) => {
                         break FieldResolution {
                             original_name: original.clone(),
                             proposed_type: proposed.clone(),
@@ -115,7 +119,7 @@ impl StreamRegistry {
                             },
                         };
                     }
-                    Some(_) => {
+                    _ => {
                         depth += 1;
                         if self.reserved.contains(&original) || depth > MAX_SUFFIX_DEPTH {
                             break FieldResolution {
@@ -310,5 +314,27 @@ mod tests {
         let conflicts = r.seed([&a, &b]);
         assert_eq!(r.fields["a"], DataType::Int64);
         assert_eq!(conflicts.len(), 1);
+    }
+
+    #[test]
+    fn rename_skips_names_carried_by_the_same_request() {
+        // A file carrying both `a: Utf8` and `a_utf8: Utf8` must not map both to `a_utf8`.
+        for order in [
+            [f("a", DataType::Utf8), f("a_utf8", DataType::Utf8)],
+            [f("a_utf8", DataType::Utf8), f("a", DataType::Utf8)],
+        ] {
+            let r = reg(&[("a", DataType::Int64)]);
+            let res = r.resolve(&order);
+            let by_name = |n: &str| {
+                res.resolutions
+                    .iter()
+                    .find(|x| x.original_name == n)
+                    .unwrap()
+                    .resolved_name
+                    .clone()
+            };
+            assert_eq!(by_name("a"), "a_utf8_utf8");
+            assert_eq!(by_name("a_utf8"), "a_utf8");
+        }
     }
 }

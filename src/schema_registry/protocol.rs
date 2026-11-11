@@ -95,7 +95,6 @@ pub enum ErrorCode {
     StreamDeleting,
     Unavailable,
     UnsupportedProtocol,
-    NotAuthority,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

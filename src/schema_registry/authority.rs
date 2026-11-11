@@ -25,7 +25,6 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
 };
 
 use actix_web::{HttpRequest, HttpResponse, ResponseError, http::StatusCode, web};
@@ -39,14 +38,12 @@ use crate::{
         DEFAULT_TIMESTAMP_KEY, FORMAT_KEY, FORMAT_VERIFY_KEY, SOURCE_IP_KEY, USER_AGENT_KEY,
         commit_schema,
     },
-    handlers::http::modal::NodeType,
-    option::Mode,
-    parseable::{DEFAULT_TENANT, PARSEABLE},
+    parseable::{DEFAULT_TENANT, PARSEABLE, Stream},
     utils::get_tenant_id_from_request,
 };
 
 use super::{
-    authoritative_schema_path, authority_node_type, merge_schemas_tolerant,
+    authoritative_schema_path, merge_schemas_tolerant,
     protocol::{
         ErrorCode, Outcome, PROTOCOL_VERSION, RegistryEntry, ResolveErrorBody, ResolveRequest,
         ResolveResponse,
@@ -59,13 +56,9 @@ pub const REGISTRY_VERSION_KEY: &str = "parseable.registry_version";
 
 type Slot = Arc<AsyncMutex<Option<StreamRegistry>>>;
 
-const AUTHORITY_CHECK_TTL: Duration = Duration::from_secs(30);
-
 #[derive(Default)]
 pub struct SchemaAuthority {
     slots: Mutex<HashMap<(String, String), Slot>>,
-    /// Cached "does the cluster have a Prism node" (querier mode only).
-    prism_present: Mutex<Option<(Instant, bool)>>,
 }
 
 pub static SCHEMA_AUTHORITY: Lazy<SchemaAuthority> = Lazy::new(SchemaAuthority::default);
@@ -82,8 +75,6 @@ pub enum AuthorityError {
     UnsupportedProtocol(u32),
     #[error("schema authority unavailable: {0}")]
     Unavailable(String),
-    #[error("this node is not the schema authority; the cluster's Prism node is")]
-    NotAuthority,
 }
 
 impl AuthorityError {
@@ -94,7 +85,6 @@ impl AuthorityError {
             Self::StreamDeleting(_) => ErrorCode::StreamDeleting,
             Self::UnsupportedProtocol(_) => ErrorCode::UnsupportedProtocol,
             Self::Unavailable(_) => ErrorCode::Unavailable,
-            Self::NotAuthority => ErrorCode::NotAuthority,
         }
     }
 }
@@ -107,7 +97,6 @@ impl ResponseError for AuthorityError {
             Self::StreamDeleting(_) => StatusCode::CONFLICT,
             Self::UnsupportedProtocol(_) => StatusCode::UPGRADE_REQUIRED,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-            Self::NotAuthority => StatusCode::CONFLICT,
         }
     }
 
@@ -150,27 +139,6 @@ impl SchemaAuthority {
         guard
     }
 
-    /// Prism is the authority whenever the cluster has one; a querier then refuses, so there
-    /// is never more than one node deciding types. The answer is cached briefly.
-    async fn is_authority(&self, tenant_id: &Option<String>) -> Result<bool, AuthorityError> {
-        match PARSEABLE.options.mode {
-            Mode::Prism => return Ok(true),
-            Mode::Query => {}
-            _ => return Ok(false),
-        }
-        if let Some((at, prism_present)) = *self.prism_present.lock().expect("lock poisoned")
-            && at.elapsed() < AUTHORITY_CHECK_TTL
-        {
-            return Ok(!prism_present);
-        }
-        let prism_present = authority_node_type(tenant_id)
-            .await
-            .map_err(|e| AuthorityError::Unavailable(e.to_string()))?
-            == NodeType::Prism;
-        *self.prism_present.lock().expect("lock poisoned") = Some((Instant::now(), prism_present));
-        Ok(!prism_present)
-    }
-
     /// Drops cached state, e.g. after the stream was deleted.
     pub fn forget_stream(&self, tenant_id: &Option<String>, stream: &str) {
         self.slots
@@ -182,9 +150,6 @@ impl SchemaAuthority {
     pub async fn resolve(&self, req: ResolveRequest) -> Result<ResolveResponse, AuthorityError> {
         if req.protocol_version != PROTOCOL_VERSION {
             return Err(AuthorityError::UnsupportedProtocol(req.protocol_version));
-        }
-        if !self.is_authority(&req.tenant_id).await? {
-            return Err(AuthorityError::NotAuthority);
         }
         if req.stream.is_empty() {
             return Err(AuthorityError::BadRequest("stream name is empty".into()));
@@ -204,31 +169,18 @@ impl SchemaAuthority {
             return Err(AuthorityError::StreamDeleting(req.stream));
         }
 
+        let reserved = reserved_fields(&stream);
         let mut guard = self.slot(&req.tenant_id, &req.stream).lock_owned().await;
         if guard.is_none() {
-            let mut reserved: HashSet<String> = [
-                DEFAULT_TIMESTAMP_KEY,
-                USER_AGENT_KEY,
-                SOURCE_IP_KEY,
-                FORMAT_KEY,
-                FORMAT_VERIFY_KEY,
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-            reserved.extend(stream.get_time_partition());
-            reserved.extend(
-                stream
-                    .get_custom_partition()
-                    .iter()
-                    .flat_map(|p| p.split(',').map(|s| s.trim().to_owned())),
-            );
             *guard = Some(load_registry(&req.stream, &req.tenant_id, reserved).await?);
         }
-        let registry = guard.as_mut().expect("registry loaded above");
-        let version_before = registry.version;
-        let resolution = registry.resolve(&req.fields);
+        let version_before = guard.as_ref().expect("registry loaded above").version;
+        let resolution = guard
+            .as_ref()
+            .expect("registry loaded above")
+            .resolve(&req.fields);
 
+        let registry = guard.as_mut().expect("registry loaded above");
         if !resolution.registered.is_empty() {
             let mut next = registry.clone();
             next.apply(&resolution.registered);
@@ -295,6 +247,28 @@ impl SchemaAuthority {
             delta,
         })
     }
+}
+
+/// Columns that are never renamed: the server-set `p_*` fields and the partition columns.
+fn reserved_fields(stream: &Stream) -> HashSet<String> {
+    let mut reserved: HashSet<String> = [
+        DEFAULT_TIMESTAMP_KEY,
+        USER_AGENT_KEY,
+        SOURCE_IP_KEY,
+        FORMAT_KEY,
+        FORMAT_VERIFY_KEY,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    reserved.extend(stream.get_time_partition());
+    reserved.extend(
+        stream
+            .get_custom_partition()
+            .iter()
+            .flat_map(|p| p.split(',').map(|s| s.trim().to_owned())),
+    );
+    reserved
 }
 
 fn registry_schema(registry: &StreamRegistry) -> Schema {

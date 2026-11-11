@@ -1559,6 +1559,10 @@ async fn run_stream_deletion(
             // Evict and reset stats before clearing the tombstone: once the
             // marker is gone, a replacement can be created under this name.
             streams.delete_if_still_deleting(stream_name, tenant_id);
+            // The authority's cached registry belongs to the deleted stream; a stream
+            // recreated under this name must start from an empty registry.
+            crate::schema_registry::authority::SCHEMA_AUTHORITY
+                .forget_stream(tenant_id, stream_name);
             if let Err(e) =
                 stats::delete_stats_for_mode(options.mode, stream_name, "json", tenant_id)
             {
