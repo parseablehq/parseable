@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use tokio::sync::oneshot;
 use tracing::{error, instrument, warn};
 
+use crate::event::error::EventError;
 use crate::{
     LOCK_EXPECT,
     event::{
@@ -539,6 +540,14 @@ pub fn validate_stream_for_ingestion(
     if stream.is_deleting() {
         return Err(PostError::StreamBeingDeleted(stream_name.to_string()));
     }
+
+    // Reject early while the stream's schema cannot be reconciled with the cluster.
+    stream.check_schema_resolution().map_err(|reason| {
+        PostError::Event(EventError::SchemaResolutionBlocked(
+            stream_name.to_string(),
+            reason,
+        ))
+    })?;
 
     // Validate that the stream's log source is compatible
     stream

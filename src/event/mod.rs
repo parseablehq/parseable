@@ -87,6 +87,9 @@ impl Event {
 
         let stream = PARSEABLE.get_stream(&self.stream_name, &self.tenant_id)?;
         let _ingestion_guard = stream.ingestion_guard()?;
+        stream.check_schema_resolution().map_err(|reason| {
+            EventError::SchemaResolutionBlocked(self.stream_name.clone(), reason)
+        })?;
 
         if self.is_first_event {
             commit_schema(&self.stream_name, self.rb.schema(), &self.tenant_id)?;
@@ -145,13 +148,20 @@ impl Event {
     }
 }
 
+/// Key of the arrow file a batch is written to. It covers names *and* types: a batch whose
+/// field changed type (after schema resolution) must never be appended to a file whose IPC
+/// header declares the old type. Each name/type is framed so `["ab","c"]` != `["a","bc"]`.
 pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
+    use std::hash::{Hash, Hasher};
     // Fields must be sorted
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     for field in fields.iter().sorted_by_key(|v| v.name()) {
         hasher.update(field.name().as_bytes());
+        hasher.update(&[0xFF]);
+        field.data_type().hash(&mut hasher);
+        hasher.update(&[0xFE]);
     }
-    let hash = hasher.digest();
+    let hash = hasher.finish();
     format!("{hash:x}")
 }
 
@@ -165,10 +175,26 @@ pub fn commit_schema(
     // global lock while waiting for the per-stream metadata lock can deadlock
     // concurrent ingestion that needs the map to finish processing an event.
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
+    let view = stream.resolution.view();
     let mut metadata = stream.metadata.write().expect(LOCK_EXPECT);
     let map = &mut metadata.schema;
+    // A batch built against the schema from before a resolved type change can still carry
+    // the old type. Its arrow file is renamed at conversion, so it must not fail here.
+    let incoming: Vec<Arc<Field>> = schema
+        .fields()
+        .iter()
+        .filter(|f| {
+            !(map
+                .get(f.name())
+                .is_some_and(|cur| cur.data_type() != f.data_type())
+                && view
+                    .renames
+                    .contains_key(&(f.name().clone(), f.data_type().clone())))
+        })
+        .cloned()
+        .collect();
     let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
-    let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
+    let schema = Schema::try_merge(vec![current_schema, Schema::new(incoming)])?;
     map.clear();
     map.extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
     Ok(())
@@ -188,5 +214,9 @@ pub mod error {
         ObjectStorage(#[from] ObjectStorageError),
         #[error(transparent)]
         StreamNotFound(#[from] StreamNotFound),
+        #[error(
+            "Stream {0} is temporarily not accepting data: its schema could not be reconciled with the cluster ({1}). Retry later"
+        )]
+        SchemaResolutionBlocked(String, String),
     }
 }

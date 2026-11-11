@@ -62,6 +62,8 @@ pub enum Action {
     ListCluster,
     ListClusterMetrics,
     DeleteNode,
+    /// Intra-cluster: ingestor asks the schema authority to resolve field types.
+    ResolveSchema,
     All,
     SuperAdmin,
     GetAnalytics,
@@ -133,6 +135,7 @@ impl RoleBuilder {
                 | Action::ListCluster
                 | Action::ListClusterMetrics
                 | Action::DeleteNode
+                | Action::ResolveSchema
                 | Action::PutHotTierEnabled
                 | Action::GetHotTierEnabled
                 | Action::DeleteHotTierEnabled

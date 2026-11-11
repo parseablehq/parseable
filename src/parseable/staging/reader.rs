@@ -37,6 +37,7 @@ use tracing::{error, info_span};
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
+    schema_registry::view::{ResolvedView, rename_batch},
     utils::arrow::{adapt_batch, reverse},
 };
 
@@ -44,8 +45,12 @@ use crate::{
 /// Merges reverse readers while retaining the source-file validation result.
 pub struct MergedReverseRecordReader {
     pub readers: Vec<StreamReader<BufReader<OffsetReader<File>>>>,
+    /// Resolved-name schema per reader (None = no rename needed).
+    renamed: Vec<Option<Arc<Schema>>>,
     pub readable_files: Vec<PathBuf>,
     pub invalid_files: Vec<PathBuf>,
+    /// Valid files whose columns cannot be renamed to the resolved schema. Left untouched.
+    pub unrenameable_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -55,12 +60,16 @@ pub struct MergedForwardRecordReader {
     file_plans: Vec<ForwardFilePlan>,
     pub readable_files: Vec<PathBuf>,
     pub invalid_files: Vec<PathBuf>,
+    /// Valid files whose columns cannot be renamed to the resolved schema. Left untouched.
+    pub unrenameable_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
 pub(crate) struct ForwardFilePlan {
     path: PathBuf,
     schema: Arc<Schema>,
+    /// Resolved-name schema (None = no rename needed).
+    renamed: Option<Arc<Schema>>,
     messages: Vec<(MessageHeader, usize, usize)>,
     record_batches: usize,
 }
@@ -73,6 +82,14 @@ pub(crate) struct ForwardReaderLane {
 }
 
 impl ForwardFilePlan {
+    pub(crate) fn renamed_schema(&self) -> Option<Arc<Schema>> {
+        self.renamed.clone()
+    }
+
+    fn effective_schema(&self) -> &Schema {
+        self.renamed.as_deref().unwrap_or(self.schema.as_ref())
+    }
+
     /// Opens independent virtual Arrow streams over striped record batches.
     /// Every stream begins with the original schema and receives every
     /// dictionary update, preserving Arrow IPC decoder state.
@@ -140,11 +157,18 @@ impl ForwardFilePlan {
 
 impl MergedForwardRecordReader {
     /// Opens valid Arrow files and excludes any crash-truncated tail message.
+    #[cfg(test)]
     pub fn try_new(file_paths: &[PathBuf]) -> Self {
+        Self::try_new_with_view(file_paths, &ResolvedView::default())
+    }
+
+    /// Like [`Self::try_new`], renaming columns as decided by the schema authority.
+    pub fn try_new_with_view(file_paths: &[PathBuf], view: &ResolvedView) -> Self {
         let _span = info_span!("open_forward_arrow_files", file_count = file_paths.len()).entered();
         let mut file_plans = Vec::with_capacity(file_paths.len());
         let mut readable_files = Vec::with_capacity(file_paths.len());
         let mut invalid_files = Vec::new();
+        let mut unrenameable_files = Vec::new();
         for path in file_paths {
             match File::open(path) {
                 Err(err) => {
@@ -179,9 +203,19 @@ impl MergedForwardRecordReader {
                         .iter()
                         .filter(|(header, _, _)| *header == MessageHeader::RecordBatch)
                         .count();
+                    let schema = schema_reader.schema();
+                    let renamed = match view.rename_schema(&schema) {
+                        Ok(renamed) => renamed,
+                        Err(err) => {
+                            error!("Cannot apply resolved schema to {path:?}: {err}");
+                            unrenameable_files.push(path.clone());
+                            continue;
+                        }
+                    };
                     file_plans.push(ForwardFilePlan {
                         path: path.clone(),
-                        schema: schema_reader.schema(),
+                        schema,
+                        renamed,
                         messages,
                         record_batches,
                     });
@@ -194,6 +228,7 @@ impl MergedForwardRecordReader {
             file_plans,
             readable_files,
             invalid_files,
+            unrenameable_files,
         }
     }
 
@@ -205,24 +240,30 @@ impl MergedForwardRecordReader {
         self.file_plans.into_iter()
     }
 
-    /// Returns the union of schemas exposed by all readable Arrow streams.
-    pub fn merged_schema(&self) -> Schema {
+    /// Returns the union of (renamed) schemas exposed by all readable Arrow streams.
+    pub fn merged_schema(&self) -> Result<Schema, ArrowError> {
         Schema::try_merge(
             self.file_plans
                 .iter()
-                .map(|plan| plan.schema.as_ref().clone()),
+                .map(|plan| plan.effective_schema().clone()),
         )
-        .unwrap()
     }
 }
 
 impl MergedReverseRecordReader {
     /// Opens valid Arrow files and separates files that fail structural validation.
     pub fn try_new(file_paths: &[PathBuf]) -> Self {
+        Self::try_new_with_view(file_paths, &ResolvedView::default())
+    }
+
+    /// Like [`Self::try_new`], renaming columns as decided by the schema authority.
+    pub fn try_new_with_view(file_paths: &[PathBuf], view: &ResolvedView) -> Self {
         let _span = info_span!("open_arrow_files", file_count = file_paths.len()).entered();
         let mut readers = Vec::with_capacity(file_paths.len());
+        let mut renamed = Vec::with_capacity(file_paths.len());
         let mut readable_files = Vec::with_capacity(file_paths.len());
         let mut invalid_files = Vec::new();
+        let mut unrenameable_files = Vec::new();
         for path in file_paths {
             match File::open(path) {
                 Err(err) => {
@@ -238,7 +279,16 @@ impl MergedReverseRecordReader {
                             continue;
                         }
                     };
+                    let renamed_schema = match view.rename_schema(&reader.schema()) {
+                        Ok(renamed_schema) => renamed_schema,
+                        Err(err) => {
+                            error!("Cannot apply resolved schema to {path:?}: {err}");
+                            unrenameable_files.push(path.clone());
+                            continue;
+                        }
+                    };
                     readers.push(reader);
+                    renamed.push(renamed_schema);
                     readable_files.push(path.clone());
                 }
             }
@@ -246,8 +296,10 @@ impl MergedReverseRecordReader {
 
         Self {
             readers,
+            renamed,
             readable_files,
             invalid_files,
+            unrenameable_files,
         }
     }
 
@@ -257,7 +309,15 @@ impl MergedReverseRecordReader {
         schema: Arc<Schema>,
         time_partition: Option<String>,
     ) -> impl Iterator<Item = Result<RecordBatch, ArrowError>> {
-        let adapted_readers = self.readers;
+        // Rename before adapting: `adapt_batch` matches columns by name and would
+        // otherwise fill a renamed column with nulls.
+        let adapted_readers =
+            self.readers
+                .into_iter()
+                .zip(self.renamed)
+                .map(|(reader, renamed)| {
+                    reader.map(move |batch| batch.and_then(|b| rename_batch(&renamed, b)))
+                });
         kmerge_by(
             adapted_readers,
             move |a: &Result<RecordBatch, ArrowError>, b: &Result<RecordBatch, ArrowError>| {
@@ -278,14 +338,19 @@ impl MergedReverseRecordReader {
         .map(move |batch| batch.map(|batch| adapt_batch(schema.clone(), &batch)))
     }
 
-    /// Returns the union of schemas exposed by all readable Arrow streams.
-    pub fn merged_schema(&self) -> Schema {
+    /// Returns the union of (renamed) schemas exposed by all readable Arrow streams.
+    pub fn merged_schema(&self) -> Result<Schema, ArrowError> {
         Schema::try_merge(
             self.readers
                 .iter()
-                .map(|reader| reader.schema().as_ref().clone()),
+                .zip(&self.renamed)
+                .map(|(reader, renamed)| {
+                    renamed
+                        .as_ref()
+                        .map(|s| s.as_ref().clone())
+                        .unwrap_or_else(|| reader.schema().as_ref().clone())
+                }),
         )
-        .unwrap()
     }
 }
 

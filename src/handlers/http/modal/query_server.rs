@@ -22,7 +22,7 @@ use crate::handlers::airplane;
 use crate::handlers::http::cluster;
 use crate::handlers::http::logstream;
 use crate::handlers::http::max_event_payload_size;
-use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::middleware::{DisAllowRootUser, IntraClusterRequest, RouteExt};
 use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::rbac::patch_user;
 use crate::handlers::http::{base_path, prism_base_path};
@@ -32,7 +32,7 @@ use crate::hottier::HotTierManager;
 use crate::hottier::HotTierMessage;
 use crate::hottier::hottier_runtime;
 use crate::rbac::role::Action;
-use crate::{analytics, migration, storage};
+use crate::{analytics, migration, schema_registry, storage};
 use actix_web::web::{ServiceConfig, resource};
 use actix_web::{Scope, web};
 use actix_web_prometheus::PrometheusMetrics;
@@ -74,6 +74,7 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_alerts_webscope())
                     .service(Server::get_targets_webscope())
                     .service(Self::get_cluster_web_scope())
+                    .service(Self::get_schema_authority_scope())
                     .service(Server::get_demo_data_webscope())
                     .service(Server::get_alert_target_policy()),
             )
@@ -253,6 +254,20 @@ impl QueryServer {
                             .wrap(DisAllowRootUser),
                     ),
             )
+    }
+
+    /// Intra-cluster schema authority: ingestors resolve new field types here.
+    pub fn get_schema_authority_scope() -> Scope {
+        web::scope("/internal/schema").service(
+            web::resource("/resolve")
+                .route(
+                    web::post()
+                        .to(schema_registry::authority::resolve_handler)
+                        .authorize(Action::ResolveSchema)
+                        .wrap(IntraClusterRequest),
+                )
+                .app_data(web::JsonConfig::default().limit(1 << 20)),
+        )
     }
 
     // get the logstream web scope
