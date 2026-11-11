@@ -78,6 +78,7 @@ pub enum FilterType {
     Filter,
     SQL,
     Search,
+    Promql,
 }
 
 impl FilterType {
@@ -86,6 +87,7 @@ impl FilterType {
             FilterType::Filter => "filter",
             FilterType::SQL => "sql",
             FilterType::Search => "search",
+            FilterType::Promql => "promql",
         }
     }
 }
@@ -179,23 +181,26 @@ impl Filters {
                 let query: &str = f.query.filter_query.as_deref().unwrap_or("");
                 let filter_type = &f.query.filter_type;
 
-                // if filter type is SQL, check if the user has access to the dataset based on the query string
-                // if filter type is search or filter, check if the user has access to the dataset based on the dataset name
-                if *filter_type == FilterType::SQL {
-                    if (user_auth_for_query(key, query).await).is_ok() {
-                        _filters.push(f.clone())
+                match filter_type {
+                    // SQL queries can reference multiple datasets, so authorize the query itself.
+                    FilterType::SQL => {
+                        if (user_auth_for_query(key, query).await).is_ok() {
+                            _filters.push(f.clone())
+                        }
                     }
-                } else if *filter_type == FilterType::Search || *filter_type == FilterType::Filter {
-                    let dataset_name = &f.stream_name;
-                    if user_auth_for_datasets(
-                        &permissions,
-                        std::slice::from_ref(dataset_name),
-                        &tenant_id,
-                    )
-                    .await
-                    .is_ok()
-                    {
-                        _filters.push(f.clone())
+                    // Other filter types are scoped by the saved filter's dataset.
+                    FilterType::Search | FilterType::Filter | FilterType::Promql => {
+                        let dataset_name = &f.stream_name;
+                        if user_auth_for_datasets(
+                            &permissions,
+                            std::slice::from_ref(dataset_name),
+                            &tenant_id,
+                        )
+                        .await
+                        .is_ok()
+                        {
+                            _filters.push(f.clone())
+                        }
                     }
                 }
             }

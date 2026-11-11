@@ -18,11 +18,11 @@
 use actix_web::http::StatusCode;
 use actix_web::http::header::ContentType;
 use itertools::Itertools;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::error;
 
 use crate::{
-    alerts::{ALERTS, AlertError, AlertState},
+    alerts::{ALERTS, AlertError},
     event::format::{LogSource, LogSourceEntry},
     handlers::{DatasetTag, TelemetryType, http::logstream::error::StreamError},
     metastore::MetastoreError,
@@ -65,7 +65,7 @@ pub struct DataSet {
     labels: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Checklist {
     pub data_ingested: bool,
@@ -79,7 +79,6 @@ pub struct Checklist {
 pub struct HomeResponse {
     pub datasets: Vec<DataSet>,
     pub checklist: Checklist,
-    pub triggered_alerts_count: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -159,51 +158,36 @@ pub async fn generate_home_response(
         }
     }
 
-    // Generate checklist and count triggered alerts
-    let data_ingested = datasets.iter().any(|d| d.ingestion);
-    // Count only real (non-protected, non-API-key) users. API-key users are
-    // managed separately via /apikeys and shouldn't satisfy the onboarding
-    // checklist "a user has been added" check.
+    let data_ingested = datasets.iter().any(|dataset| dataset.ingestion);
     let user_count = users()
         .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-        .map(|m| {
-            m.values()
-                .filter(|u| !u.protected && !u.is_api_key())
+        .map(|users| {
+            users
+                .values()
+                .filter(|user| !user.protected && !user.is_api_key())
                 .count()
         })
         .unwrap_or(0);
-    let user_added = user_count > 1; // more than just the default admin user
-
-    // Calculate triggered alerts count
-    let (alert_created, triggered_alerts_count) = {
+    let alert_created = {
         let guard = ALERTS.read().await;
         if let Some(alerts) = guard.as_ref() {
-            let user_alerts = alerts.list_alerts_for_user(key.clone(), vec![]).await?;
-            let total_alerts = !user_alerts.is_empty();
-
-            // Count alerts currently in triggered state
-            let triggered_count = user_alerts
-                .iter()
-                .filter(|alert| alert.state == AlertState::Triggered)
-                .count() as u64;
-
-            (total_alerts, triggered_count)
+            !alerts
+                .list_alerts_for_user(key.clone(), vec![])
+                .await?
+                .is_empty()
         } else {
-            (false, 0)
+            false
         }
-    };
-
-    let checklist = Checklist {
-        data_ingested,
-        keystone_created: false, // Enterprise will override
-        alert_created,
-        user_added,
     };
 
     Ok(HomeResponse {
         datasets,
-        checklist,
-        triggered_alerts_count,
+        checklist: Checklist {
+            data_ingested,
+            keystone_created: false,
+            alert_created,
+            user_added: user_count > 1,
+        },
     })
 }
 

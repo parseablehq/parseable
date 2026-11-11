@@ -283,6 +283,8 @@ impl Default for RollingWindow {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AlertRequest {
+    #[serde(default = "Ulid::new")]
+    pub id: Ulid,
     #[serde(default = "Severity::default")]
     pub severity: Severity,
     pub title: String,
@@ -364,7 +366,7 @@ impl AlertRequest {
 
         let config = AlertConfig {
             version: AlertVersion::from(CURRENT_ALERTS_VERSION),
-            id: Ulid::new(),
+            id: self.id,
             severity: self.severity,
             title: self.title,
             query: self.query,
@@ -647,7 +649,7 @@ pub struct NotificationStateRequest {
 }
 
 /// MTTR (Mean Time To Recovery) statistics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MTTRStats {
     /// Total number of incidents (triggered -> not-triggered cycles)
@@ -705,19 +707,6 @@ impl MTTRStats {
             min_seconds,
             max_seconds,
             recovery_times_seconds: recovery_times,
-        }
-    }
-}
-
-impl Default for MTTRStats {
-    fn default() -> Self {
-        Self {
-            total_incidents: 0,
-            mean_seconds: 0.0,
-            median_seconds: 0.0,
-            min_seconds: 0.0,
-            max_seconds: 0.0,
-            recovery_times_seconds: Vec::new(),
         }
     }
 }
@@ -945,6 +934,7 @@ impl MetastoreObject for MTTRHistory {
 mod tests {
     use super::AlertRequest;
     use crate::alerts::AlertError;
+    use ulid::Ulid;
 
     fn alert_request(query_type: &str, query: &str, datasets: &[&str]) -> AlertRequest {
         serde_json::from_value(serde_json::json!({
@@ -979,6 +969,23 @@ mod tests {
         let config = request.into(None).await.unwrap();
 
         assert_eq!(config.datasets, ["logs-a", "logs-b"]);
+    }
+
+    #[tokio::test]
+    async fn alert_request_uses_supplied_id() {
+        let id = Ulid::new();
+        let mut payload = serde_json::to_value(alert_request(
+            "code",
+            "SELECT COUNT(*) FROM \"logs-a\"",
+            &[],
+        ))
+        .unwrap();
+        payload["id"] = serde_json::json!(id);
+
+        let request: AlertRequest = serde_json::from_value(payload).unwrap();
+        let config = request.into(None).await.unwrap();
+
+        assert_eq!(config.id, id);
     }
 
     #[tokio::test]

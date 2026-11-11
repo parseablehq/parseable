@@ -32,6 +32,7 @@ use once_cell::sync::Lazy;
 use tokio::{sync::Mutex, task::JoinSet};
 use tracing::{error, info};
 
+use crate::option::Mode;
 use crate::sync::shutdown_local_sync_flush_and_convert;
 use crate::utils::get_tenant_id_from_request;
 use crate::{parseable::PARSEABLE, storage::object_storage::sync_all_streams};
@@ -40,7 +41,11 @@ use crate::{parseable::PARSEABLE, storage::object_storage::sync_all_streams};
 pub static SIGNAL_RECEIVED: Lazy<Arc<Mutex<bool>>> = Lazy::new(|| Arc::new(Mutex::new(false)));
 
 pub async fn liveness() -> HttpResponse {
-    HttpResponse::new(StatusCode::OK)
+    HttpResponse::new(liveness_internal())
+}
+
+pub fn liveness_internal() -> StatusCode {
+    StatusCode::OK
 }
 
 pub async fn check_shutdown_middleware(
@@ -65,11 +70,13 @@ pub async fn shutdown() {
     //sleep for 5 secs to allow any ongoing requests to finish
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    // Perform sync operations
-    perform_sync_operations().await;
+    // Only ingestion-capable nodes own local data that needs flushing.
+    if matches!(PARSEABLE.options.mode, Mode::Ingest | Mode::All) {
+        perform_sync_operations().await;
 
-    // This is to ensure that all stats data is synced before the server shuts down
-    perform_sync_operations().await;
+        // This is to ensure that all stats data is synced before the server shuts down
+        perform_sync_operations().await;
+    }
 }
 
 async fn set_shutdown_flag() {
@@ -104,16 +111,20 @@ async fn perform_object_store_sync() {
 
 pub async fn readiness(req: HttpRequest) -> HttpResponse {
     let tenant_id = get_tenant_id_from_request(&req);
+    HttpResponse::new(readiness_internal(&tenant_id).await)
+}
+
+pub async fn readiness_internal(tenant_id: &Option<String>) -> StatusCode {
     // Check the object store connection
     if PARSEABLE
         .storage
         .get_object_store()
-        .check(&tenant_id)
+        .check(tenant_id)
         .await
         .is_ok()
     {
-        HttpResponse::new(StatusCode::OK)
+        StatusCode::OK
     } else {
-        HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE)
+        StatusCode::SERVICE_UNAVAILABLE
     }
 }

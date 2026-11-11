@@ -17,22 +17,35 @@
  */
 
 pub mod prom_utils;
-use std::sync::OnceLock;
+use std::{
+    collections::VecDeque,
+    path::Path,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::{
     handlers::{TelemetryType, http::metrics_path},
     stats::FullStats,
+    utils::disk::disk_usage_for_path,
 };
 use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
 use once_cell::sync::Lazy;
 use prometheus::{
-    Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
+    Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
     core::{Atomic, AtomicF64},
 };
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
+
+const SYNC_TASK_DURATION_BUCKETS: &[f64] = &[
+    15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 150.0, 180.0, 300.0, 600.0,
+];
+
+pub const QUERY_EXECUTE_TIME_BUCKETS: &[f64] = &[
+    0.1, 0.2, 0.5, 1.0, 5.0, 15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 150.0, 180.0,
+];
 
 pub static METRICS_REGISTRY: Lazy<Registry> = Lazy::new(|| {
     let registry = Registry::new();
@@ -180,11 +193,76 @@ pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static DISK_USED_BYTES: Lazy<GaugeVec> = Lazy::new(|| {
+    GaugeVec::new(
+        Opts::new("disk_used_bytes", "Used disk space in bytes").namespace(METRICS_NAMESPACE),
+        &["disk_type"],
+    )
+    .expect("metric can be created")
+});
+
+pub static DISK_TOTAL_BYTES: Lazy<GaugeVec> = Lazy::new(|| {
+    GaugeVec::new(
+        Opts::new("disk_total_bytes", "Total disk space in bytes").namespace(METRICS_NAMESPACE),
+        &["disk_type"],
+    )
+    .expect("metric can be created")
+});
+
+pub fn record_disk_metrics(disk_type: &str, path: &Path) {
+    if let Some(disk) = disk_usage_for_path(path) {
+        DISK_USED_BYTES
+            .with_label_values(&[disk_type])
+            .set(disk.used_space as f64);
+        DISK_TOTAL_BYTES
+            .with_label_values(&[disk_type])
+            .set(disk.total_space as f64);
+    }
+}
+
+pub static ACTIVE_NODES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("active_nodes", "Number of active nodes").namespace(METRICS_NAMESPACE),
+        &["node_type"],
+    )
+    .expect("metric can be created")
+});
+
+pub static INACTIVE_NODES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("inactive_nodes", "Number of inactive nodes").namespace(METRICS_NAMESPACE),
+        &["node_type"],
+    )
+    .expect("metric can be created")
+});
+
 pub static PROCESS_CPU_USAGE_PERCENT_AVG: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
             "process_cpu_usage_percent_avg",
             "Lifetime average CPU usage percent for this Parseable process",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
+pub static PROCESS_CPU_USAGE_CORES: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_cpu_usage_cores",
+            "Average CPU cores used by Parseable over the last minute",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
+pub static PROCESS_CPU_LIMIT_CORES: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_cpu_limit_cores",
+            "Cgroup CPU limit in cores, available logical CPUs when unlimited, or zero when detection fails",
         )
         .namespace(METRICS_NAMESPACE),
     )
@@ -201,21 +279,37 @@ pub static PROCESS_MEMORY_BYTES_AVG: Lazy<Gauge> = Lazy::new(|| {
     )
     .expect("metric can be created")
 });
-pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64, u64)> = OnceLock::new();
+
+pub static PROCESS_MEMORY_LIMIT_BYTES: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_memory_limit_bytes",
+            "Cgroup memory limit in bytes, or total system memory when cgroup limits are unavailable",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
+pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64)> = OnceLock::new();
+const CPU_USAGE_CORES_WINDOW_SAMPLES: usize = 12;
+
 pub struct ProcessMetricsAccumulator {
     cpu_usage_avg: AtomicF64,
     memory_bytes_avg: AtomicF64,
-    total_memory: AtomicF64,
+    cpu_usage_cores_samples: Mutex<VecDeque<f64>>,
 }
 
 impl Default for ProcessMetricsAccumulator {
     fn default() -> Self {
         // PROCESS_METRICS_INIT must be initialized by now
-        let (cpu, mem, total_mem) = *PROCESS_METRICS_INIT.get().unwrap();
+        let (cpu, mem) = *PROCESS_METRICS_INIT.get().unwrap();
         Self {
             cpu_usage_avg: AtomicF64::new(cpu),
             memory_bytes_avg: AtomicF64::new(mem as f64),
-            total_memory: AtomicF64::new(total_mem as f64),
+            cpu_usage_cores_samples: Mutex::new(VecDeque::with_capacity(
+                CPU_USAGE_CORES_WINDOW_SAMPLES,
+            )),
         }
     }
 }
@@ -241,6 +335,11 @@ impl ProcessMetricsAccumulator {
         (s_cpu_new, s_mem_new)
     }
 
+    fn record_cpu_usage_cores(&self, cpu_usage_cores: f64) -> f64 {
+        let mut samples = self.cpu_usage_cores_samples.lock().unwrap();
+        update_cpu_usage_cores_average(&mut samples, cpu_usage_cores)
+    }
+
     pub fn get_cpu(&self) -> f64 {
         self.cpu_usage_avg.get()
     }
@@ -248,47 +347,108 @@ impl ProcessMetricsAccumulator {
     pub fn get_mem(&self) -> f64 {
         self.memory_bytes_avg.get()
     }
-
-    pub fn get_total_mem(&self) -> f64 {
-        self.total_memory.get()
-    }
 }
 
 pub static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
     Lazy::new(ProcessMetricsAccumulator::default);
 
-pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64, total_mem: u64) {
+fn update_cpu_usage_cores_average(samples: &mut VecDeque<f64>, sample: f64) -> f64 {
+    if samples.len() == CPU_USAGE_CORES_WINDOW_SAMPLES {
+        samples.pop_front();
+    }
+    samples.push_back(sample);
+
+    samples.iter().sum::<f64>() / samples.len() as f64
+}
+
+pub fn record_process_cpu_usage_cores(cpu_usage_cores: f64) {
+    let average = PROCESS_METRICS_ACCUMULATOR.record_cpu_usage_cores(cpu_usage_cores);
+    PROCESS_CPU_USAGE_CORES.set(average);
+}
+
+pub fn record_process_metrics_sample(
+    cpu_usage_percent: f64,
+    memory_bytes: u64,
+    total_mem: u64,
+    cpu_limit_cores: f64,
+) {
     if PROCESS_METRICS_INIT.get().is_none() {
         // first measurement
-        let _ = PROCESS_METRICS_INIT.set((cpu_usage_percent, memory_bytes, total_mem));
+        let _ = PROCESS_METRICS_INIT.set((cpu_usage_percent, memory_bytes));
     }
     let (average_cpu_usage, average_memory_bytes) =
         PROCESS_METRICS_ACCUMULATOR.record(cpu_usage_percent, memory_bytes);
     PROCESS_CPU_USAGE_PERCENT_AVG.set(average_cpu_usage);
+    PROCESS_CPU_LIMIT_CORES.set(cpu_limit_cores);
     PROCESS_MEMORY_BYTES_AVG.set(average_memory_bytes);
+    PROCESS_MEMORY_LIMIT_BYTES.set(total_mem as f64);
 }
 
 #[cfg(test)]
 mod process_metrics_tests {
     use crate::metrics::PROCESS_METRICS_INIT;
 
-    use super::ProcessMetricsAccumulator;
+    use super::{
+        CPU_USAGE_CORES_WINDOW_SAMPLES, ProcessMetricsAccumulator, update_cpu_usage_cores_average,
+    };
 
     #[test]
     fn averages_process_metric_samples() {
         // init PROCESS_METRICS_INIT
-        PROCESS_METRICS_INIT.get_or_init(|| (10.0, 100, 100));
+        PROCESS_METRICS_INIT.get_or_init(|| (10.0, 100));
         let accumulator = ProcessMetricsAccumulator::default();
 
         assert_eq!(accumulator.record(10.0, 100), (10.0, 100.0));
         assert_eq!(accumulator.record(20.0, 300), (10.8, 116.0));
     }
+
+    #[test]
+    fn cpu_usage_cores_window_is_one_minute_of_samples() {
+        let mut samples = std::collections::VecDeque::new();
+        let mut average = 0.0;
+        for sample in 1..=CPU_USAGE_CORES_WINDOW_SAMPLES + 1 {
+            average = update_cpu_usage_cores_average(&mut samples, sample as f64);
+        }
+
+        assert_eq!(samples.len(), CPU_USAGE_CORES_WINDOW_SAMPLES);
+        assert_eq!(samples.front(), Some(&2.0));
+        assert_eq!(samples.back(), Some(&13.0));
+        assert_eq!(average, 7.5);
+    }
 }
 
 pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
-        HistogramOpts::new("query_execute_time", "Query execute time").namespace(METRICS_NAMESPACE),
+        HistogramOpts::new("query_execute_time", "Query execute time")
+            .namespace(METRICS_NAMESPACE)
+            .buckets(QUERY_EXECUTE_TIME_BUCKETS.to_vec()),
         &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static CONVERSION_TASK_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new(
+            "conversion_task_duration",
+            "Local conversion task duration in seconds",
+        )
+        .namespace(METRICS_NAMESPACE)
+        .buckets(SYNC_TASK_DURATION_BUCKETS.to_vec()),
+        &["phase"],
+    )
+    .expect("metric can be created")
+});
+
+pub static OBJECT_STORE_SYNC_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new(
+            "object_store_sync_duration",
+            "Object store sync duration in seconds",
+        )
+        .namespace(METRICS_NAMESPACE)
+        .buckets(SYNC_TASK_DURATION_BUCKETS.to_vec()),
+        &["phase"],
     )
     .expect("metric can be created")
 });
@@ -786,13 +946,40 @@ fn custom_metrics(registry: &Registry) {
         .register(Box::new(STAGING_FILES.clone()))
         .expect("metric can be registered");
     registry
+        .register(Box::new(DISK_USED_BYTES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(DISK_TOTAL_BYTES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(ACTIVE_NODES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(INACTIVE_NODES.clone()))
+        .expect("metric can be registered");
+    registry
         .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_CPU_USAGE_CORES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_CPU_LIMIT_CORES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(PROCESS_MEMORY_BYTES_AVG.clone()))
         .expect("metric can be registered");
     registry
+        .register(Box::new(PROCESS_MEMORY_LIMIT_BYTES.clone()))
+        .expect("metric can be registered");
+    registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(CONVERSION_TASK_DURATION.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(OBJECT_STORE_SYNC_DURATION.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_CACHE_HIT.clone()))

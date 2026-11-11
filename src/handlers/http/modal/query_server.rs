@@ -17,7 +17,6 @@
  */
 
 use std::sync::Arc;
-use std::thread;
 
 use crate::handlers::airplane;
 use crate::handlers::http::cluster;
@@ -33,7 +32,7 @@ use crate::hottier::HotTierManager;
 use crate::hottier::HotTierMessage;
 use crate::hottier::hottier_runtime;
 use crate::rbac::role::Action;
-use crate::{analytics, migration, storage, sync};
+use crate::{analytics, migration, storage};
 use actix_web::web::{ServiceConfig, resource};
 use actix_web::{Scope, web};
 use actix_web_prometheus::PrometheusMetrics;
@@ -81,6 +80,7 @@ impl ParseableServer for QueryServer {
             .service(
                 web::scope(&prism_base_path())
                     .service(Server::get_prism_home())
+                    .service(Server::get_llm_webscope())
                     .service(Server::get_prism_logstream())
                     .service(Server::get_prism_datasets())
                     .service(Server::get_apikeys_webscope())
@@ -120,9 +120,6 @@ impl ParseableServer for QueryServer {
             .await;
         migration::run_migration(&PARSEABLE).await?;
 
-        // create internal stream at server start
-        // Multi-tenant mode is not allowed in OSS hence no need to have knowledge of tenant id
-        PARSEABLE.create_internal_stream_if_not_exists().await?;
         // load on init
         load_on_init().await?;
         // track all parquet files already in the data directory
@@ -159,18 +156,10 @@ impl ParseableServer for QueryServer {
             htm.start_all_tasks().await;
         };
 
-        // Run sync on a background thread
-        let (cancel_tx, cancel_rx) = oneshot::channel();
-        thread::spawn(|| sync::handler(cancel_rx));
-
         tokio::spawn(airplane::server());
 
-        let result = self
-            .start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
-            .await?;
-        // Cancel sync jobs
-        cancel_tx.send(()).expect("Cancellation should not fail");
-        Ok(result)
+        self.start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
+            .await
     }
 }
 
@@ -200,6 +189,7 @@ impl QueryServer {
     // get the user webscope
     pub fn get_user_webscope() -> Scope {
         web::scope("/user")
+            .service(Server::get_user_preferences_resource())
             .service(
                 web::resource("")
                     // GET /user => List all users

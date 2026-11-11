@@ -38,6 +38,7 @@ use crate::handlers::http::resource_check;
 use crate::handlers::http::targets;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
+use crate::handlers::http::users::preferences;
 use crate::hottier::GLOBAL_HOTTIER;
 use crate::hottier::HotTierManager;
 use crate::hottier::HotTierMessage;
@@ -111,6 +112,7 @@ impl ParseableServer for Server {
             .service(
                 web::scope(&prism_base_path())
                     .service(Server::get_prism_home())
+                    .service(Server::get_llm_webscope())
                     .service(Server::get_prism_logstream())
                     .service(Server::get_prism_datasets())
                     .service(Server::get_apikeys_webscope())
@@ -199,6 +201,24 @@ impl ParseableServer for Server {
 }
 
 impl Server {
+    pub fn get_llm_webscope() -> Scope {
+        web::scope("/llm")
+            .service(
+                web::resource("/tools/list").route(
+                    web::get()
+                        .to(crate::tool_catalog::list_tool_registry)
+                        .authorize(Action::Query),
+                ),
+            )
+            .service(
+                web::resource("/tools/call").route(
+                    web::post()
+                        .to(crate::tool_executor::call_tool_registry)
+                        .authorize(Action::Query),
+                ),
+            )
+    }
+
     pub fn get_prism_home() -> Scope {
         web::scope("/home")
             .service(web::resource("").route(web::get().to(http::prism_home::home_api)))
@@ -251,6 +271,11 @@ impl Server {
             .service(
                 resource("/{key_id}")
                     .route(web::get().to(apikeys::get_api_key).authorize(Action::All))
+                    .route(
+                        web::patch()
+                            .to(apikeys::patch_api_key)
+                            .authorize(Action::All),
+                    )
                     .route(
                         web::delete()
                             .to(apikeys::delete_api_key)
@@ -715,6 +740,7 @@ impl Server {
     // get the user webscope
     pub fn get_user_webscope() -> Scope {
         web::scope("/user")
+            .service(Self::get_user_preferences_resource())
             .service(
                 web::resource("")
                     // GET /user => List all users
@@ -781,6 +807,20 @@ impl Server {
                             .authorize(Action::PutUser)
                             .wrap(DisAllowRootUser),
                     ),
+            )
+    }
+
+    pub fn get_user_preferences_resource() -> Resource {
+        web::resource("/{userid}/preferences")
+            .route(
+                web::get()
+                    .to(preferences::get)
+                    .authorize_for_user(Action::GetUserPreferences),
+            )
+            .route(
+                web::put()
+                    .to(preferences::put)
+                    .authorize_for_user(Action::PutUserPreferences),
             )
     }
 

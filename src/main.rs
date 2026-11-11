@@ -22,7 +22,9 @@ use parseable::connectors;
 use parseable::{
     IngestServer, ParseableServer, QueryServer, Server,
     analytics::{SYS_INFO, refresh_sys_info},
-    banner, metrics,
+    banner,
+    handlers::http::resource_check::cpu_limit_cores,
+    metrics,
     option::Mode,
     parseable::PARSEABLE,
     rbac, storage,
@@ -98,22 +100,28 @@ async fn main() -> anyhow::Result<()> {
     // init process metrics
     refresh_sys_info();
     let process_metrics = tokio::task::spawn_blocking(|| {
-        let sys = SYS_INFO.lock().unwrap();
-        let total_mem = if let Some(cgroup) = sys.cgroup_limits() {
-            cgroup.total_memory
-        } else {
-            sys.total_memory()
+        let process_metrics = {
+            let sys = SYS_INFO.lock().unwrap();
+            let total_mem = if let Some(cgroup) = sys.cgroup_limits() {
+                cgroup.total_memory
+            } else {
+                sys.total_memory()
+            };
+            sysinfo::get_current_pid()
+                .ok()
+                .and_then(|pid| sys.process(pid))
+                .map(|process| (process.cpu_usage() as f64, process.memory(), total_mem))
         };
-        sysinfo::get_current_pid()
-            .ok()
-            .and_then(|pid| sys.process(pid))
-            .map(|process| (process.cpu_usage() as f64, process.memory(), total_mem))
+
+        process_metrics.map(|(cpu_usage, memory_bytes, total_mem)| {
+            (cpu_usage, memory_bytes, total_mem, cpu_limit_cores())
+        })
     })
     .await
     .unwrap();
     // first measurement
-    if let Some((cpu_usage, memory_bytes, total_mem)) = process_metrics {
-        record_process_metrics_sample(cpu_usage, memory_bytes, total_mem);
+    if let Some((cpu_usage, memory_bytes, total_mem, cpu_limit_cores)) = process_metrics {
+        record_process_metrics_sample(cpu_usage, memory_bytes, total_mem, cpu_limit_cores);
     }
 
     // Start servers

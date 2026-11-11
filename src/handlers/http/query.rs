@@ -43,7 +43,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinSet;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
 use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date};
@@ -155,14 +155,23 @@ pub async fn get_records_and_fields_for_authorized_query(
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let creds = extract_session_key_from_req(&req)?;
+    query_internal(query_request, &creds, &tenant_id).await
+}
+
+/// Shared query implementation for HTTP handlers and in-process callers.
+pub async fn query_internal(
+    query_request: Query,
+    creds: &SessionKey,
+    tenant_id: &Option<String>,
+) -> Result<HttpResponse, QueryError> {
     let mut session_state = QUERY_SESSION.get_ctx().state();
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
     // check or load streams in memory
-    create_streams_for_distributed(tables.clone(), &get_tenant_id_from_request(&req)).await?;
-
-    let tenant_id = get_tenant_id_from_request(&req);
+    create_streams_for_distributed(tables.clone(), tenant_id).await?;
     session_state
         .config_mut()
         .options_mut()
@@ -170,10 +179,9 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .default_schema = tenant_id.as_deref().unwrap_or("public").to_owned();
 
     let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
-    let creds = extract_session_key_from_req(&req)?;
-    let permissions = Users.get_permissions(&creds);
+    let permissions = Users.get_permissions(creds);
 
-    user_auth_for_datasets(&permissions, &tables, &tenant_id).await?;
+    user_auth_for_datasets(&permissions, &tables, tenant_id).await?;
     let time = Instant::now();
 
     // Track billing metrics for query calls
@@ -190,18 +198,18 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         let table = tables
             .first()
             .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
-        return handle_count_query(&query_request, table, column_name, time, &tenant_id).await;
+        return handle_count_query(&query_request, table, column_name, time, tenant_id).await;
     }
 
     // if the query request has streaming = false (default)
     // we use datafusion's `execute` method to get the records
     if !query_request.streaming {
-        return handle_non_streaming_query(query, tables, &query_request, time, &tenant_id).await;
+        return handle_non_streaming_query(query, tables, &query_request, time, tenant_id).await;
     }
 
     // if the query request has streaming = true
     // we use datafusion's `execute_stream` method to get the records
-    handle_streaming_query(query, tables, &query_request, time, &tenant_id).await
+    handle_streaming_query(query, tables, &query_request, time, tenant_id).await
 }
 
 /// Handles count queries (e.g., `SELECT COUNT(*) FROM <dataset-name>`)
@@ -348,7 +356,6 @@ async fn handle_streaming_query(
         ])
         .observe(time);
 
-    let send_null = query_request.send_null;
     let with_fields = query_request.fields;
 
     let stream = if with_fields {
@@ -359,7 +366,7 @@ async fn handle_streaming_query(
         .to_string();
 
         // stream the records without fields
-        let mut batch_processor = create_batch_processor(send_null);
+        let mut batch_processor = create_batch_processor();
         let records_stream = records_stream.map(move |batch_result| {
             let batch_result = batch_result.map_err(QueryError::from);
             batch_processor(batch_result)
@@ -372,7 +379,7 @@ async fn handle_streaming_query(
         Box::pin(fields_chunk.chain(records_stream))
             as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
     } else {
-        let mut batch_processor = create_batch_processor(send_null);
+        let mut batch_processor = create_batch_processor();
         let stream = records_stream
             .map(move |batch_result| batch_processor(batch_result.map_err(QueryError::from)));
         Box::pin(stream) as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
@@ -384,25 +391,109 @@ async fn handle_streaming_query(
         .streaming(stream))
 }
 
-fn create_batch_processor(
-    send_null: bool,
-) -> impl FnMut(Result<RecordBatch, QueryError>) -> Result<Bytes, actix_web::Error> {
+fn create_batch_processor()
+-> impl FnMut(Result<RecordBatch, QueryError>) -> Result<Bytes, actix_web::Error> {
     move |batch_result| match batch_result {
         Ok(batch) => {
-            let response = QueryResponse {
-                records: vec![batch],
+            info!("Returning query results");
+            // Keep Arrow's encoded bytes rather than parsing and serializing them again.
+            let mut writer = arrow_json::ArrayWriter::new(Vec::new());
+            writer
+                .write(&batch)
+                .and_then(|_| writer.finish())
+                .map_err(|e| {
+                    error!("Failed to serialize record batch to JSON: {}", e);
+                    actix_web::error::ErrorInternalServerError(e)
+                })?;
+            let mut response = writer.into_inner();
+            response.push(b'\n');
+            Ok(Bytes::from(response))
+        }
+        Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_array::{BooleanArray, Decimal128Array, Float64Array, Int64Array};
+    use arrow_schema::Schema;
+
+    use super::*;
+
+    #[test]
+    fn streaming_batch_preserves_nulls_and_newline() {
+        let batch = RecordBatch::try_from_iter([
+            (
+                "message",
+                Arc::new(StringArray::from(vec!["first \"quoted\"\n", "snowman ☃"])) as ArrayRef,
+            ),
+            (
+                "nullable",
+                Arc::new(StringArray::from(vec![None, Some("present\tvalue")])) as ArrayRef,
+            ),
+            ("count", Arc::new(Int64Array::from(vec![7, 0])) as ArrayRef),
+            (
+                "active",
+                Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let response = create_batch_processor()(Ok(batch.clone())).unwrap();
+
+        for send_null in [false, true] {
+            let expected = QueryResponse {
+                records: vec![batch.clone()],
                 fields: Vec::new(),
                 fill_null: send_null,
                 with_fields: false,
             }
             .to_json()
-            .map_err(|e| {
-                error!("Failed to parse record batch into JSON: {}", e);
-                actix_web::error::ErrorInternalServerError(e)
-            })?;
-            Ok(Bytes::from(format!("{response}\n")))
+            .unwrap();
+            assert_eq!(response.as_ref(), format!("{expected}\n").as_bytes());
         }
-        Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response).unwrap(),
+            json!([
+                {"message": "first \"quoted\"\n", "count": 7, "active": true},
+                {"message": "snowman ☃", "nullable": "present\tvalue", "count": 0, "active": false},
+            ])
+        );
+    }
+
+    #[test]
+    fn streaming_batch_keeps_arrow_numbers() {
+        let batch = RecordBatch::try_from_iter([
+            (
+                "float",
+                Arc::new(Float64Array::from(vec![1e300])) as ArrayRef,
+            ),
+            (
+                "decimal",
+                Arc::new(
+                    Decimal128Array::from(vec![94_680_000_000_i128])
+                        .with_precision_and_scale(20, 10)
+                        .unwrap(),
+                ) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let response = create_batch_processor()(Ok(batch)).unwrap();
+        assert_eq!(
+            response.as_ref(),
+            b"[{\"float\":1.0e300,\"decimal\":9.4680000000}]\n"
+        );
+    }
+
+    #[test]
+    fn streaming_batch_handles_empty_batches_and_errors() {
+        let mut process_batch = create_batch_processor();
+        let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        assert_eq!(process_batch(Ok(batch)).unwrap().as_ref(), b"[]\n");
+        let error = process_batch(Err(QueryError::CustomError("query failed".into()))).unwrap_err();
+        assert_eq!(
+            error.as_response_error().status_code(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 }
 

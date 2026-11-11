@@ -1202,6 +1202,8 @@ pub enum AlertError {
     DatafusionError(#[from] datafusion::error::DataFusionError),
     #[error("Error: {0}")]
     CustomError(String),
+    #[error("{0}")]
+    Conflict(String),
     #[error("Invalid State Change: {0}")]
     InvalidStateChange(String),
     #[error("{0}")]
@@ -1253,7 +1255,7 @@ impl actix_web::ResponseError for AlertError {
             Self::FromStrError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetModification(_) => StatusCode::BAD_REQUEST,
-            Self::TargetInUse => StatusCode::CONFLICT,
+            Self::TargetInUse | Self::Conflict(_) => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidAlertQuery(_) => StatusCode::BAD_REQUEST,
             Self::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
@@ -1522,7 +1524,10 @@ impl AlertManagerTrait for Alerts {
         // Handle task operations without holding any locks
         if should_delete_task {
             self.sender
-                .send(AlertTask::Delete(alert_id))
+                .send(AlertTask::Delete(
+                    alert_id,
+                    tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
+                ))
                 .await
                 .map_err(|e| AlertError::CustomError(e.to_string()))?;
         } else if should_create_task {
@@ -1634,9 +1639,16 @@ impl AlertManagerTrait for Alerts {
     }
 
     /// Remove a scheduled alert task
-    async fn delete_task(&self, alert_id: Ulid) -> Result<(), AlertError> {
+    async fn delete_task(
+        &self,
+        alert_id: Ulid,
+        tenant_id: &Option<String>,
+    ) -> Result<(), AlertError> {
         self.sender
-            .send(AlertTask::Delete(alert_id))
+            .send(AlertTask::Delete(
+                alert_id,
+                tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
+            ))
             .await
             .map_err(|e| AlertError::CustomError(e.to_string()))?;
 
@@ -1693,7 +1705,11 @@ impl AlertManagerTrait for Alerts {
         };
 
         for alert_id in &alert_ids {
-            if let Err(e) = self.sender.send(AlertTask::Delete(*alert_id)).await {
+            if let Err(e) = self
+                .sender
+                .send(AlertTask::Delete(*alert_id, tenant.to_owned()))
+                .await
+            {
                 warn!("Failed to cancel alert task {alert_id} for tenant {tenant}: {e}");
             }
         }

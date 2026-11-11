@@ -3,7 +3,7 @@ networks:
 
 services:
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-02-03T21-03-04Z
+    image: quay.io/parseablehq/minio:edge
     entrypoint:
       - sh
       - -euc
@@ -44,6 +44,7 @@ services:
       - P_USERNAME=parseableadmin
       - P_PASSWORD=parseableadmin
       - P_CHECK_UPDATE=false
+      - P_SEND_ANONYMOUS_USAGE_DATA=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_KAFKA_CONSUMER_TOPICS=test-logs-stream
       - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092

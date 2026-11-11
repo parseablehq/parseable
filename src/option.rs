@@ -87,15 +87,13 @@ impl From<Compression> for parquet::basic::Compression {
 }
 
 pub mod validation {
+    use super::{Compression, Mode};
+    use path_clean::PathClean;
     use std::{
         env, io,
         net::ToSocketAddrs,
         path::{Path, PathBuf},
     };
-
-    use super::{Compression, Mode};
-    use crate::cli::DATASET_FIELD_COUNT_LIMIT;
-    use path_clean::PathClean;
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
@@ -196,16 +194,15 @@ pub mod validation {
         }
     }
     pub fn validate_dataset_fields_allowed_limit(s: &str) -> Result<usize, String> {
-        if let Ok(size) = s.parse::<usize>() {
-            if (1..=DATASET_FIELD_COUNT_LIMIT).contains(&size) {
-                Ok(size)
-            } else {
-                Err(format!(
-                    "Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be between 1 and {DATASET_FIELD_COUNT_LIMIT}"
-                ))
-            }
+        if let Ok(size) = s.parse::<usize>()
+            && size > 0
+        {
+            Ok(size)
         } else {
-            Err("Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be given as integer value".to_string())
+            Err(
+                "Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be a positive integer"
+                    .to_string(),
+            )
         }
     }
 

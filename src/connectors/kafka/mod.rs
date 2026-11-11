@@ -21,7 +21,6 @@ use crate::handlers::TENANT_ID;
 use aws_config::default_provider::region::DefaultRegionChain;
 use aws_msk_iam_sasl_signer::generate_auth_token;
 use aws_types::region::Region;
-use derive_more::Constructor;
 use rdkafka::client::OAuthToken;
 use rdkafka::consumer::{ConsumerContext, Rebalance};
 use rdkafka::error::KafkaResult;
@@ -118,13 +117,17 @@ impl RebalanceEvent {
     }
 }
 
-#[derive(Constructor, Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct TopicPartition {
     pub topic: String,
     pub partition: i32,
 }
 
 impl TopicPartition {
+    pub const fn new(topic: String, partition: i32) -> Self {
+        Self { topic, partition }
+    }
+
     pub fn from_kafka_msg(msg: &BorrowedMessage) -> Self {
         Self::new(msg.topic().to_owned(), msg.partition())
     }
@@ -134,12 +137,16 @@ impl TopicPartition {
     }
 }
 
-#[derive(Constructor, Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct TopicPartitionList {
     pub tpl: Vec<TopicPartition>,
 }
 
 impl TopicPartitionList {
+    pub const fn new(tpl: Vec<TopicPartition>) -> Self {
+        Self { tpl }
+    }
+
     pub fn from_rdkafka_tpl(tpl: &rdkafka::topic_partition_list::TopicPartitionList) -> Self {
         let elements = tpl.elements();
         let mut tp_vec = Vec::with_capacity(elements.len());
@@ -155,7 +162,7 @@ impl TopicPartitionList {
     }
 }
 
-#[derive(Constructor, Debug, Hash, Eq, PartialEq)]
+#[derive(Debug, Hash, Eq, PartialEq)]
 pub struct ConsumerRecord {
     pub payload: Option<Vec<u8>>,
     pub key: Option<Vec<u8>>,
@@ -167,6 +174,26 @@ pub struct ConsumerRecord {
 }
 
 impl ConsumerRecord {
+    pub const fn new(
+        payload: Option<Vec<u8>>,
+        key: Option<Vec<u8>>,
+        topic: String,
+        partition: i32,
+        offset: i64,
+        timestamp: Option<i64>,
+        tenant_id: Option<String>,
+    ) -> Self {
+        Self {
+            payload,
+            key,
+            topic,
+            partition,
+            offset,
+            timestamp,
+            tenant_id,
+        }
+    }
+
     pub fn from_borrowed_msg(msg: BorrowedMessage) -> Self {
         let tenant_id = if let Some(headers) = extract_headers(&msg)
             && let Some(tenant_id) = headers.get(TENANT_ID)

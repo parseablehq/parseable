@@ -20,10 +20,12 @@ use crate::{
     handlers::http::rbac::RBACError,
     metastore::MetastoreError,
     parseable::PARSEABLE,
+    rbac::{Users, map::SessionKey},
     storage::{ObjectStorageError, StreamType},
-    users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
+    users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter, FilterType},
     utils::{
         actix::extract_session_key_from_req, get_hash, get_user_and_tenant_from_request, is_admin,
+        is_admin_for_session,
     },
     validator,
 };
@@ -36,37 +38,53 @@ use actix_web::{
 use serde_json::Error as SerdeError;
 use ulid::Ulid;
 
+const SQL_FILTER_STREAM_NAME: &str = "sql";
+
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     let key =
         extract_session_key_from_req(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
-    let filters = FILTERS.list_filters(&key).await;
+    let filters = list_internal(&key).await;
     Ok((web::Json(filters), StatusCode::OK))
+}
+
+pub async fn list_internal(key: &SessionKey) -> Vec<Filter> {
+    FILTERS.list_filters(key).await
 }
 
 pub async fn get(
     req: HttpRequest,
     filter_id: Path<String>,
 ) -> Result<impl Responder, FiltersError> {
-    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
+    let key =
+        extract_session_key_from_req(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
+    let (_, tenant_id) = get_user_and_tenant_from_request(&req)?;
     let filter_id = filter_id.into_inner();
-    let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
-    if let Some(filter) = FILTERS
-        .get_filter(&filter_id, &get_hash(&user_id), is_admin, &tenant_id)
-        .await
-    {
-        return Ok((web::Json(filter), StatusCode::OK));
-    }
+    let filter = get_internal(&filter_id, &key, &tenant_id).await?;
+    Ok((web::Json(filter), StatusCode::OK))
+}
 
-    Err(FiltersError::Metadata(
-        "Filter does not exist or user is not authorized",
-    ))
+pub async fn get_internal(
+    filter_id: &str,
+    key: &SessionKey,
+    tenant_id: &Option<String>,
+) -> Result<Filter, FiltersError> {
+    let user_id = Users
+        .get_userid_from_session(key)
+        .map(|(user_id, _)| get_hash(&user_id))
+        .ok_or_else(|| FiltersError::Custom("unknown user session".to_owned()))?;
+    FILTERS
+        .get_filter(filter_id, &user_id, is_admin_for_session(key), tenant_id)
+        .await
+        .ok_or(FiltersError::Metadata(
+            "Filter does not exist or user is not authorized",
+        ))
 }
 
 pub async fn post(
     req: HttpRequest,
     Json(mut filter): Json<Filter>,
 ) -> Result<impl Responder, FiltersError> {
-    validate_stream_name(&filter.stream_name)?;
+    validate_stream_name(&mut filter.stream_name, &filter.query.filter_type)?;
 
     let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
@@ -86,7 +104,7 @@ pub async fn update(
     filter_id: Path<String>,
     Json(mut filter): Json<Filter>,
 ) -> Result<impl Responder, FiltersError> {
-    validate_stream_name(&filter.stream_name)?;
+    validate_stream_name(&mut filter.stream_name, &filter.query.filter_type)?;
 
     let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
@@ -137,7 +155,15 @@ pub async fn delete(
     Ok(HttpResponse::Ok().finish())
 }
 
-fn validate_stream_name(stream_name: &str) -> Result<(), FiltersError> {
+fn validate_stream_name(
+    stream_name: &mut String,
+    filter_type: &FilterType,
+) -> Result<(), FiltersError> {
+    if matches!(filter_type, FilterType::SQL) {
+        SQL_FILTER_STREAM_NAME.clone_into(stream_name);
+        return Ok(());
+    }
+
     validator::stream_name(stream_name, StreamType::UserDefined)
         .map_err(FiltersError::InvalidStreamName)
 }
@@ -189,20 +215,31 @@ impl actix_web::ResponseError for FiltersError {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_stream_name;
+    use super::{SQL_FILTER_STREAM_NAME, validate_stream_name};
+    use crate::users::filters::FilterType;
     use crate::validator::error::StreamNameValidationError;
 
     #[test]
     fn accepts_flat_stream_names() {
-        assert!(validate_stream_name("team1").is_ok());
-        assert!(validate_stream_name("orders-prod").is_ok());
-        assert!(validate_stream_name("user_events_v2").is_ok());
+        for stream_name in ["team1", "orders-prod", "user_events_v2"] {
+            let mut stream_name = stream_name.to_owned();
+            assert!(validate_stream_name(&mut stream_name, &FilterType::Filter).is_ok());
+        }
+    }
+
+    #[test]
+    fn normalizes_sql_filter_stream_name() {
+        let mut stream_name = "../../unsafe-path".to_owned();
+
+        assert!(validate_stream_name(&mut stream_name, &FilterType::SQL).is_ok());
+        assert_eq!(stream_name, SQL_FILTER_STREAM_NAME);
     }
 
     #[test]
     fn rejects_path_like_stream_names() {
-        let err =
-            validate_stream_name("team1/serviceA").expect_err("path-like names must be rejected");
+        let mut stream_name = "team1/serviceA".to_owned();
+        let err = validate_stream_name(&mut stream_name, &FilterType::Search)
+            .expect_err("path-like names must be rejected");
         assert!(matches!(
             err,
             super::FiltersError::InvalidStreamName(StreamNameValidationError::NameSpecialChar {

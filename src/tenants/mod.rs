@@ -66,6 +66,10 @@ impl TenantMetadata {
         self.tenants.get(tenant_id).map(|t| t.meta.clone())
     }
 
+    pub fn contains_tenant(&self, tenant_id: &str) -> bool {
+        self.tenants.contains_key(tenant_id)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn update_tenant_meta(
         &self,

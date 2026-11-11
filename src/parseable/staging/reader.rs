@@ -25,6 +25,9 @@ use std::{
     vec::IntoIter,
 };
 
+#[cfg(test)]
+use std::io::Take;
+
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_ipc::{MessageHeader, reader::StreamReader, root_as_message};
 use arrow_schema::{ArrowError, Schema};
@@ -43,6 +46,174 @@ pub struct MergedReverseRecordReader {
     pub readers: Vec<StreamReader<BufReader<OffsetReader<File>>>>,
     pub readable_files: Vec<PathBuf>,
     pub invalid_files: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
+/// Reads Arrow files in their original write order. Used by metric conversion,
+/// which explicitly sorts every Parquet row group and does not need row reversal.
+pub struct MergedForwardRecordReader {
+    file_plans: Vec<ForwardFilePlan>,
+    pub readable_files: Vec<PathBuf>,
+    pub invalid_files: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ForwardFilePlan {
+    path: PathBuf,
+    schema: Arc<Schema>,
+    messages: Vec<(MessageHeader, usize, usize)>,
+    record_batches: usize,
+}
+
+pub(crate) type ForwardStreamReader = StreamReader<BufReader<MessageRangeReader<File>>>;
+
+pub(crate) struct ForwardReaderLane {
+    pub reader: ForwardStreamReader,
+    pub record_batches: usize,
+}
+
+impl ForwardFilePlan {
+    /// Opens independent virtual Arrow streams over striped record batches.
+    /// Every stream begins with the original schema and receives every
+    /// dictionary update, preserving Arrow IPC decoder state.
+    pub(crate) fn reader_lane_count(&self, readers_per_file: usize) -> usize {
+        readers_per_file.clamp(1, self.record_batches)
+    }
+
+    pub(crate) fn open_lanes(
+        self,
+        readers_per_file: usize,
+    ) -> Result<Vec<ForwardReaderLane>, io::Error> {
+        let lane_count = readers_per_file.clamp(1, self.record_batches);
+        let (_, schema_offset, schema_size) = self.messages[0];
+        let schema_range = (schema_offset as u64, schema_size);
+        let mut lane_ranges = vec![vec![schema_range]; lane_count];
+        let mut lane_record_batches = vec![0; lane_count];
+        let mut record_batch_index = 0;
+
+        for (header, offset, size) in self.messages.into_iter().skip(1) {
+            let range = (offset as u64, size);
+            match header {
+                MessageHeader::DictionaryBatch => {
+                    for ranges in &mut lane_ranges {
+                        ranges.push(range);
+                    }
+                }
+                MessageHeader::RecordBatch => {
+                    let lane = record_batch_index % lane_count;
+                    lane_ranges[lane].push(range);
+                    lane_record_batches[lane] += 1;
+                    record_batch_index += 1;
+                }
+                unsupported => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Unsupported Arrow IPC message: {unsupported:?}"),
+                    ));
+                }
+            }
+        }
+
+        lane_ranges
+            .into_iter()
+            .zip(lane_record_batches)
+            .map(|(ranges, record_batches)| {
+                let file = File::open(&self.path)?;
+                let reader = StreamReader::try_new(
+                    BufReader::new(MessageRangeReader::new(file, ranges)),
+                    None,
+                )
+                .map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Invalid arrow stream: {err}"),
+                    )
+                })?;
+                Ok(ForwardReaderLane {
+                    reader,
+                    record_batches,
+                })
+            })
+            .collect()
+    }
+}
+
+impl MergedForwardRecordReader {
+    /// Opens valid Arrow files and excludes any crash-truncated tail message.
+    pub fn try_new(file_paths: &[PathBuf]) -> Self {
+        let _span = info_span!("open_forward_arrow_files", file_count = file_paths.len()).entered();
+        let mut file_plans = Vec::with_capacity(file_paths.len());
+        let mut readable_files = Vec::with_capacity(file_paths.len());
+        let mut invalid_files = Vec::new();
+        for path in file_paths {
+            match File::open(path) {
+                Err(err) => {
+                    error!("Error when trying to read file: {path:?}; error = {err}");
+                    continue;
+                }
+                Ok(mut file) => {
+                    let messages = match complete_messages(&mut file) {
+                        Ok(messages) => messages,
+                        Err(err) => {
+                            error!("Invalid file detected, ignoring it: {path:?}; error = {err}");
+                            invalid_files.push(path.clone());
+                            continue;
+                        }
+                    };
+                    let (_, schema_offset, schema_size) = messages[0];
+                    let schema_reader = match StreamReader::try_new(
+                        BufReader::new(MessageRangeReader::new(
+                            file,
+                            vec![(schema_offset as u64, schema_size)],
+                        )),
+                        None,
+                    ) {
+                        Ok(reader) => reader,
+                        Err(err) => {
+                            error!("Invalid file detected, ignoring it: {path:?}; error = {err}");
+                            invalid_files.push(path.clone());
+                            continue;
+                        }
+                    };
+                    let record_batches = messages
+                        .iter()
+                        .filter(|(header, _, _)| *header == MessageHeader::RecordBatch)
+                        .count();
+                    file_plans.push(ForwardFilePlan {
+                        path: path.clone(),
+                        schema: schema_reader.schema(),
+                        messages,
+                        record_batches,
+                    });
+                    readable_files.push(path.clone());
+                }
+            }
+        }
+
+        Self {
+            file_plans,
+            readable_files,
+            invalid_files,
+        }
+    }
+
+    pub(crate) fn file_count(&self) -> usize {
+        self.file_plans.len()
+    }
+
+    pub(crate) fn into_file_plans(self) -> IntoIter<ForwardFilePlan> {
+        self.file_plans.into_iter()
+    }
+
+    /// Returns the union of schemas exposed by all readable Arrow streams.
+    pub fn merged_schema(&self) -> Schema {
+        Schema::try_merge(
+            self.file_plans
+                .iter()
+                .map(|plan| plan.schema.as_ref().clone()),
+        )
+        .unwrap()
+    }
 }
 
 impl MergedReverseRecordReader {
@@ -104,7 +275,7 @@ impl MergedReverseRecordReader {
             },
         )
         .map(|batch| batch.map(|batch| reverse(&batch)))
-        .map(move |batch| batch.map(|batch| adapt_batch(&schema, &batch)))
+        .map(move |batch| batch.map(|batch| adapt_batch(schema.clone(), &batch)))
     }
 
     /// Returns the union of schemas exposed by all readable Arrow streams.
@@ -236,10 +407,83 @@ impl<R: Read + Seek> Read for OffsetReader<R> {
     }
 }
 
-/// Builds a reverse Arrow stream reader from complete IPC messages.
-pub fn get_reverse_reader<T: Read + Seek>(
-    mut reader: T,
-) -> Result<StreamReader<BufReader<OffsetReader<T>>>, io::Error> {
+/// Presents disjoint IPC message ranges as one continuous Arrow stream.
+/// Unlike `OffsetReader`, bytes are read directly into the caller's buffer;
+/// an entire record-batch message is never copied into an intermediate buffer.
+#[derive(Debug)]
+pub(crate) struct MessageRangeReader<R: Read + Seek> {
+    reader: R,
+    ranges: IntoIter<(u64, usize)>,
+    current_offset: u64,
+    remaining: usize,
+    positioned: bool,
+    finished: bool,
+}
+
+impl<R: Read + Seek> MessageRangeReader<R> {
+    fn new(reader: R, ranges: Vec<(u64, usize)>) -> Self {
+        let mut ranges = ranges.into_iter();
+        let first = ranges.next();
+        let (current_offset, remaining) = first.unwrap_or_default();
+        Self {
+            reader,
+            ranges,
+            current_offset,
+            remaining,
+            positioned: false,
+            finished: first.is_none(),
+        }
+    }
+
+    fn advance(&mut self) {
+        match self.ranges.next() {
+            Some((offset, size)) => {
+                self.current_offset = offset;
+                self.remaining = size;
+                self.positioned = false;
+            }
+            None => self.finished = true,
+        }
+    }
+}
+
+impl<R: Read + Seek> Read for MessageRangeReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() || self.finished {
+            return Ok(0);
+        }
+
+        while self.remaining == 0 {
+            self.advance();
+            if self.finished {
+                return Ok(0);
+            }
+        }
+
+        if !self.positioned {
+            self.reader.seek(SeekFrom::Start(self.current_offset))?;
+            self.positioned = true;
+        }
+
+        let max_read = self.remaining.min(buf.len());
+        let read = self.reader.read(&mut buf[..max_read])?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Arrow IPC message ended before its declared boundary",
+            ));
+        }
+
+        self.current_offset += read as u64;
+        self.remaining -= read;
+        Ok(read)
+    }
+}
+
+/// Finds all complete IPC messages, excluding a crash-truncated tail.
+fn complete_messages<T: Read + Seek>(
+    reader: &mut T,
+) -> Result<Vec<(MessageHeader, usize, usize)>, io::Error> {
     let file_len = reader.seek(SeekFrom::End(0))?;
     reader.rewind()?;
 
@@ -247,7 +491,7 @@ pub fn get_reverse_reader<T: Read + Seek>(
     let mut messages = Vec::new();
 
     loop {
-        match find_limit_and_type(&mut reader) {
+        match find_limit_and_type(reader) {
             Ok(Some((header, size))) => {
                 let next_offset = offset.checked_add(size).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "Arrow message size overflow")
@@ -290,7 +534,36 @@ pub fn get_reverse_reader<T: Read + Seek>(
         ));
     }
 
-    // reverse everything leaving the first because it has schema message.
+    Ok(messages)
+}
+
+/// Builds a forward Arrow stream reader over only complete IPC messages.
+#[cfg(test)]
+pub fn get_forward_reader<T: Read + Seek>(
+    mut reader: T,
+) -> Result<StreamReader<BufReader<Take<T>>>, io::Error> {
+    let messages = complete_messages(&mut reader)?;
+    let complete_len = messages
+        .last()
+        .map(|(_, offset, size)| offset + size)
+        .expect("complete_messages requires a schema and record batch");
+    reader.rewind()?;
+
+    StreamReader::try_new(BufReader::new(reader.take(complete_len as u64)), None).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid arrow stream: {e}"),
+        )
+    })
+}
+
+/// Builds a reverse Arrow stream reader from complete IPC messages.
+pub fn get_reverse_reader<T: Read + Seek>(
+    mut reader: T,
+) -> Result<StreamReader<BufReader<OffsetReader<T>>>, io::Error> {
+    let mut messages = complete_messages(&mut reader)?;
+
+    // Reverse everything leaving the first because it has schema message.
     messages[1..].reverse();
     let messages = messages
         .into_iter()
@@ -362,14 +635,16 @@ fn find_limit_and_type(
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::VecDeque,
         io::{self, Cursor, Read},
         path::Path,
         sync::Arc,
     };
 
     use arrow_array::{
-        Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, cast::AsArray,
-        types::Int64Type,
+        Array, DictionaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+        cast::AsArray,
+        types::{Int32Type, Int64Type},
     };
     use arrow_ipc::{
         MessageHeader,
@@ -385,13 +660,13 @@ mod tests {
     use crate::{
         OBJECT_STORE_DATA_GRANULARITY,
         parseable::staging::{
-            reader::{MergedReverseRecordReader, OffsetReader},
+            reader::{MergedForwardRecordReader, MergedReverseRecordReader, OffsetReader},
             writer::DiskWriter,
         },
         utils::time::TimeRange,
     };
 
-    use super::{find_limit_and_type, get_reverse_reader};
+    use super::{find_limit_and_type, get_forward_reader, get_reverse_reader};
 
     fn rb(rows: usize) -> RecordBatch {
         let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..(rows as i64)));
@@ -444,6 +719,30 @@ mod tests {
 
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 2);
+    }
+
+    #[test]
+    fn forward_reader_recovers_complete_batches_before_truncated_tail() {
+        let mut bytes = write_mem(&[rb(2), rb(3)]);
+        truncate_last_record_batch(&mut bytes);
+
+        let reader = get_forward_reader(Cursor::new(bytes)).unwrap();
+        let batches = reader.collect::<Result<Vec<_>, _>>().unwrap();
+
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 2);
+    }
+
+    #[test]
+    fn forward_reader_preserves_batch_order() {
+        let bytes = write_mem(&[rb(1), rb(2), rb(3)]);
+
+        let reader = get_forward_reader(Cursor::new(bytes)).unwrap();
+        let rows = reader
+            .map(|batch| batch.unwrap().num_rows())
+            .collect::<Vec<_>>();
+
+        assert_eq!(rows, vec![1, 2, 3]);
     }
 
     #[test]
@@ -693,6 +992,86 @@ mod tests {
 
         // No more batches
         assert!(reader.next().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn forward_reader_lanes_preserve_original_batch_order() -> io::Result<()> {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("striped.data.arrows");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        write_test_batches(&file_path, &schema, &create_test_batches(&schema, 10))?;
+
+        let plan = MergedForwardRecordReader::try_new(&[file_path])
+            .into_file_plans()
+            .next()
+            .unwrap();
+        let lanes = plan.open_lanes(4)?;
+        assert_eq!(
+            lanes
+                .iter()
+                .map(|lane| lane.record_batches)
+                .collect::<Vec<_>>(),
+            vec![3, 3, 2, 2]
+        );
+
+        let mut batches_by_lane = lanes
+            .into_iter()
+            .map(|lane| lane.reader.collect::<Result<VecDeque<_>, _>>().unwrap())
+            .collect::<Vec<_>>();
+        let first_ids = (0..10)
+            .map(|batch_index| {
+                let batch = batches_by_lane[batch_index % 4].pop_front().unwrap();
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .value(0)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(first_ids, vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn forward_reader_lanes_receive_dictionary_messages() -> io::Result<()> {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("dictionary.data.arrows");
+        let dictionary = DictionaryArray::<Int32Type>::from_iter(["alpha", "beta"]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", dictionary.data_type().clone(), false),
+        ]));
+        let batches = (0..8)
+            .map(|batch| {
+                RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int32Array::from(vec![batch * 2, batch * 2 + 1])),
+                        Arc::new(DictionaryArray::<Int32Type>::from_iter(["alpha", "beta"])),
+                    ],
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        write_test_batches(&file_path, &schema, &batches)?;
+
+        let plan = MergedForwardRecordReader::try_new(&[file_path])
+            .into_file_plans()
+            .next()
+            .unwrap();
+        let decoded_batches = plan
+            .open_lanes(4)?
+            .into_iter()
+            .map(|lane| lane.reader.collect::<Result<Vec<_>, _>>().unwrap().len())
+            .sum::<usize>();
+        assert_eq!(decoded_batches, 8);
 
         Ok(())
     }

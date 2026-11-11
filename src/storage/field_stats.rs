@@ -203,7 +203,7 @@ async fn calculate_field_stats_inner(
             &p_custom_fields,
             TelemetryType::Logs,
             tenant_id,
-            true,
+            false,
         )?
         .process()?;
     }

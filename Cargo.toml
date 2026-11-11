@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "3.2.0"
+version = "3.2.6"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2024"
 rust-version = "1.94.0"
@@ -83,7 +83,7 @@ serde_json = "1.0.150"
 serde_repr = "0.1.20"
 
 # Async and Runtime
-async-trait = "0.1.89"
+async-trait = "0.1.92"
 futures = "0.3.32"
 futures-util = "0.3.32"
 tokio = { version = "^1.52.3", default-features = false, features = [
@@ -138,6 +138,7 @@ tracing-actix-web = "0.7"
 
 # Time and Date
 chrono = "0.4"
+chrono-tz = "0.10"
 chrono-humanize = "0.2"
 humantime = "2.1.0"
 humantime-serde = "1.1"
@@ -217,8 +218,11 @@ vergen-gitcl = { version = "9.1.0", features = [
     "rustc",
     "si",
 ] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 anyhow = "1.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = { version = "0.18.0", default-features = false }
 
 [dev-dependencies]
 rstest = "0.26.1"
@@ -226,8 +230,8 @@ arrow = "59.2.0"
 temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
-assets-url = "https://parseableprismbuild.blob.core.windows.net/parseable-prism-build/v3.2.0/build.zip"
-assets-sha1 = "c888abb568a2951811181f2962bbf5942a17a226"
+assets-url = "https://parseableprismbuild.blob.core.windows.net/parseable-prism-build/v3.2.6/build.zip"
+assets-sha1 = "5e8f22cf2e21464f896d3ef48f77951bdafa1ef9"
 
 [features]
 debug = []

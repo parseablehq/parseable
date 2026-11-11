@@ -18,6 +18,7 @@
 
 pub mod dashboards;
 pub mod filters;
+pub mod preferences;
 
 use serde::{Deserialize, Serialize};
 

@@ -577,8 +577,7 @@ fn get_kafka_prompts() -> Vec<EnvPrompt> {
 ///
 /// Must be called **before** `PARSEABLE` is accessed and before license
 /// verification, so that `.parseable.env` values are loaded and the user
-/// gets a chance to provide missing vars like `P_CLUSTER_SECRET` and
-/// the license file paths.
+/// gets a chance to provide missing vars like `P_CLUSTER_SECRET`.
 ///
 /// Returns collected `(env_var, value)` pairs. Call [`save_collected_envs`]
 /// after validation succeeds to persist them.
@@ -597,7 +596,7 @@ pub fn prompt_enterprise_envs() -> Vec<(String, String)> {
     let is_interactive = io::stdin().is_terminal();
     let mut collected: Vec<(String, String)> = Vec::new();
 
-    // Phase 1: base enterprise vars (license, cluster secret, mode)
+    // Phase 1: base enterprise vars (cluster secret and mode)
     let base_prompts = get_enterprise_base_prompts();
     collect_prompts(
         &base_prompts,
@@ -696,34 +695,14 @@ fn collect_prompts(
     println!();
 }
 
-/// Returns base enterprise env var prompts (license, cluster secret, mode).
+/// Returns base enterprise env var prompts (cluster secret and mode).
 fn get_enterprise_base_prompts() -> Vec<EnvPrompt> {
-    let mut prompts = vec![
-        EnvPrompt {
-            env_var: "P_LICENSE_DATA_FILE_PATH",
-            display_name: "License Data File Path",
-            required: true,
-            is_secret: false,
-        },
-        EnvPrompt {
-            env_var: "P_LICENSE_SIGNATURE_BASE64",
-            display_name: "License Signature Base64 (priority)",
-            required: false,
-            is_secret: false,
-        },
-        EnvPrompt {
-            env_var: "P_LICENSE_SIGNATURE_FILE_PATH",
-            display_name: "License Signature File Path",
-            required: false,
-            is_secret: false,
-        },
-        EnvPrompt {
-            env_var: "P_CLUSTER_SECRET",
-            display_name: "Cluster Secret",
-            required: true,
-            is_secret: true,
-        },
-    ];
+    let mut prompts = vec![EnvPrompt {
+        env_var: "P_CLUSTER_SECRET",
+        display_name: "Cluster Secret",
+        required: true,
+        is_secret: true,
+    }];
 
     // Enterprise rejects "all" mode, so prompt if not explicitly set
     if detect_mode().is_none() {
