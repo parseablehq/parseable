@@ -48,14 +48,16 @@ const MAX_ATTEMPTS: u32 = 3;
 const BACKOFF_BASE: Duration = Duration::from_millis(200);
 const AUTHORITY_CACHE_TTL: Duration = Duration::from_secs(30);
 
+/// An authority without the resolve endpoint (or protocol) blocks streams with new fields
+/// until it is upgraded, so upgrade the querier/Prism before the ingestors.
+const UPGRADE_AUTHORITY: &str =
+    "schema authority does not support this schema resolution protocol; upgrade the querier/Prism";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveFailure {
     /// Network error, timeout, overload or an authority that is not ready. Retry later.
     #[error("schema authority unavailable: {0}")]
     Transient(String),
-    /// The authority does not know this endpoint (older querier).
-    #[error("schema authority does not support schema resolution")]
-    AuthorityTooOld,
     #[error("stream not found on the schema authority")]
     StreamNotFound,
     #[error("stream is being deleted")]
@@ -213,7 +215,9 @@ async fn attempt(req: &ResolveRequest) -> Attempt {
         Ok(body) => match body.code {
             ErrorCode::StreamNotFound => Attempt::Done(Err(ResolveFailure::StreamNotFound)),
             ErrorCode::StreamDeleting => Attempt::Done(Err(ResolveFailure::StreamDeleting)),
-            ErrorCode::UnsupportedProtocol => Attempt::Done(Err(ResolveFailure::AuthorityTooOld)),
+            ErrorCode::UnsupportedProtocol => {
+                Attempt::Done(Err(ResolveFailure::Rejected(UPGRADE_AUTHORITY.into())))
+            }
             ErrorCode::BadRequest => Attempt::Done(Err(ResolveFailure::Rejected(body.message))),
             ErrorCode::Unavailable => Attempt::Retry(body.message),
         },
@@ -223,7 +227,7 @@ async fn attempt(req: &ResolveRequest) -> Attempt {
                 // Also a node that never serves resolution (an enterprise querier picked
                 // before Prism registered): re-discover on the next attempt.
                 invalidate_authority();
-                Attempt::Done(Err(ResolveFailure::AuthorityTooOld))
+                Attempt::Done(Err(ResolveFailure::Rejected(UPGRADE_AUTHORITY.into())))
             }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Attempt::Done(Err(
                 ResolveFailure::Rejected(format!("authority refused credentials ({status})")),
@@ -235,11 +239,24 @@ async fn attempt(req: &ResolveRequest) -> Attempt {
 
 /// Resolves with a few short in-process retries. Cross-cycle retries are the caller's job.
 pub async fn resolve(req: ResolveRequest) -> Result<ResolveResponse, ResolveFailure> {
+    // Only a cluster-secret request carries a tenant other than the caller's own (the
+    // authority takes it from `intra-cluster-tenant`); plain credentials resolve the
+    // default tenant only.
+    if CLUSTER_SECRET.get().is_none()
+        && req
+            .tenant_id
+            .as_deref()
+            .is_some_and(|t| t != crate::parseable::DEFAULT_TENANT)
+    {
+        return Err(ResolveFailure::Rejected(
+            "schema resolution for a tenant stream requires P_CLUSTER_SECRET".into(),
+        ));
+    }
     let _permit = PERMITS
         .acquire()
         .await
         .map_err(|e| ResolveFailure::Transient(e.to_string()))?;
-    let mut last = String::new();
+    let mut last = String::default();
     for n in 0..MAX_ATTEMPTS {
         match attempt(&req).await {
             Attempt::Done(result) => return result,

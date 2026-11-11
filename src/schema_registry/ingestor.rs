@@ -40,8 +40,6 @@ use arrow_schema::{DataType, Field, Schema};
 use tracing::{error, warn};
 use ulid::Ulid;
 
-use crate::option::SchemaResolveMode;
-
 use super::{
     client::ResolveFailure,
     protocol::{PROTOCOL_VERSION, ResolveRequest, ResolveResponse},
@@ -56,7 +54,6 @@ pub struct ResolveContext<'a> {
     pub tenant_id: &'a Option<String>,
     pub node_id: String,
     pub data_path: &'a Path,
-    pub mode: SchemaResolveMode,
     pub max_deferred_cycles: u32,
     pub resolver: &'a Resolver<'a>,
 }
@@ -180,24 +177,12 @@ impl ResolutionState {
                 }
                 on_apply(&next);
                 let next = Arc::new(next);
-                *self.view.write().expect("view lock poisoned") = next.clone();
+                self.view
+                    .write()
+                    .expect("view lock poisoned")
+                    .clone_from(&next);
                 *self.pending_request.lock().expect("lock poisoned") = None;
                 self.finish(ctx, &next, schemas)
-            }
-            // Rolling upgrades: in `require` mode an authority without the resolve endpoint
-            // counts as a failure, so upgrade the querier/Prism before the ingestors.
-            // Ingestors upgraded first block streams with new fields after
-            // `max_deferred_cycles` until the authority is upgraded.
-            Err(ResolveFailure::AuthorityTooOld) if ctx.mode == SchemaResolveMode::Prefer => {
-                warn!(
-                    stream = ctx.stream,
-                    "schema authority does not support resolution; converting with local types"
-                );
-                self.reset();
-                ResolutionOutcome {
-                    ready: schemas.into_iter().map(|(p, _)| p).collect(),
-                    deferred: Vec::new(),
-                }
             }
             Err(ResolveFailure::StreamDeleting) => {
                 // The stream is going away; nothing to resolve and nothing to block.
@@ -216,15 +201,21 @@ impl ResolutionState {
         view: &ResolvedView,
         schemas: Vec<(PathBuf, Option<Arc<Schema>>)>,
     ) -> ResolutionOutcome {
-        let blocking: Vec<String> = schemas
+        let mut blocking: BTreeSet<String> = schemas
             .iter()
             .filter_map(|(_, s)| s.as_ref())
             .flat_map(|s| s.fields().iter())
             .filter(|f| view.field_state(f.name(), f.data_type()) == FieldState::Unresolvable)
             .map(|f| format!("{} ({})", f.name(), f.data_type()))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
             .collect();
+        blocking.extend(
+            schemas
+                .iter()
+                .filter_map(|(_, s)| s.as_ref())
+                .filter_map(|s| view.rename_schema(s).err())
+                .map(|e| e.to_string()),
+        );
+        let blocking: Vec<String> = blocking.into_iter().collect();
         let outcome = self.split(view, schemas);
         if blocking.is_empty() {
             self.reset();
@@ -248,15 +239,17 @@ impl ResolutionState {
         let mut ready = Vec::new();
         let mut deferred = Vec::new();
         for (path, schema) in schemas {
-            let convertible = match &schema {
-                // Unreadable files are left to the conversion path, which already
-                // classifies and removes invalid arrow files.
-                None => true,
-                Some(schema) => schema
-                    .fields()
-                    .iter()
-                    .all(|f| view.field_state(f.name(), f.data_type()) == FieldState::Resolved),
-            };
+            let convertible =
+                match &schema {
+                    // Unreadable files are left to the conversion path, which already
+                    // classifies and removes invalid arrow files.
+                    None => true,
+                    Some(schema) => {
+                        schema.fields().iter().all(|f| {
+                            view.field_state(f.name(), f.data_type()) == FieldState::Resolved
+                        }) && view.rename_schema(schema).is_ok()
+                    }
+                };
             if convertible {
                 ready.push(path);
             } else {
@@ -267,7 +260,7 @@ impl ResolutionState {
     }
 
     fn request_id(&self, fields: &[Field]) -> Ulid {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = std::collections::hash_map::DefaultHasher::default();
         for f in fields {
             f.name().hash(&mut hasher);
             f.data_type().hash(&mut hasher);
@@ -301,8 +294,15 @@ fn unresolved_fields(
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for schema in schemas.iter().filter_map(|(_, s)| s.as_ref()) {
+        // A cached rename can land on a column this file already carries (`a` -> `a_utf8`
+        // next to a literal `a_utf8`). Send every column of such a file, so the authority
+        // sees the names in use and picks a free target.
+        let collides = view.rename_schema(schema).is_err();
         for f in schema.fields() {
-            if view.field_state(f.name(), f.data_type()) == FieldState::Unresolved
+            if f.data_type().is_null() {
+                continue;
+            }
+            if (collides || view.field_state(f.name(), f.data_type()) == FieldState::Unresolved)
                 && seen.insert((f.name().clone(), f.data_type().clone()))
             {
                 out.push((f.name().clone(), f.data_type().clone()));
@@ -370,7 +370,6 @@ mod tests {
             tenant_id: tenant,
             node_id: "n".into(),
             data_path: dir,
-            mode: SchemaResolveMode::Require,
             max_deferred_cycles: 3,
             resolver,
         }
@@ -442,6 +441,62 @@ mod tests {
             ResolutionState::load(d2.path()).view().as_ref(),
             v2.as_ref()
         );
+    }
+
+    #[test]
+    fn cached_rename_colliding_with_a_column_is_re_resolved() {
+        let registry = RefCell::new(StreamRegistry::default());
+        let resolver = registry_resolver(&registry);
+        let tenant = None;
+        let dir = tempfile::tempdir().unwrap();
+        let state = ResolutionState::default();
+
+        // Another node owns `a: Int64`; this node's first file maps `a: Utf8` to `a_utf8`.
+        registry
+            .borrow_mut()
+            .apply(&[("a".to_string(), DataType::Int64)]);
+        let first = write_arrow(
+            dir.path(),
+            "1.arrows",
+            Field::new("a", DataType::Utf8, true),
+            Arc::new(StringArray::from(vec!["x"])),
+        );
+        let out = state.ensure_resolved(&ctx(dir.path(), &resolver, &tenant), vec![first], |_| {});
+        assert_eq!(out.deferred.len(), 0);
+        assert_eq!(
+            state.view().renames[&("a".to_string(), DataType::Utf8)],
+            "a_utf8"
+        );
+
+        // A later file carries both `a: Utf8` and a literal `a_utf8`: both count as resolved,
+        // but the cached rename would duplicate `a_utf8`.
+        let path = dir.path().join("2.arrows");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Utf8, true),
+            Field::new("a_utf8", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["x"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["y"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let mut w = StreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+        w.write(&batch).unwrap();
+        w.finish().unwrap();
+
+        let out = state.ensure_resolved(
+            &ctx(dir.path(), &resolver, &tenant),
+            vec![path.clone()],
+            |_| {},
+        );
+        assert_eq!(out.ready, vec![path]);
+        assert!(!state.is_blocked());
+        let renamed = state.view().rename_schema(&schema).unwrap().unwrap();
+        let names: Vec<_> = renamed.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["a_utf8_utf8", "a_utf8"]);
     }
 
     #[test]
@@ -538,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn too_old_authority_falls_back_in_prefer_mode() {
+    fn authority_without_resolution_defers() {
         let dir = tempfile::tempdir().unwrap();
         let tenant = None;
         let file = write_arrow(
@@ -547,15 +602,12 @@ mod tests {
             Field::new("a", DataType::Int64, true),
             Arc::new(Int64Array::from(vec![1])),
         );
-        let old = |_req: ResolveRequest| Err(ResolveFailure::AuthorityTooOld);
+        let old = |_req: ResolveRequest| Err(ResolveFailure::Rejected("upgrade".into()));
         let state = ResolutionState::default();
-        let mut c = ctx(dir.path(), &old, &tenant);
-        c.mode = SchemaResolveMode::Prefer;
-        let out = state.ensure_resolved(&c, vec![file.clone()], |_| {});
-        assert_eq!(out.ready, vec![file.clone()]);
-        c.mode = SchemaResolveMode::Require;
-        let out = state.ensure_resolved(&c, vec![file.clone()], |_| {});
+        let out =
+            state.ensure_resolved(&ctx(dir.path(), &old, &tenant), vec![file.clone()], |_| {});
         assert_eq!(out.deferred, vec![file]);
+        assert_eq!(state.deferred_cycles(), 1);
     }
 
     #[test]

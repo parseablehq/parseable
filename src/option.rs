@@ -30,19 +30,6 @@ pub enum Mode {
     All,
 }
 
-/// How an ingestor reconciles new field types with the schema authority.
-/// Only distributed ingestors (`P_MODE=ingest`) use it; standalone mode has one schema.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum SchemaResolveMode {
-    /// Escape hatch: every ingestor keeps its locally inferred types (legacy behaviour).
-    Off,
-    /// Resolve with the authority; fall back to local types only if the authority is too old.
-    Prefer,
-    /// Resolve with the authority; never convert unresolved fields (default).
-    #[default]
-    Require,
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error(
     "Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled."
@@ -158,18 +145,6 @@ pub mod validation {
             "all" => Ok(Mode::All),
             "index" => Ok(Mode::Index),
             _ => Err("Invalid MODE provided".to_string()),
-        }
-    }
-
-    pub fn schema_resolve_mode(s: &str) -> Result<super::SchemaResolveMode, String> {
-        use super::SchemaResolveMode;
-        match s {
-            "off" => Ok(SchemaResolveMode::Off),
-            "prefer" => Ok(SchemaResolveMode::Prefer),
-            "require" => Ok(SchemaResolveMode::Require),
-            _ => Err(
-                "Invalid schema resolve mode, expected one of: off, prefer, require".to_string(),
-            ),
         }
     }
 

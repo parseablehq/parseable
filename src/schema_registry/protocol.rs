@@ -134,7 +134,7 @@ mod tests {
         let body = ResolveErrorBody {
             protocol_version: 1,
             code: ErrorCode::StreamNotFound,
-            message: String::new(),
+            message: String::default(),
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["code"], "STREAM_NOT_FOUND");

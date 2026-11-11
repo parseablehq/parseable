@@ -26,7 +26,7 @@ use crate::connectors::kafka::config::KafkaConfig;
 
 use crate::{
     oidc::{self, OpenidConfig},
-    option::{Compression, Mode, SchemaResolveMode, validation},
+    option::{Compression, Mode, validation},
     storage::{AzureBlobConfig, FSConfig, GcsConfig, S3Config},
 };
 
@@ -560,12 +560,11 @@ pub struct Options {
 
     #[arg(
         long,
-        env = "P_SCHEMA_RESOLVE_MODE",
-        default_value = "require",
-        value_parser = validation::schema_resolve_mode,
-        help = "Distributed ingestors: reconcile new field types with the querier before writing parquet (off, prefer, require)"
+        env = "P_SCHEMA_RESOLUTION",
+        default_value = "true",
+        help = "Distributed ingestors: reconcile new field types with the schema authority (querier or Prism) before writing parquet. Upgrade the authority before the ingestors."
     )]
-    pub schema_resolve_mode: SchemaResolveMode,
+    pub schema_resolution: bool,
 
     #[arg(
         long,
