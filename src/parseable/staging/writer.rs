@@ -74,6 +74,16 @@ pub struct Writer {
     pub disk: HashMap<String, DiskWriter>,
 }
 
+impl Writer {
+    /// Disk-only writer, for nodes that never serve queries from staging.
+    pub fn without_memory() -> Self {
+        Self {
+            mem: None,
+            disk: HashMap::new(),
+        }
+    }
+}
+
 impl Default for Writer {
     fn default() -> Self {
         let mem = if *ENABLE_MEMORY_STAGING {

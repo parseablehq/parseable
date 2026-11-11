@@ -26,7 +26,7 @@ use crate::connectors::kafka::config::KafkaConfig;
 
 use crate::{
     oidc::{self, OpenidConfig},
-    option::{Compression, Mode, validation},
+    option::{Compression, Mode, SchemaResolveMode, validation},
     storage::{AzureBlobConfig, FSConfig, GcsConfig, S3Config},
 };
 
@@ -557,6 +557,32 @@ pub struct Options {
         help = "URL to connect to this specific querier. Default is the address of the server"
     )]
     pub querier_endpoint: String,
+
+    #[arg(
+        long,
+        env = "P_SCHEMA_RESOLVE_MODE",
+        default_value = "require",
+        value_parser = validation::schema_resolve_mode,
+        help = "Distributed ingestors: reconcile new field types with the querier before writing parquet (off, prefer, require)"
+    )]
+    pub schema_resolve_mode: SchemaResolveMode,
+
+    #[arg(
+        long,
+        env = "P_SCHEMA_RESOLVE_MAX_DEFERRED_CYCLES",
+        default_value = "3",
+        help = "Failed resolution cycles after which a stream rejects ingestion with 503 (0 = never)"
+    )]
+    pub schema_resolve_max_deferred_cycles: u32,
+
+    #[arg(
+        long,
+        env = "P_SCHEMA_RESOLVE_CONCURRENCY",
+        default_value = "8",
+        value_parser = value_parser!(u16).range(1..),
+        help = "Maximum concurrent schema resolution requests from one ingestor"
+    )]
+    pub schema_resolve_concurrency: u16,
 
     #[arg(
         long,

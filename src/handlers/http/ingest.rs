@@ -582,6 +582,8 @@ impl actix_web::ResponseError for PostError {
 
             StreamNotFound(_) | Event(EventError::StreamNotFound(_)) => StatusCode::NOT_FOUND,
 
+            Event(EventError::SchemaResolutionBlocked(_, _)) => StatusCode::SERVICE_UNAVAILABLE,
+
             Event(_)
             | CreateStream(_)
             | CustomError(_)
@@ -604,6 +606,12 @@ impl actix_web::ResponseError for PostError {
                 actix_web::HttpResponse::build(metastore_error.status_code())
                     .insert_header(ContentType::json())
                     .json(metastore_error.to_detail())
+            }
+            PostError::Event(EventError::SchemaResolutionBlocked(_, _)) => {
+                actix_web::HttpResponse::build(self.status_code())
+                    .insert_header(ContentType::plaintext())
+                    .insert_header((actix_web::http::header::RETRY_AFTER, "60"))
+                    .body(self.to_string())
             }
             _ => actix_web::HttpResponse::build(self.status_code())
                 .insert_header(ContentType::plaintext())

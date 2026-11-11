@@ -861,6 +861,17 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError> {
+        // On the schema authority, serialise this writer of the stream-level `.schema`
+        // with resolutions, and make the authority re-read it afterwards.
+        let _authority_guard = if matches!(PARSEABLE.options.mode, Mode::Query | Mode::Prism) {
+            Some(
+                crate::schema_registry::authority::SCHEMA_AUTHORITY
+                    .lock_and_invalidate(tenant_id, stream_name)
+                    .await,
+            )
+        } else {
+            None
+        };
         let schema = fetch_schema(stream_name, tenant_id).await?;
         let schema_bytes = Bytes::from(serde_json::to_vec(&schema)?);
         // convert to bytes
@@ -1813,11 +1824,17 @@ pub async fn commit_schema_to_storage(
         .await
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
-    let new_schema = Schema::try_merge(vec![
-        schema,
-        serde_json::from_slice::<Schema>(&stream_schema)?,
-    ])
-    .map_err(|e| ObjectStorageError::Custom(e.to_string()))?;
+    let stored = serde_json::from_slice::<Schema>(&stream_schema)?;
+    let new_schema = if PARSEABLE.options.mode == Mode::Ingest
+        && PARSEABLE.options.schema_resolve_mode != crate::option::SchemaResolveMode::Off
+    {
+        // This node's own file: a type resolved by the schema authority replaces the type
+        // this node uploaded before the resolution.
+        crate::schema_registry::merge_schemas_tolerant(stream_name, [schema, stored])
+    } else {
+        Schema::try_merge(vec![schema, stored])
+            .map_err(|e| ObjectStorageError::Custom(e.to_string()))?
+    };
 
     PARSEABLE
         .metastore
