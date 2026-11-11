@@ -61,6 +61,7 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use std::time::Instant;
 use tokio::task::JoinSet;
@@ -1397,6 +1398,20 @@ fn stream_relative_path(
 pub static ACTIVE_STREAM_DELETIONS: Lazy<DashMap<(Option<String>, String), Instant>> =
     Lazy::new(DashMap::new);
 
+static STREAM_DELETION_OWNER_OVERRIDE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_stream_deletion_owner(is_owner: bool) {
+    STREAM_DELETION_OWNER_OVERRIDE.store(if is_owner { 1 } else { 2 }, Ordering::Relaxed);
+}
+
+pub(crate) fn is_stream_deletion_owner() -> bool {
+    match STREAM_DELETION_OWNER_OVERRIDE.load(Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => matches!(PARSEABLE.options.mode, Mode::Query | Mode::Prism | Mode::All),
+    }
+}
+
 /// RAII guard that removes a stream's entry from `ACTIVE_STREAM_DELETIONS` on
 /// drop, including on an unexpected panic inside the deletion task -- so a
 /// single bad run can't wedge all future retries for that stream by leaving
@@ -1416,6 +1431,10 @@ impl Drop for StreamDeletionGuard {
 /// prefix delete completes. Safe to call more than once for the same
 /// stream: a job already in flight is skipped rather than duplicated.
 pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
+    if !is_stream_deletion_owner() {
+        return;
+    }
+
     let key = (tenant_id, stream_name);
     match ACTIVE_STREAM_DELETIONS.entry(key.clone()) {
         Entry::Occupied(_) => return,
@@ -1535,10 +1554,7 @@ fn spawn_deleting_stream_reconciliation(
 ) {
     // Only the designated coordinator resumes physical deletion: Query in
     // OSS, Prism in Enterprise, or All in standalone mode.
-    let is_deletion_owner = matches!(
-        PARSEABLE.options.mode,
-        Mode::Query | Mode::Prism | Mode::All
-    );
+    let is_deletion_owner = is_stream_deletion_owner();
     joinset.spawn_on(
         async move {
             match is_tombstoned(object_store.as_ref(), &stream_name, &tenant_id).await {
@@ -1607,10 +1623,7 @@ fn spawn_tombstone_directory_reconciliation(
     object_store: Arc<dyn ObjectStorage>,
     tenant_id: Option<String>,
 ) {
-    let is_deletion_owner = matches!(
-        PARSEABLE.options.mode,
-        Mode::Query | Mode::Prism | Mode::All
-    );
+    let is_deletion_owner = is_stream_deletion_owner();
     joinset.spawn_on(
         async move {
             match list_tombstoned_streams(object_store.as_ref(), &tenant_id).await {
