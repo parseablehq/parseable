@@ -371,6 +371,12 @@ pub fn push_logs(
         event.process()?;
     } else {
         // Per-record path for custom-partitioned streams
+        // This path enters Rayon's parallel iterator. Release the metadata
+        // guard first so a worker that processes another request can acquire
+        // the write lock in commit_schema instead of deadlocking the pool.
+        let schema = schema.clone();
+        let custom_partition = custom_partition.cloned();
+        drop(metadata);
         let events: Result<Vec<_>, _> = data
             .into_par_iter()
             .map(|json| {
@@ -378,9 +384,9 @@ pub fn push_logs(
                 (json::Event { json, p_timestamp }).into_event(
                     stream_name.to_owned(),
                     origin_size,
-                    schema,
+                    &schema,
                     static_schema_flag,
-                    custom_partition,
+                    custom_partition.as_ref(),
                     time_partition.as_ref(),
                     schema_version,
                     StreamType::UserDefined,
@@ -391,7 +397,6 @@ pub fn push_logs(
                 )
             })
             .collect();
-        drop(metadata);
         for event in events.map_err(PostError::Invalid)? {
             event.process()?;
         }
