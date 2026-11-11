@@ -62,7 +62,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, RwLock,
-        mpsc::{SyncSender, sync_channel},
+        mpsc::{Sender, SyncSender, channel, sync_channel},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -117,6 +117,21 @@ static INGEST_WRITER_THREADPOOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
         .thread_name(|index| format!("ingest-writer-{index}"))
         .build()
         .expect("ingestion writer thread pool should be constructible")
+});
+static INGEST_WRITER_SCHEDULER: Lazy<Sender<Arc<Stream>>> = Lazy::new(|| {
+    let (sender, receiver) = channel::<Arc<Stream>>();
+    std::thread::Builder::new()
+        .name("ingest-writer-scheduler".to_owned())
+        .spawn(move || {
+            while let Ok(stream) = receiver.recv() {
+                // This dispatcher is outside the Rayon pool, so every drain is
+                // injected into the shared queue instead of a worker's private
+                // FIFO. Hot streams therefore cannot hide other streams' work.
+                INGEST_WRITER_THREADPOOL.spawn_fifo(move || stream.drain_push_queue());
+            }
+        })
+        .expect("ingestion writer scheduler should be constructible");
+    sender
 });
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
@@ -787,7 +802,9 @@ impl Stream {
 
         if should_schedule {
             let stream = Arc::clone(self);
-            INGEST_WRITER_THREADPOOL.spawn_fifo(move || stream.drain_push_queue());
+            INGEST_WRITER_SCHEDULER
+                .send(stream)
+                .expect("ingestion writer scheduler should remain available");
         }
 
         receiver
@@ -853,7 +870,9 @@ impl Stream {
 
         if should_reschedule {
             let stream = Arc::clone(&self);
-            INGEST_WRITER_THREADPOOL.spawn_fifo(move || stream.drain_push_queue());
+            INGEST_WRITER_SCHEDULER
+                .send(stream)
+                .expect("ingestion writer scheduler should remain available");
         }
     }
 
@@ -3569,10 +3588,18 @@ mod tests {
             );
         }
 
-        assert_eq!(stream.push_drain_tasks.load(AtomicOrdering::Relaxed), 2);
         let queue = stream.push_queue.lock().unwrap();
+        let (queue, wait_result) = stream
+            .push_queue_empty
+            .wait_timeout_while(queue, Duration::from_secs(5), |queue| queue.scheduled)
+            .unwrap();
+        assert!(
+            !wait_result.timed_out(),
+            "push queue did not finish draining"
+        );
         assert!(!queue.scheduled);
         assert!(queue.jobs.is_empty());
+        assert_eq!(stream.push_drain_tasks.load(AtomicOrdering::Relaxed), 2);
     }
 
     #[test]
