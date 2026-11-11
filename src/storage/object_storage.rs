@@ -1448,7 +1448,7 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
                 match PARSEABLE.get_stream(stream_name, tenant_id) {
                     Ok(stream) => {
                         stream.mark_deleting();
-                        stream.remove_staging(tenant_id)
+                        stream.remove_staging(tenant_id).await
                     }
                     Err(_) => {
                         // Recovery may have no resident Stream to clean through.
@@ -1456,7 +1456,7 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
                             .options
                             .local_stream_data_path(stream_name, tenant_id);
 
-                        match std::fs::remove_dir_all(path) {
+                        match tokio::fs::remove_dir_all(path).await {
                             Ok(()) => Ok(()),
                             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
                             Err(err) => Err(err.into()),
@@ -1550,7 +1550,7 @@ fn spawn_deleting_stream_reconciliation(
                     if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id)
                         && stream.is_deleting()
                     {
-                        match stream.remove_staging(&tenant_id) {
+                        match stream.remove_staging(&tenant_id).await {
                             Ok(()) => {
                                 if let Err(err) = stats::delete_stats(&stream_name, "json", &tenant_id) {
                                     warn!("failed to clear stats for deleted stream {stream_name}: {err}");
@@ -1662,7 +1662,7 @@ async fn reconcile_one_tombstoned_stream(
                 Ok(true) => {
                     stream.mark_deleting();
 
-                    if let Err(err) = stream.remove_staging(tenant_id) {
+                    if let Err(err) = stream.remove_staging(tenant_id).await {
                         warn!(
                             "failed to remove local staging for deleting stream \
                             {stream_name}: {err}"

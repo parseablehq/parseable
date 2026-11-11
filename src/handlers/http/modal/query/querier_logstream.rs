@@ -176,7 +176,7 @@ pub async fn delete(
 
     // Drain participating local work and finalize writers before removing this
     // querier's staging. The background job retries local cleanup if it fails.
-    if let Err(err) = stream.remove_staging(&tenant_id) {
+    if let Err(err) = stream.remove_staging(&tenant_id).await {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,

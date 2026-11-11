@@ -94,7 +94,7 @@ pub async fn delete(
     // sync, finalize writers, then remove staging and reset stats. Cleanup is
     // synchronous here; reconciliation retries it before evicting a stale entry.
     if (PARSEABLE.options.mode == Mode::Ingest || PARSEABLE.options.mode == Mode::All)
-        && let Err(err) = stream_dir.remove_staging(&tenant_id)
+        && let Err(err) = stream_dir.remove_staging(&tenant_id).await
     {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",

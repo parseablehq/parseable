@@ -154,7 +154,7 @@ pub async fn delete(
     // Wait for participating ingestion/sync, finalize disk writers, then remove
     // staging and reset stats under the stream's cleanup locks. The background
     // job retries local cleanup before deleting object storage if this fails.
-    if let Err(err) = stream.remove_staging(&tenant_id) {
+    if let Err(err) = stream.remove_staging(&tenant_id).await {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,
@@ -767,12 +767,6 @@ pub async fn get_stream_hot_tier_internal(
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
-    if PARSEABLE
-        .get_stream(&stream_name, &tenant_id)
-        .is_ok_and(|stream| stream.is_deleting())
-    {
-        return Err(StreamNotFound(stream_name.to_owned()).into());
-    }
 
     let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() else {
         return Err(StreamError::HotTierNotEnabled(stream_name.to_owned()));

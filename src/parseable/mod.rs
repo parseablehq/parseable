@@ -720,10 +720,15 @@ impl Parseable {
             // Keep the old object marked deleting while draining local work and
             // removing staging. On failure, retain the entry and reject recreation
             // so a replacement cannot inherit old schema/data files.
-            stream.remove_staging(tenant_id).map_err(|err| StreamError::Custom {
-                msg: format!("Failed to clean staging for deleting logstream {stream_name}: {err}"),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            })?;
+            stream
+                .remove_staging(tenant_id)
+                .await
+                .map_err(|err| StreamError::Custom {
+                    msg: format!(
+                        "Failed to clean staging for deleting logstream {stream_name}: {err}"
+                    ),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                })?;
             // Evict rather than clear the flag: outstanding Arc<Stream> handles
             // must remain unable to ingest. Returning false lets creation build
             // a fresh entry instead of reusing the old schema and metadata.
@@ -753,12 +758,15 @@ impl Parseable {
             if let Ok(stream) = self.get_stream(stream_name, tenant_id)
                 && stream.is_deleting()
             {
-                stream.remove_staging(tenant_id).map_err(|err| StreamError::Custom {
-                    msg: format!(
-                        "Failed to clean staging for deleting logstream {stream_name}: {err}"
-                    ),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                })?;
+                stream
+                    .remove_staging(tenant_id)
+                    .await
+                    .map_err(|err| StreamError::Custom {
+                        msg: format!(
+                            "Failed to clean staging for deleting logstream {stream_name}: {err}"
+                        ),
+                        status: StatusCode::INTERNAL_SERVER_ERROR,
+                    })?;
                 self.streams.delete(stream_name, tenant_id);
             }
         }

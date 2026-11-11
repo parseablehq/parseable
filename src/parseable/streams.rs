@@ -2316,8 +2316,21 @@ impl Stream {
     /// Drains participating local work, finalizes disk writers, and removes
     /// staging and dataset stats. The stream must already be marked deleting;
     /// callers must prevent recreation while cleaning and evicting this entry.
-    /// Does not delete object storage or evict the entry itself.
-    pub fn remove_staging(&self, tenant_id: &Option<String>) -> Result<(), StagingError> {
+    /// Does not delete object storage or evict the entry itself. Callers must
+    /// retain their creation lock until this future completes. Lock acquisition
+    /// and filesystem work run on the blocking pool, not the async worker.
+    pub async fn remove_staging(
+        self: &Arc<Self>,
+        tenant_id: &Option<String>,
+    ) -> Result<(), StagingError> {
+        let stream = Arc::clone(self);
+        let tenant_id = tenant_id.clone();
+        tokio::task::spawn_blocking(move || stream.remove_staging_blocking(&tenant_id))
+            .await
+            .map_err(|err| std::io::Error::other(format!("Staging cleanup task failed: {err}")))?
+    }
+
+    fn remove_staging_blocking(&self, tenant_id: &Option<String>) -> Result<(), StagingError> {
         // Keep the order activity -> schema -> writer. Exclusive activity access
         // waits for ingestion (including stats updates) and local conversion.
         let _staging_activity = self.staging_activity.write().map_err(|err| {
@@ -3107,6 +3120,53 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remove_staging_wait_does_not_block_async_worker() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Arc::new(Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        });
+        let stream = Arc::new(Stream::new(
+            options,
+            "cleanup_async_worker",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        ));
+        stream.mark_deleting();
+        fs::create_dir_all(stream.data_path.parent().unwrap()).unwrap();
+        // Force an I/O error after acquiring the locks, without global stats setup.
+        fs::write(&stream.data_path, b"not a directory").unwrap();
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let active_stream = Arc::clone(&stream);
+        let active_conversion = spawn(move || {
+            let _activity = active_stream.staging_activity.read().unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5))
+        });
+        ready_rx.await.unwrap();
+
+        let creation_lock = tokio::sync::Mutex::new(());
+        let creation_guard = creation_lock.lock().await;
+        let cleanup = async {
+            let _creation_guard = creation_guard;
+            stream.remove_staging(&None).await
+        };
+        let unrelated_request = async {
+            tokio::task::yield_now().await;
+            assert!(creation_lock.try_lock().is_err());
+            release_tx.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(cleanup, unrelated_request);
+
+        active_conversion.join().unwrap().unwrap();
+        assert!(matches!(result, Err(StagingError::ObjectStorage(_))));
+        assert!(creation_lock.try_lock().is_ok());
+    }
 
     #[test]
     fn parallel_metric_writer_creates_valid_ordered_row_groups() {
