@@ -88,7 +88,7 @@ use crate::{
 
 use super::{
     ARROW_FILE_EXTENSION, ARROW_PART_FILE_SUFFIX, LogStream, PARQUET_PART_FILE_SUFFIX,
-    PART_FILE_EXTENSION,
+    PART_FILE_EXTENSION, StreamCreationGuard,
     staging::{
         StagingError,
         reader::{
@@ -2317,17 +2317,23 @@ impl Stream {
     /// staging and dataset stats. The stream must already be marked deleting;
     /// callers must prevent recreation while cleaning and evicting this entry.
     /// Does not delete object storage or evict the entry itself. Callers must
-    /// retain their creation lock until this future completes. Lock acquisition
-    /// and filesystem work run on the blocking pool, not the async worker.
+    /// share their creation guard with the blocking task, which retains it even
+    /// if this future is cancelled. Lock acquisition and filesystem work run on
+    /// the blocking pool, not the async worker.
     pub async fn remove_staging(
         self: &Arc<Self>,
         tenant_id: &Option<String>,
+        creation_guard: &StreamCreationGuard,
     ) -> Result<(), StagingError> {
         let stream = Arc::clone(self);
         let tenant_id = tenant_id.clone();
-        tokio::task::spawn_blocking(move || stream.remove_staging_blocking(&tenant_id))
-            .await
-            .map_err(|err| std::io::Error::other(format!("Staging cleanup task failed: {err}")))?
+        let creation_guard = Arc::clone(creation_guard);
+        tokio::task::spawn_blocking(move || {
+            let _creation_guard = creation_guard;
+            stream.remove_staging_blocking(&tenant_id)
+        })
+        .await
+        .map_err(|err| std::io::Error::other(format!("Staging cleanup task failed: {err}")))?
     }
 
     fn remove_staging_blocking(&self, tenant_id: &Option<String>) -> Result<(), StagingError> {
@@ -3150,12 +3156,10 @@ mod tests {
         });
         ready_rx.await.unwrap();
 
-        let creation_lock = tokio::sync::Mutex::new(());
-        let creation_guard = creation_lock.lock().await;
-        let cleanup = async {
-            let _creation_guard = creation_guard;
-            stream.remove_staging(&None).await
-        };
+        static CREATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let creation_lock = &CREATION_LOCK;
+        let creation_guard = Arc::new(creation_lock.lock().await);
+        let cleanup = async move { stream.remove_staging(&None, &creation_guard).await };
         let unrelated_request = async {
             tokio::task::yield_now().await;
             assert!(creation_lock.try_lock().is_err());
@@ -3166,6 +3170,67 @@ mod tests {
         active_conversion.join().unwrap().unwrap();
         assert!(matches!(result, Err(StagingError::ObjectStorage(_))));
         assert!(creation_lock.try_lock().is_ok());
+    }
+
+    #[test]
+    fn remove_staging_cancelled_caller_keeps_creation_locked_until_cleanup_finishes() {
+        static CREATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let temp_dir = TempDir::new().unwrap();
+            let stream = Arc::new(Stream::new(
+                Arc::new(Options {
+                    local_staging_path: temp_dir.path().to_path_buf(),
+                    ..Default::default()
+                }),
+                "cleanup_cancelled_caller",
+                LogStreamMetadata::default(),
+                None,
+                &None,
+            ));
+            stream.mark_deleting();
+            fs::create_dir_all(stream.data_path.parent().unwrap()).unwrap();
+            // Fail before global stats access, after the queued cleanup starts.
+            fs::write(&stream.data_path, b"not a directory").unwrap();
+
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let blocker = runtime.spawn_blocking(move || {
+                ready_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+            ready_rx.await.unwrap();
+
+            let creation_guard = Arc::new(CREATION_LOCK.lock().await);
+            let caller_guard = Arc::clone(&creation_guard);
+            let cleanup =
+                tokio::spawn(async move { stream.remove_staging(&None, &caller_guard).await });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                // The third reference belongs to the queued blocking task.
+                while Arc::strong_count(&creation_guard) != 3 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            cleanup.abort();
+            assert!(cleanup.await.unwrap_err().is_cancelled());
+            drop(creation_guard);
+            assert!(CREATION_LOCK.try_lock().is_err());
+
+            release_tx.send(()).unwrap();
+            let replacement_guard =
+                tokio::time::timeout(Duration::from_secs(5), CREATION_LOCK.lock())
+                    .await
+                    .unwrap();
+            blocker.await.unwrap();
+            drop(replacement_guard);
+            assert!(CREATION_LOCK.try_lock().is_ok());
+        });
     }
 
     #[test]

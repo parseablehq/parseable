@@ -42,8 +42,8 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use dashmap::{DashMap, DashSet};
 use dashmap::mapref::entry::Entry;
+use dashmap::{DashMap, DashSet};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use itertools::Itertools;
 use object_store::ListResult;
@@ -1433,7 +1433,7 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
             } else {
                 &crate::handlers::http::logstream::CREATE_STREAM_LOCK
             };
-            let _creation_guard = creation_lock.lock().await;
+            let creation_guard = Arc::new(creation_lock.lock().await);
 
             match is_tombstoned(storage.as_ref(), stream_name, tenant_id).await {
                 Ok(true) => {}
@@ -1448,7 +1448,7 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
                 match PARSEABLE.get_stream(stream_name, tenant_id) {
                     Ok(stream) => {
                         stream.mark_deleting();
-                        stream.remove_staging(tenant_id).await
+                        stream.remove_staging(tenant_id, &creation_guard).await
                     }
                     Err(_) => {
                         // Recovery may have no resident Stream to clean through.
@@ -1456,7 +1456,15 @@ pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
                             .options
                             .local_stream_data_path(stream_name, tenant_id);
 
-                        match tokio::fs::remove_dir_all(path).await {
+                        let creation_guard = Arc::clone(&creation_guard);
+                        let cleanup = tokio::task::spawn_blocking(move || {
+                            let _creation_guard = creation_guard;
+                            std::fs::remove_dir_all(path)
+                        })
+                        .await
+                        .map_err(std::io::Error::other)
+                        .and_then(|result| result);
+                        match cleanup {
                             Ok(()) => Ok(()),
                             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
                             Err(err) => Err(err.into()),
@@ -1542,15 +1550,16 @@ fn spawn_deleting_stream_reconciliation(
                     }
                 }
                 Ok(false) if !is_deletion_owner => {
-                    let _creation_guard =
+                    let creation_guard = Arc::new(
                         crate::handlers::http::modal::ingest::ingestor_logstream::CREATE_STREAM_LOCK
-            .lock()
-            .await;
+                            .lock()
+                            .await,
+                    );
 
                     if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id)
                         && stream.is_deleting()
                     {
-                        match stream.remove_staging(&tenant_id).await {
+                        match stream.remove_staging(&tenant_id, &creation_guard).await {
                             Ok(()) => {
                                 if let Err(err) = stats::delete_stats(&stream_name, "json", &tenant_id) {
                                     warn!("failed to clear stats for deleted stream {stream_name}: {err}");
@@ -1648,7 +1657,7 @@ async fn reconcile_one_tombstoned_stream(
         _ => &crate::handlers::http::logstream::CREATE_STREAM_LOCK,
     };
 
-    let _creation_guard = creation_lock.lock().await;
+    let creation_guard = Arc::new(creation_lock.lock().await);
     match PARSEABLE.get_stream(&stream_name, tenant_id) {
         Ok(stream) if !stream.is_deleting() => {
             // list_tombstoned_streams is a snapshot -- by the time we get
@@ -1662,7 +1671,7 @@ async fn reconcile_one_tombstoned_stream(
                 Ok(true) => {
                     stream.mark_deleting();
 
-                    if let Err(err) = stream.remove_staging(tenant_id).await {
+                    if let Err(err) = stream.remove_staging(tenant_id, &creation_guard).await {
                         warn!(
                             "failed to remove local staging for deleting stream \
                             {stream_name}: {err}"

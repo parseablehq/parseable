@@ -40,6 +40,9 @@ use tracing::error;
 
 pub const DEFAULT_TENANT: &str = "DEFAULT_TENANT";
 
+/// Shared with blocking staging cleanup so cancellation cannot permit recreation.
+pub type StreamCreationGuard = Arc<tokio::sync::MutexGuard<'static, ()>>;
+
 #[cfg(feature = "kafka")]
 use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
@@ -696,6 +699,7 @@ impl Parseable {
         stream_name: &str,
         tenant_id: &Option<String>,
         stream_in_memory_dont_update: bool,
+        creation_guard: &StreamCreationGuard,
     ) -> Result<bool, StreamError> {
         // A resident entry may outlive deletion elsewhere, especially on an
         // ingestor. Distinguish an active deletion from an entry awaiting eviction.
@@ -721,7 +725,7 @@ impl Parseable {
             // removing staging. On failure, retain the entry and reject recreation
             // so a replacement cannot inherit old schema/data files.
             stream
-                .remove_staging(tenant_id)
+                .remove_staging(tenant_id, creation_guard)
                 .await
                 .map_err(|err| StreamError::Custom {
                     msg: format!(
@@ -759,7 +763,7 @@ impl Parseable {
                 && stream.is_deleting()
             {
                 stream
-                    .remove_staging(tenant_id)
+                    .remove_staging(tenant_id, creation_guard)
                     .await
                     .map_err(|err| StreamError::Custom {
                         msg: format!(
@@ -780,6 +784,7 @@ impl Parseable {
         body: &Bytes,
         stream_name: &str,
         tenant_id: &Option<String>,
+        creation_guard: &StreamCreationGuard,
     ) -> Result<HeaderMap, StreamError> {
         let PutStreamHeaders {
             time_partition_limit,
@@ -827,7 +832,12 @@ impl Parseable {
         let stream_in_memory_dont_update =
             self.streams.contains(stream_name, tenant_id) && !update_stream_flag;
         let stream_in_memory_dont_update = self
-            .reject_if_stream_deleting(stream_name, tenant_id, stream_in_memory_dont_update)
+            .reject_if_stream_deleting(
+                stream_name,
+                tenant_id,
+                stream_in_memory_dont_update,
+                creation_guard,
+            )
             .await?;
 
         // check if stream in storage only if not in memory

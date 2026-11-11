@@ -71,7 +71,7 @@ pub async fn delete(
     // Hold through local and hot-tier cleanup, not just the tombstone write.
     // A job started by reconciliation must wait here too, so it cannot finish
     // deletion and permit recreation while this handler still has cleanup left.
-    let _creation_guard = CREATE_STREAM_LOCK.lock().await;
+    let creation_guard = Arc::new(CREATE_STREAM_LOCK.lock().await);
     let stream = {
 
         if !PARSEABLE
@@ -154,7 +154,7 @@ pub async fn delete(
     // Wait for participating ingestion/sync, finalize disk writers, then remove
     // staging and reset stats under the stream's cleanup locks. The background
     // job retries local cleanup before deleting object storage if this fails.
-    if let Err(err) = stream.remove_staging(&tenant_id).await {
+    if let Err(err) = stream.remove_staging(&tenant_id, &creation_guard).await {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,
@@ -421,9 +421,15 @@ pub async fn put_stream(
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
 
-    let _guard = CREATE_STREAM_LOCK.lock().await;
+    let creation_guard = Arc::new(CREATE_STREAM_LOCK.lock().await);
     PARSEABLE
-        .create_update_stream(req.headers(), &body, &stream_name, &tenant_id)
+        .create_update_stream(
+            req.headers(),
+            &body,
+            &stream_name,
+            &tenant_id,
+            &creation_guard,
+        )
         .await?;
 
     Ok(("Log stream created", StatusCode::OK))

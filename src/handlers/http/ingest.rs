@@ -576,6 +576,8 @@ impl actix_web::ResponseError for PostError {
                 StatusCode::CONFLICT
             }
 
+            StreamNotFound(_) | Event(EventError::StreamNotFound(_)) => StatusCode::NOT_FOUND,
+
             Event(_)
             | CreateStream(_)
             | CustomError(_)
@@ -585,8 +587,6 @@ impl actix_web::ResponseError for PostError {
             | FiltersError(_)
             | StreamError(_)
             | JsonFlattenError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-
-            StreamNotFound(_) => StatusCode::NOT_FOUND,
 
             StreamBeingDeleted(_) => StatusCode::CONFLICT,
 
@@ -622,6 +622,30 @@ mod tests {
         event::format::{EventFormat, json},
         metadata::SchemaVersion,
     };
+
+    #[test]
+    fn event_stream_not_found_returns_not_found() {
+        use actix_web::{ResponseError, http::StatusCode};
+
+        let event_error = crate::event::error::EventError::from(crate::parseable::StreamNotFound(
+            "teststream".to_owned(),
+        ));
+        let error = super::PostError::from(event_error);
+
+        assert_eq!(error.status_code(), StatusCode::NOT_FOUND);
+        assert_eq!(error.error_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn direct_stream_not_found_returns_not_found() {
+        use actix_web::{ResponseError, http::StatusCode};
+
+        let error =
+            super::PostError::from(crate::parseable::StreamNotFound("teststream".to_owned()));
+
+        assert_eq!(error.status_code(), StatusCode::NOT_FOUND);
+        assert_eq!(error.error_response().status(), StatusCode::NOT_FOUND);
+    }
 
     #[test]
     fn event_staging_deleting_returns_conflict() {

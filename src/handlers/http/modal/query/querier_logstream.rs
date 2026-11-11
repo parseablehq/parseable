@@ -17,7 +17,7 @@
  */
 
 use core::str;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -70,7 +70,7 @@ pub async fn delete(
     // Hold through ingestor notification and local/hot-tier cleanup. A background
     // job must wait for this guard, so it cannot finish deletion and permit
     // recreation while this handler still has cleanup left to perform.
-    let _creation_guard = CREATE_STREAM_LOCK.lock().await;
+    let creation_guard = Arc::new(CREATE_STREAM_LOCK.lock().await);
 
     let stream = {
         // A querier may not have this dataset resident; try loading its metadata
@@ -176,7 +176,7 @@ pub async fn delete(
 
     // Drain participating local work and finalize writers before removing this
     // querier's staging. The background job retries local cleanup if it fails.
-    if let Err(err) = stream.remove_staging(&tenant_id).await {
+    if let Err(err) = stream.remove_staging(&tenant_id, &creation_guard).await {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,
@@ -212,9 +212,15 @@ pub async fn put_stream(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let _guard = CREATE_STREAM_LOCK.lock().await;
+    let creation_guard = Arc::new(CREATE_STREAM_LOCK.lock().await);
     let mut headers = PARSEABLE
-        .create_update_stream(req.headers(), &body, &stream_name, &tenant_id)
+        .create_update_stream(
+            req.headers(),
+            &body,
+            &stream_name,
+            &tenant_id,
+            &creation_guard,
+        )
         .await?;
 
     let is_update = if let Some(val) = headers.get(UPDATE_STREAM_KEY) {

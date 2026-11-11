@@ -16,6 +16,8 @@
  *
  */
 
+use std::sync::Arc;
+
 use actix_web::http::StatusCode;
 use actix_web::{
     HttpRequest, Responder,
@@ -81,7 +83,7 @@ pub async fn delete(
     let tenant_id = get_tenant_id_from_request(&req);
     // The querier owns the tombstone and object-storage deletion. This handler
     // handles its notification locally, holding off recreation through cleanup.
-    let _creation_guard = CREATE_STREAM_LOCK.lock().await;
+    let creation_guard = Arc::new(CREATE_STREAM_LOCK.lock().await);
 
     let stream_dir = {
         // Reject new ingestion before waiting for active local operations.
@@ -94,7 +96,7 @@ pub async fn delete(
     // sync, finalize writers, then remove staging and reset stats. Cleanup is
     // synchronous here; reconciliation retries it before evicting a stale entry.
     if (PARSEABLE.options.mode == Mode::Ingest || PARSEABLE.options.mode == Mode::All)
-        && let Err(err) = stream_dir.remove_staging(&tenant_id).await
+        && let Err(err) = stream_dir.remove_staging(&tenant_id, &creation_guard).await
     {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
@@ -122,9 +124,15 @@ pub async fn put_stream(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let _guard = CREATE_STREAM_LOCK.lock().await;
+    let creation_guard = Arc::new(CREATE_STREAM_LOCK.lock().await);
     PARSEABLE
-        .create_update_stream(req.headers(), &body, &stream_name, &tenant_id)
+        .create_update_stream(
+            req.headers(),
+            &body,
+            &stream_name,
+            &tenant_id,
+            &creation_guard,
+        )
         .await?;
 
     Ok(("Log stream created", StatusCode::OK))
