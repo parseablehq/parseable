@@ -87,7 +87,9 @@ impl ForwardFilePlan {
     }
 
     fn effective_schema(&self) -> &Schema {
-        self.renamed.as_deref().unwrap_or(self.schema.as_ref())
+        self.renamed
+            .as_deref()
+            .unwrap_or_else(|| self.schema.as_ref())
     }
 
     /// Opens independent virtual Arrow streams over striped record batches.
@@ -347,8 +349,7 @@ impl MergedReverseRecordReader {
                 .map(|(reader, renamed)| {
                     renamed
                         .as_ref()
-                        .map(|s| s.as_ref().clone())
-                        .unwrap_or_else(|| reader.schema().as_ref().clone())
+                        .map_or_else(|| reader.schema().as_ref().clone(), |s| s.as_ref().clone())
                 }),
         )
     }

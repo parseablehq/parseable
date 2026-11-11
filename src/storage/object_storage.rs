@@ -1829,16 +1829,15 @@ pub async fn commit_schema_to_storage(
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
     let stored = serde_json::from_slice::<Schema>(&stream_schema)?;
-    let new_schema = if PARSEABLE.options.mode == Mode::Ingest
-        && PARSEABLE.options.schema_resolve_mode != crate::option::SchemaResolveMode::Off
-    {
-        // This node's own file: a type resolved by the schema authority replaces the type
-        // this node uploaded before the resolution.
-        crate::schema_registry::merge_schemas_tolerant(stream_name, [schema, stored])
-    } else {
-        Schema::try_merge(vec![schema, stored])
-            .map_err(|e| ObjectStorageError::Custom(e.to_string()))?
-    };
+    let new_schema =
+        if PARSEABLE.options.mode == Mode::Ingest && PARSEABLE.options.schema_resolution {
+            // This node's own file: a type resolved by the schema authority replaces the type
+            // this node uploaded before the resolution.
+            crate::schema_registry::merge_schemas_tolerant(stream_name, [schema, stored])
+        } else {
+            Schema::try_merge(vec![schema, stored])
+                .map_err(|e| ObjectStorageError::Custom(e.to_string()))?
+        };
 
     PARSEABLE
         .metastore

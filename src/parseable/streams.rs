@@ -81,7 +81,7 @@ use crate::{
     hottier::StreamHotTier,
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
-    option::{Mode, SchemaResolveMode},
+    option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE},
     schema_registry::{
         client::resolve_blocking,
@@ -776,8 +776,7 @@ impl Stream {
     ) -> StreamRef {
         let stream_name = stream_name.into();
         let data_path = options.local_stream_data_path(&stream_name, tenant_id);
-        let resolving =
-            options.mode == Mode::Ingest && options.schema_resolve_mode != SchemaResolveMode::Off;
+        let resolving = options.mode == Mode::Ingest && options.schema_resolution;
         let resolution = if resolving {
             ResolutionState::load(&data_path)
         } else {
@@ -1192,7 +1191,7 @@ impl Stream {
     /// True when this stream reconciles new field types with the cluster's schema authority.
     pub fn schema_resolution_enabled(&self) -> bool {
         self.options.mode == Mode::Ingest
-            && self.options.schema_resolve_mode != SchemaResolveMode::Off
+            && self.options.schema_resolution
             && !self.get_static_schema_flag()
             && self.get_stream_type() != StreamType::Internal
     }
@@ -1227,7 +1226,6 @@ impl Stream {
             tenant_id,
             node_id,
             data_path: &self.data_path,
-            mode: self.options.schema_resolve_mode,
             max_deferred_cycles: self.options.schema_resolve_max_deferred_cycles,
             resolver: &resolver,
         };

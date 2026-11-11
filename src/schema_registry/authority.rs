@@ -342,21 +342,31 @@ async fn load_registry(
     Ok(registry)
 }
 
+/// The tenant comes from authentication, never from the body: with `P_CLUSTER_SECRET` the
+/// route only admits verified intra-cluster requests and the tenant is their
+/// `intra-cluster-tenant`; without it, the caller's own tenant. The body may only repeat it,
+/// so no caller can name another tenant. Returns `None` for the default tenant.
+fn authorized_tenant(
+    header: Option<String>,
+    body: Option<String>,
+) -> Result<Option<String>, AuthorityError> {
+    let header = header.filter(|t| t != DEFAULT_TENANT);
+    let body = body.filter(|t| t != DEFAULT_TENANT);
+    if header != body {
+        return Err(AuthorityError::BadRequest(
+            "tenant in request body does not match the authenticated tenant".into(),
+        ));
+    }
+    Ok(body)
+}
+
 /// `POST {base}/internal/schema/resolve`
 pub async fn resolve_handler(
     req: HttpRequest,
     body: web::Json<ResolveRequest>,
 ) -> Result<HttpResponse, AuthorityError> {
-    let body = body.into_inner();
-    let header_tenant = get_tenant_id_from_request(&req).filter(|t| t != DEFAULT_TENANT);
-    let body_tenant = body.tenant_id.clone().filter(|t| t != DEFAULT_TENANT);
-    if header_tenant.is_some() && header_tenant != body_tenant {
-        return Err(AuthorityError::BadRequest(
-            "tenant in request body does not match the authenticated tenant".into(),
-        ));
-    }
-    let mut body = body;
-    body.tenant_id = body_tenant;
+    let mut body = body.into_inner();
+    body.tenant_id = authorized_tenant(get_tenant_id_from_request(&req), body.tenant_id)?;
     let response = SCHEMA_AUTHORITY.resolve(body).await?;
     Ok(HttpResponse::Ok().json(response))
 }
@@ -377,6 +387,19 @@ mod tests {
         assert_eq!(s.metadata()[REGISTRY_VERSION_KEY], "7");
         let round: Schema = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
         assert_eq!(round.metadata()[REGISTRY_VERSION_KEY], "7");
+    }
+
+    #[test]
+    fn tenant_must_match_the_authenticated_one() {
+        let t = |s: &str| Some(s.to_string());
+        assert_eq!(authorized_tenant(None, None).unwrap(), None);
+        assert_eq!(authorized_tenant(t(DEFAULT_TENANT), None).unwrap(), None);
+        assert_eq!(authorized_tenant(t("acme"), t("acme")).unwrap(), t("acme"));
+        // A default-tenant caller cannot reach another tenant, nor a tenant another one.
+        assert!(authorized_tenant(None, t("acme")).is_err());
+        assert!(authorized_tenant(t(DEFAULT_TENANT), t("acme")).is_err());
+        assert!(authorized_tenant(t("acme"), t("other")).is_err());
+        assert!(authorized_tenant(t("acme"), None).is_err());
     }
 
     #[test]
