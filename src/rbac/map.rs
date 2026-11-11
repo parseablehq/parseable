@@ -429,7 +429,14 @@ impl Sessions {
                                 false
                             }
                         }
-                        Permission::SelfUser if required_action == Action::GetUserRoles => {
+                        Permission::SelfUser
+                            if matches!(
+                                required_action,
+                                Action::GetUserRoles
+                                    | Action::GetUserPreferences
+                                    | Action::PutUserPreferences
+                            ) =>
+                        {
                             context_user.map(|x| x == username).unwrap_or_default()
                         }
                         _ => false,

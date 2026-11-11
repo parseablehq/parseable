@@ -3,7 +3,7 @@ networks:
 
 services:
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-02-03T21-03-04Z
+    image: quay.io/parseablehq/minio:edge
     entrypoint:
       - sh
       - -euc
@@ -42,7 +42,9 @@ services:
       - P_USERNAME=parseableadmin
       - P_PASSWORD=parseableadmin
       - P_CHECK_UPDATE=false
+      - P_SEND_ANONYMOUS_USAGE_DATA=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
+      - MAX_PERIODIC_LOCAL_SYNC_CYCLES=1
       - RUST_LOG=warn
     depends_on:
       minio:

@@ -32,6 +32,7 @@ use actix_web::{
     web::{self, Json, Path},
 };
 use serde_json::Error as SerdeError;
+use serde_json::Value;
 
 pub async fn list_dashboards(req: HttpRequest) -> Result<impl Responder, DashboardError> {
     let tenant_id = get_tenant_id_from_request(&req);
@@ -56,23 +57,29 @@ pub async fn list_dashboards(req: HttpRequest) -> Result<impl Responder, Dashboa
             if tags.is_empty() {
                 return Err(DashboardError::Metadata("Tags cannot be empty"));
             }
-            let dashboards = DASHBOARDS.list_dashboards_by_tags(tags, &tenant_id).await;
-            let dashboard_summaries = dashboards
-                .iter()
-                .map(|dashboard| dashboard.to_summary())
-                .collect::<Vec<_>>();
+            let dashboard_summaries = list_dashboards_internal(0, Some(tags), &tenant_id).await;
             return Ok((web::Json(dashboard_summaries), StatusCode::OK));
         }
     }
-    let dashboards = DASHBOARDS
-        .list_dashboards(dashboard_limit, &tenant_id)
-        .await;
-    let dashboard_summaries = dashboards
-        .iter()
-        .map(|dashboard| dashboard.to_summary())
-        .collect::<Vec<_>>();
+    let dashboard_summaries = list_dashboards_internal(dashboard_limit, None, &tenant_id).await;
 
     Ok((web::Json(dashboard_summaries), StatusCode::OK))
+}
+
+pub async fn list_dashboards_internal(
+    limit: usize,
+    tags: Option<Vec<String>>,
+    tenant_id: &Option<String>,
+) -> Vec<Value> {
+    let dashboards = if let Some(tags) = tags {
+        DASHBOARDS.list_dashboards_by_tags(tags, tenant_id).await
+    } else {
+        DASHBOARDS.list_dashboards(limit, tenant_id).await
+    };
+    dashboards
+        .iter()
+        .map(|dashboard| Value::Object(dashboard.to_summary()))
+        .collect()
 }
 
 pub async fn get_dashboard(
@@ -81,29 +88,45 @@ pub async fn get_dashboard(
 ) -> Result<impl Responder, DashboardError> {
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
     let tenant_id = get_tenant_id_from_request(&req);
-    let dashboard = DASHBOARDS
-        .get_dashboard(dashboard_id, &tenant_id)
-        .await
-        .ok_or_else(|| DashboardError::Metadata("Dashboard does not exist"))?;
+    let dashboard = get_dashboard_internal(dashboard_id, &tenant_id).await?;
 
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
+pub async fn get_dashboard_internal(
+    dashboard_id: ulid::Ulid,
+    tenant_id: &Option<String>,
+) -> Result<Dashboard, DashboardError> {
+    DASHBOARDS
+        .get_dashboard(dashboard_id, tenant_id)
+        .await
+        .ok_or(DashboardError::Metadata("Dashboard does not exist"))
+}
+
 pub async fn create_dashboard(
     req: HttpRequest,
-    Json(mut dashboard): Json<Dashboard>,
+    Json(dashboard): Json<Dashboard>,
 ) -> Result<impl Responder, DashboardError> {
+    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
+    let dashboard = create_dashboard_internal(&user_id, dashboard, &tenant_id).await?;
+    Ok((web::Json(dashboard), StatusCode::OK))
+}
+
+pub async fn create_dashboard_internal(
+    user_id: &str,
+    mut dashboard: Dashboard,
+    tenant_id: &Option<String>,
+) -> Result<Dashboard, DashboardError> {
     if dashboard.title.is_empty() {
         return Err(DashboardError::Metadata("Title must be provided"));
     }
-    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
-    dashboard.tenant_id.clone_from(&tenant_id);
-    let user_id = get_hash(&user_id);
+    dashboard.tenant_id.clone_from(tenant_id);
+    let user_id = get_hash(user_id);
 
     DASHBOARDS
-        .create(&user_id, &mut dashboard, &tenant_id)
+        .create(&user_id, &mut dashboard, tenant_id)
         .await?;
-    Ok((web::Json(dashboard), StatusCode::OK))
+    Ok(dashboard)
 }
 
 pub async fn update_dashboard(
@@ -112,15 +135,8 @@ pub async fn update_dashboard(
     dashboard: Option<Json<Dashboard>>,
 ) -> Result<impl Responder, DashboardError> {
     let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
-    let user_id = get_hash(&user_id);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
     let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
-    let mut existing_dashboard = DASHBOARDS
-        .get_dashboard_by_user(dashboard_id, &user_id, is_admin, &tenant_id)
-        .await
-        .ok_or(DashboardError::Metadata(
-            "Dashboard does not exist or user is not authorized",
-        ))?;
 
     let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
         .map_err(|_| DashboardError::InvalidQueryParameter)?;
@@ -135,7 +151,9 @@ pub async fn update_dashboard(
         ));
     }
 
-    let mut final_dashboard = if has_query_params {
+    let final_dashboard = if has_query_params {
+        let mut existing_dashboard =
+            get_dashboard_for_user_internal(&user_id, dashboard_id, is_admin, &tenant_id).await?;
         // Apply partial updates from query parameters
         if let Some(is_favorite) = query_map.get("isFavorite") {
             existing_dashboard.is_favorite = Some(is_favorite == "true");
@@ -162,35 +180,63 @@ pub async fn update_dashboard(
         }
         existing_dashboard
     } else {
-        let dashboard = dashboard
-            .ok_or(DashboardError::Metadata("Request body is required"))?
-            .into_inner();
-        if let Some(tiles) = &dashboard.tiles {
-            if tiles.iter().any(|tile| tile.tile_id.is_nil()) {
-                return Err(DashboardError::Metadata("Tile ID must be provided"));
-            }
-
-            // Check if tile_id are unique
-            let unique_tiles: Vec<_> = tiles
-                .iter()
-                .map(|tile| tile.tile_id)
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-
-            if unique_tiles.len() != tiles.len() {
-                return Err(DashboardError::Metadata("Tile IDs must be unique"));
-            }
-        }
-
         dashboard
+            .ok_or(DashboardError::Metadata("Request body is required"))?
+            .into_inner()
     };
-
-    DASHBOARDS
-        .update(&user_id, dashboard_id, &mut final_dashboard, &tenant_id)
-        .await?;
+    let final_dashboard = update_dashboard_internal(
+        &user_id,
+        dashboard_id,
+        final_dashboard,
+        is_admin,
+        &tenant_id,
+    )
+    .await?;
 
     Ok((web::Json(final_dashboard), StatusCode::OK))
+}
+
+pub async fn get_dashboard_for_user_internal(
+    user_id: &str,
+    dashboard_id: ulid::Ulid,
+    is_admin: bool,
+    tenant_id: &Option<String>,
+) -> Result<Dashboard, DashboardError> {
+    let user_id = get_hash(user_id);
+    DASHBOARDS
+        .get_dashboard_by_user(dashboard_id, &user_id, is_admin, tenant_id)
+        .await
+        .ok_or(DashboardError::Metadata(
+            "Dashboard does not exist or user is not authorized",
+        ))
+}
+
+pub async fn update_dashboard_internal(
+    user_id: &str,
+    dashboard_id: ulid::Ulid,
+    mut dashboard: Dashboard,
+    is_admin: bool,
+    tenant_id: &Option<String>,
+) -> Result<Dashboard, DashboardError> {
+    // Authorize ownership before validating and persisting the replacement.
+    get_dashboard_for_user_internal(user_id, dashboard_id, is_admin, tenant_id).await?;
+    if let Some(tiles) = &dashboard.tiles {
+        if tiles.iter().any(|tile| tile.tile_id.is_nil()) {
+            return Err(DashboardError::Metadata("Tile ID must be provided"));
+        }
+        let unique_tiles = tiles
+            .iter()
+            .map(|tile| tile.tile_id)
+            .collect::<std::collections::HashSet<_>>();
+        if unique_tiles.len() != tiles.len() {
+            return Err(DashboardError::Metadata("Tile IDs must be unique"));
+        }
+    }
+    let user_id = get_hash(user_id);
+    DASHBOARDS
+        .update(&user_id, dashboard_id, &mut dashboard, tenant_id)
+        .await?;
+    Ok(dashboard)
 }
 
 pub async fn delete_dashboard(
@@ -198,16 +244,23 @@ pub async fn delete_dashboard(
     dashboard_id: Path<String>,
 ) -> Result<HttpResponse, DashboardError> {
     let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
-    let user_id = get_hash(&user_id);
     let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
 
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
-
-    DASHBOARDS
-        .delete_dashboard(&user_id, dashboard_id, is_admin, &tenant_id)
-        .await?;
+    delete_dashboard_internal(&user_id, dashboard_id, is_admin, &tenant_id).await?;
 
     Ok(HttpResponse::Ok().finish())
+}
+
+pub async fn delete_dashboard_internal(
+    user_id: &str,
+    dashboard_id: ulid::Ulid,
+    is_admin: bool,
+    tenant_id: &Option<String>,
+) -> Result<(), DashboardError> {
+    DASHBOARDS
+        .delete_dashboard(&get_hash(user_id), dashboard_id, is_admin, tenant_id)
+        .await
 }
 
 pub async fn add_tile(
@@ -215,19 +268,26 @@ pub async fn add_tile(
     dashboard_id: Path<String>,
     Json(tile): Json<Tile>,
 ) -> Result<impl Responder, DashboardError> {
+    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
+    let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
+    let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
+    let dashboard = add_tile_internal(&user_id, dashboard_id, tile, is_admin, &tenant_id).await?;
+    Ok((web::Json(dashboard), StatusCode::OK))
+}
+
+pub async fn add_tile_internal(
+    user_id: &str,
+    dashboard_id: ulid::Ulid,
+    tile: Tile,
+    is_admin: bool,
+    tenant_id: &Option<String>,
+) -> Result<Dashboard, DashboardError> {
     if tile.tile_id.is_nil() {
         return Err(DashboardError::Metadata("Tile ID must be provided"));
     }
 
-    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
-    let user_id = get_hash(&user_id);
-    let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
-    let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
-
-    let mut dashboard = DASHBOARDS
-        .get_dashboard_by_user(dashboard_id, &user_id, is_admin, &tenant_id)
-        .await
-        .ok_or(DashboardError::Unauthorized)?;
+    let mut dashboard =
+        get_dashboard_for_user_internal(user_id, dashboard_id, is_admin, tenant_id).await?;
 
     let tiles = dashboard.tiles.get_or_insert_with(Vec::new);
 
@@ -237,18 +297,20 @@ pub async fn add_tile(
     }
     tiles.push(tile);
 
+    let user_id = get_hash(user_id);
     DASHBOARDS
-        .update(&user_id, dashboard_id, &mut dashboard, &tenant_id)
+        .update(&user_id, dashboard_id, &mut dashboard, tenant_id)
         .await?;
-
-    Ok((web::Json(dashboard), StatusCode::OK))
+    Ok(dashboard)
 }
 
 pub async fn list_tags(req: HttpRequest) -> Result<impl Responder, DashboardError> {
-    let tags = DASHBOARDS
-        .list_tags(&get_tenant_id_from_request(&req))
-        .await;
+    let tags = list_tags_internal(&get_tenant_id_from_request(&req)).await;
     Ok((web::Json(tags), StatusCode::OK))
+}
+
+pub async fn list_tags_internal(tenant_id: &Option<String>) -> Vec<String> {
+    DASHBOARDS.list_tags(tenant_id).await
 }
 
 #[derive(Debug, thiserror::Error)]

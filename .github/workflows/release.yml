@@ -382,7 +382,9 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: quay.io/parseablehq/parseable:${{ github.ref_name }}
+          tags: |
+            quay.io/parseablehq/parseable:${{ github.ref_name }}
+            quay.io/parseablehq/parseable:latest
           platforms: linux/amd64,linux/arm64
       
       - name: Build and push kafka amd64

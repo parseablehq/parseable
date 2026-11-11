@@ -26,14 +26,16 @@ use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::SchemaProvider;
-use datafusion::common::tree_node::Transformed;
+use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
+use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::{
     RecordBatchStream, SendableRecordBatchStream, SessionState, SessionStateBuilder,
 };
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
-    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ScalarUDF, ToStringifiedPlan,
+    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ScalarUDF, TableSource,
+    ToStringifiedPlan,
 };
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -49,6 +51,7 @@ use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::ops::Bound;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -60,8 +63,12 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::Instrument;
 
 use self::error::ExecuteError;
-use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
+use self::stream_schema_provider::{
+    GlobalSchemaProvider, HotTierStreamKey,
+    guarded_hot_tier_table_source as default_guarded_hot_tier_table_source,
+    hot_tier_stream_key as default_hot_tier_stream_key,
+};
 use crate::alerts::alert_structs::Conditions;
 use crate::alerts::alerts_utils::get_filter_string;
 use crate::catalog::Snapshot as CatalogSnapshot;
@@ -70,6 +77,7 @@ use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
 use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
+use crate::hottier::{GLOBAL_HOTTIER, HotTierQueryGuard};
 use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
@@ -98,6 +106,15 @@ pub static QUERY_SESSION_STATE: Lazy<SessionState> =
 pub static QUERY_RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
 
+/// A dropped caller must not leave query planning running on QUERY_RUNTIME.
+struct AbortQueryOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortQueryOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub static QUERY_SESSION: Lazy<InMemorySessionContext> = Lazy::new(|| {
     let ctx = Query::create_session_context(PARSEABLE.storage());
     InMemorySessionContext {
@@ -112,6 +129,31 @@ pub trait ParseableSchemaProvider: Send + Sync {
         storage: Option<Arc<dyn ObjectStorage>>,
         tenant_id: &Option<String>,
     ) -> Box<dyn SchemaProvider>;
+
+    fn hot_tier_stream_key(&self, _source: &Arc<dyn TableSource>) -> Option<HotTierStreamKey> {
+        None
+    }
+
+    fn guarded_hot_tier_table_source(
+        &self,
+        _source: &Arc<dyn TableSource>,
+    ) -> Option<Arc<dyn TableSource>> {
+        None
+    }
+}
+
+fn hot_tier_stream_key(source: &Arc<dyn TableSource>) -> Option<HotTierStreamKey> {
+    SCHEMA_PROVIDER
+        .get()
+        .and_then(|provider| provider.hot_tier_stream_key(source))
+        .or_else(|| default_hot_tier_stream_key(source))
+}
+
+fn guarded_hot_tier_table_source(source: &Arc<dyn TableSource>) -> Option<Arc<dyn TableSource>> {
+    SCHEMA_PROVIDER
+        .get()
+        .and_then(|provider| provider.guarded_hot_tier_table_source(source))
+        .or_else(|| default_guarded_hot_tier_table_source(source))
 }
 
 fn get_schema_provider(tenant_id: &Option<String>) -> Box<dyn SchemaProvider> {
@@ -205,17 +247,39 @@ pub async fn execute(query: Query, is_streaming: bool, tenant_id: &Option<String
     if PARSEABLE.options.resource_check_enabled {
         enough_available_memory().await?;
     }
-    QUERY_RUNTIME
-        .spawn(async move {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(PARSEABLE.options.sql_timeout),
-                query.execute(is_streaming, &id),
-            )
-            .await
-            .map_err(|e| ExecuteError::Timeout(e, PARSEABLE.options.sql_timeout))?
-        })
+    let mut task = AbortQueryOnDrop(QUERY_RUNTIME.spawn(async move {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(PARSEABLE.options.sql_timeout),
+            query.execute(is_streaming, &id),
+        )
+        .await
+        .map_err(|e| ExecuteError::Timeout(e, PARSEABLE.options.sql_timeout))?
+    }));
+    (&mut task.0)
         .await
         .expect("The Join should have been successful")
+}
+
+/// Stop polling DataFusion as soon as the result receiver is dropped. A
+/// detached partition task must not keep scanning after its client cancels.
+async fn forward_partition_batches(
+    mut stream: SendableRecordBatchStream,
+    tx: tokio::sync::mpsc::UnboundedSender<Result<RecordBatch, DataFusionError>>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = tx.closed() => break,
+            next = stream.next() => match next {
+                Some(batch) => {
+                    if tx.send(batch).is_err() {
+                        break;
+                    }
+                }
+                None => break,
+            },
+        }
+    }
 }
 
 // A query request by client
@@ -371,9 +435,13 @@ impl Query {
     )]
     pub async fn execute(&self, is_streaming: bool, tenant_id: &Option<String>) -> QueryResult {
         let ctx = QUERY_SESSION.get_ctx();
-        let df = ctx
-            .execute_logical_plan(self.final_logical_plan(tenant_id))
-            .await?;
+        let mut logical_plan = self.final_logical_plan(tenant_id);
+        let (hot_tier_guards, guarded_hot_tier_streams) =
+            hot_tier_query_guards(&logical_plan, &self.time_range).await?;
+        if !guarded_hot_tier_streams.is_empty() {
+            logical_plan = enable_hot_tier_reads(logical_plan, &guarded_hot_tier_streams)?;
+        }
+        let df = ctx.execute_logical_plan(logical_plan).await?;
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let fields = df
             .schema()
@@ -404,6 +472,7 @@ impl Query {
             let current_date = chrono::Utc::now().date_naive().to_string();
             increment_bytes_scanned_in_query_by_date(actual_io_bytes, &current_date, tenant);
 
+            drop(hot_tier_guards);
             Either::Left(batches)
         } else {
             let task_ctx = ctx.task_ctx();
@@ -413,6 +482,7 @@ impl Query {
             let monitor_state = Arc::new(MonitorState {
                 plan: plan.clone(),
                 active_streams: AtomicUsize::new(output_partitions),
+                _hot_tier_guards: hot_tier_guards,
             });
 
             let partition_streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?;
@@ -426,17 +496,7 @@ impl Query {
                     PartitionedMetricMonitor::new(s, monitor_state.clone(), tenant_id.clone());
                 let tx = tx.clone();
                 let span = tracing::Span::current();
-                tokio::spawn(
-                    async move {
-                        let mut stream: SendableRecordBatchStream = Box::pin(wrapped);
-                        while let Some(batch) = stream.next().await {
-                            if tx.send(batch).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    .instrument(span),
-                );
+                tokio::spawn(forward_partition_batches(Box::pin(wrapped), tx).instrument(span));
             }
             drop(tx);
 
@@ -538,6 +598,81 @@ impl Query {
             _ => None,
         }
     }
+}
+
+/// Pins the queried time range for every hot-tier stream referenced by the query, including
+/// subqueries, from physical planning through execution. Eviction remains free to reclaim buckets
+/// outside active query ranges, so long-running or overlapping queries cannot starve hot-tier sync.
+async fn hot_tier_query_guards(
+    logical_plan: &LogicalPlan,
+    time_range: &TimeRange,
+) -> Result<(Vec<HotTierQueryGuard>, BTreeSet<HotTierStreamKey>), DataFusionError> {
+    let Some(manager) = GLOBAL_HOTTIER.get() else {
+        return Ok((Vec::new(), BTreeSet::new()));
+    };
+
+    let mut streams = BTreeSet::new();
+    logical_plan.apply_with_subqueries(|plan| {
+        if let LogicalPlan::TableScan(table) = plan
+            && let Some(key) = hot_tier_stream_key(&table.source)
+        {
+            streams.insert(key);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+
+    let mut guards = Vec::new();
+    let mut guarded_streams = BTreeSet::new();
+    for stream in streams {
+        if manager.check_stream_hot_tier_exists(&stream.stream, &stream.tenant_id) {
+            match manager
+                .query_guard(
+                    &stream.stream,
+                    &stream.tenant_id,
+                    time_range.start,
+                    time_range.end,
+                )
+                .await
+            {
+                Ok(guard) => {
+                    guards.push(guard);
+                    guarded_streams.insert(stream);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        stream = %stream.stream,
+                        tenant = ?stream.tenant_id,
+                        %error,
+                        "hot-tier query guard unavailable; using object storage"
+                    );
+                }
+            }
+        }
+    }
+    Ok((guards, guarded_streams))
+}
+
+fn enable_hot_tier_reads(
+    plan: LogicalPlan,
+    guarded_streams: &BTreeSet<HotTierStreamKey>,
+) -> Result<LogicalPlan, DataFusionError> {
+    plan.transform_up_with_subqueries(|plan| match plan {
+        LogicalPlan::TableScan(mut table) => {
+            let Some(key) = hot_tier_stream_key(&table.source) else {
+                return Ok(Transformed::no(LogicalPlan::TableScan(table)));
+            };
+            if !guarded_streams.contains(&key) {
+                return Ok(Transformed::no(LogicalPlan::TableScan(table)));
+            }
+            let Some(source) = guarded_hot_tier_table_source(&table.source) else {
+                return Ok(Transformed::no(LogicalPlan::TableScan(table)));
+            };
+            table.source = source;
+            Ok(Transformed::yes(LogicalPlan::TableScan(table)))
+        }
+        _ => Ok(Transformed::no(plan)),
+    })
+    .map(|transformed| transformed.data)
 }
 
 /// Recursively sums up "bytes_scanned" from all nodes in the plan
@@ -1077,6 +1212,7 @@ pub mod error {
 struct MonitorState {
     plan: Arc<dyn ExecutionPlan>,
     active_streams: AtomicUsize,
+    _hot_tier_guards: Vec<HotTierQueryGuard>,
 }
 
 /// A wrapper that monitors the ExecutionPlan and logs metrics when the stream finishes.
@@ -1164,9 +1300,63 @@ impl PartitionedMetricMonitor {
 mod tests {
     use serde_json::json;
 
+    use super::{
+        AbortQueryOnDrop, DataFusionError, RecordBatch, RecordBatchStreamAdapter,
+        forward_partition_batches,
+    };
     use crate::query::{
         CountConditions, CountsRequest, flatten_objects_for_count, resolve_stream_names,
     };
+
+    #[tokio::test]
+    async fn test_partition_scan_stops_when_receiver_drops() {
+        let schema = std::sync::Arc::new(datafusion::arrow::datatypes::Schema::empty());
+        let (polled_tx, polled_rx) = tokio::sync::oneshot::channel();
+        let mut polled_tx = Some(polled_tx);
+        let pending = futures::stream::poll_fn(move |_| {
+            if let Some(sender) = polled_tx.take() {
+                let _ = sender.send(());
+            }
+            std::task::Poll::<Option<Result<RecordBatch, DataFusionError>>>::Pending
+        });
+        let stream = RecordBatchStreamAdapter::new(schema, pending);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = tokio::spawn(forward_partition_batches(Box::pin(stream), tx));
+        tokio::time::timeout(std::time::Duration::from_secs(1), polled_rx)
+            .await
+            .expect("partition must be polled")
+            .expect("partition poll notification must arrive");
+        drop(rx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), worker)
+            .await
+            .expect("partition must stop when its receiver drops")
+            .expect("partition worker panicked");
+    }
+
+    #[tokio::test]
+    async fn test_dropped_query_aborts_planning_task() {
+        struct SignalOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for SignalOnDrop {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _on_drop = SignalOnDrop(Some(dropped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.expect("planning task started");
+        drop(AbortQueryOnDrop(task));
+        tokio::time::timeout(std::time::Duration::from_secs(1), dropped_rx)
+            .await
+            .expect("planning task must be aborted after its caller drops")
+            .expect("planning task drop signal must arrive");
+    }
 
     #[test]
     fn test_count_conditions_accepts_top_k() {

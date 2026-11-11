@@ -228,15 +228,10 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
     links
         .iter()
         .map(|link| {
-            let mut link_json = Map::new();
-            link_json.insert(
-                "link_span_id".to_string(),
-                Value::String(hex::encode(&link.span_id)),
-            );
-            link_json.insert(
-                "link_trace_id".to_string(),
-                Value::String(hex::encode(&link.trace_id)),
-            );
+            let mut link_json = Map::from_iter([
+                ("link_span_id".into(), hex::encode(&link.span_id).into()),
+                ("link_trace_id".into(), hex::encode(&link.trace_id).into()),
+            ]);
 
             insert_links_attributes(&mut link_json, &link.attributes);
             link_json.insert(
@@ -253,27 +248,17 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
 /// this function fetches the status description from the status code
 /// and adds it to the flattened json
 fn flatten_status(status: &Status) -> Map<String, Value> {
-    let mut status_json = Map::new();
-    status_json.insert(
-        "span_status_message".to_string(),
-        Value::String(status.message.clone()),
-    );
-    status_json.insert(
-        "span_status_code".to_string(),
-        Value::Number(status.code.into()),
-    );
     let description = match status.code {
         0 => "UNSET",
         1 => "OK",
         2 => "ERROR",
         _ => "",
     };
-    status_json.insert(
-        "span_status_description".to_string(),
-        Value::String(description.to_string()),
-    );
-
-    status_json
+    Map::from_iter([
+        ("span_status_message".into(), status.message.clone().into()),
+        ("span_status_code".into(), status.code.into()),
+        ("span_status_description".into(), description.into()),
+    ])
 }
 
 /// otel log event has flags
@@ -281,8 +266,6 @@ fn flatten_status(status: &Status) -> Map<String, Value> {
 /// this function fetches the flags description from the flags
 /// and adds it to the flattened json
 fn flatten_flags(flags: u32) -> Map<String, Value> {
-    let mut flags_json = Map::new();
-    flags_json.insert("span_flags".to_string(), Value::Number(flags.into()));
     let description = match flags {
         0 => "DO_NOT_USE",
         255 => "TRACE_FLAGS_MASK",
@@ -290,12 +273,10 @@ fn flatten_flags(flags: u32) -> Map<String, Value> {
         512 => "CONTEXT_IS_REMOTE_MASK",
         _ => "",
     };
-    flags_json.insert(
-        "span_flags_description".to_string(),
-        Value::String(description.to_string()),
-    );
-
-    flags_json
+    Map::from_iter([
+        ("span_flags".into(), flags.into()),
+        ("span_flags_description".into(), description.into()),
+    ])
 }
 
 /// otel span event has kind
@@ -303,8 +284,6 @@ fn flatten_flags(flags: u32) -> Map<String, Value> {
 /// this function fetches the kind description from the kind
 /// and adds it to the flattened json
 fn flatten_kind(kind: i32) -> Map<String, Value> {
-    let mut kind_json = Map::new();
-    kind_json.insert("span_kind".to_string(), Value::Number(kind.into()));
     let description = match kind {
         0 => "UNSPECIFIED",
         1 => "INTERNAL",
@@ -314,12 +293,10 @@ fn flatten_kind(kind: i32) -> Map<String, Value> {
         5 => "CONSUMER",
         _ => "",
     };
-    kind_json.insert(
-        "span_kind_description".to_string(),
-        Value::String(description.to_string()),
-    );
-
-    kind_json
+    Map::from_iter([
+        ("span_kind".into(), kind.into()),
+        ("span_kind_description".into(), description.into()),
+    ])
 }
 
 /// this function flattens the `Span` object
@@ -497,21 +474,14 @@ mod tests {
 
             let result = flatten_status(&status);
 
+            assert_eq!(result["span_status_code"], serde_json::json!(code));
             assert_eq!(
-                result.get("span_status_code").unwrap(),
-                &Value::Number(code.into()),
-                "Status code should be preserved"
+                result["span_status_description"],
+                serde_json::json!(expected_description)
             );
             assert_eq!(
-                result.get("span_status_description").unwrap(),
-                &Value::String(expected_description.to_string()),
-                "Status description should match expected value for code {}",
-                code
-            );
-            assert_eq!(
-                result.get("span_status_message").unwrap(),
-                &Value::String("Test message".to_string()),
-                "Status message should be preserved"
+                result["span_status_message"],
+                serde_json::json!("Test message")
             );
         }
     }
@@ -532,16 +502,10 @@ mod tests {
         for (kind, expected_description) in test_cases {
             let result = flatten_kind(kind);
 
+            assert_eq!(result["span_kind"], serde_json::json!(kind));
             assert_eq!(
-                result.get("span_kind").unwrap(),
-                &Value::Number(kind.into()),
-                "Span kind should be preserved"
-            );
-            assert_eq!(
-                result.get("span_kind_description").unwrap(),
-                &Value::String(expected_description.to_string()),
-                "Span kind description should match expected value for kind {}",
-                kind
+                result["span_kind_description"],
+                serde_json::json!(expected_description)
             );
         }
     }
@@ -560,16 +524,10 @@ mod tests {
         for (flags, expected_description) in test_cases {
             let result = flatten_flags(flags);
 
+            assert_eq!(result["span_flags"], serde_json::json!(flags));
             assert_eq!(
-                result.get("span_flags").unwrap(),
-                &Value::Number(flags.into()),
-                "Span flags should be preserved"
-            );
-            assert_eq!(
-                result.get("span_flags_description").unwrap(),
-                &Value::String(expected_description.to_string()),
-                "Span flags description should match expected value for flags {}",
-                flags
+                result["span_flags_description"],
+                serde_json::json!(expected_description)
             );
         }
     }
@@ -587,8 +545,7 @@ mod tests {
             Event {
                 time_unix_nano: 1640995201000000000,
                 name: "request.end".to_string(),
-                attributes: vec![],
-                dropped_attributes_count: 0,
+                ..Default::default()
             },
         ];
 
@@ -598,36 +555,23 @@ mod tests {
 
         // Check first event
         let first_event = &result[0];
-        assert!(
-            first_event.contains_key("event_time_unix_nano"),
-            "Should contain timestamp"
+        assert!(first_event.contains_key("event_time_unix_nano"));
+        assert_eq!(
+            first_event["event_name"],
+            serde_json::json!("request.start")
         );
         assert_eq!(
-            first_event.get("event_name").unwrap(),
-            &Value::String("request.start".to_string()),
-            "Event name should be preserved"
+            first_event["event_dropped_attributes_count"],
+            serde_json::json!(2)
         );
-        assert_eq!(
-            first_event.get("event_dropped_attributes_count").unwrap(),
-            &Value::Number(2.into()),
-            "Dropped attributes count should be preserved"
-        );
-        assert!(
-            first_event.contains_key("event_service.name"),
-            "Should contain flattened attributes"
-        );
+        assert!(first_event.contains_key("event_service.name"));
 
         // Check second event
         let second_event = &result[1];
+        assert_eq!(second_event["event_name"], serde_json::json!("request.end"));
         assert_eq!(
-            second_event.get("event_name").unwrap(),
-            &Value::String("request.end".to_string()),
-            "Second event name should be preserved"
-        );
-        assert_eq!(
-            second_event.get("event_dropped_attributes_count").unwrap(),
-            &Value::Number(0.into()),
-            "Second event dropped count should be zero"
+            second_event["event_dropped_attributes_count"],
+            serde_json::json!(0)
         );
     }
 
@@ -649,24 +593,12 @@ mod tests {
 
         let link = &result[0];
         assert_eq!(
-            link.get("link_trace_id").unwrap(),
-            &Value::String("0102030405060708090a0b0c0d0e0f10".to_string()),
-            "Trace ID should be hex encoded"
+            link["link_trace_id"],
+            serde_json::json!("0102030405060708090a0b0c0d0e0f10")
         );
-        assert_eq!(
-            link.get("link_span_id").unwrap(),
-            &Value::String("0102030405060708".to_string()),
-            "Span ID should be hex encoded"
-        );
-        assert_eq!(
-            link.get("link_dropped_attributes_count").unwrap(),
-            &Value::Number(1.into()),
-            "Dropped attributes count should be preserved"
-        );
-        assert!(
-            link.contains_key("link_service.name"),
-            "Should contain flattened attributes"
-        );
+        assert_eq!(link["link_span_id"], serde_json::json!("0102030405060708"));
+        assert_eq!(link["link_dropped_attributes_count"], serde_json::json!(1));
+        assert!(link.contains_key("link_service.name"));
     }
 
     #[test]
@@ -676,34 +608,26 @@ mod tests {
             trace_id: sample_trace_id(),
             span_id: sample_span_id(),
             trace_state: "test-state".to_string(),
-            parent_span_id: vec![],
-            flags: 0,
             name: "test-span".to_string(),
             kind: 2, // SERVER
             start_time_unix_nano: 1640995200000000000,
             end_time_unix_nano: 1640995201000000000,
             attributes: sample_attributes(),
-            dropped_attributes_count: 0,
             events: vec![Event {
                 time_unix_nano: 1640995200500000000,
                 name: "middleware".to_string(),
-                attributes: vec![],
-                dropped_attributes_count: 0,
+                ..Default::default()
             }],
-            dropped_events_count: 0,
             links: vec![Link {
                 trace_id: sample_trace_id(),
                 span_id: sample_span_id(),
-                trace_state: "".to_string(),
-                attributes: vec![],
-                dropped_attributes_count: 0,
-                flags: 0,
+                ..Default::default()
             }],
-            dropped_links_count: 0,
             status: Some(Status {
                 message: "OK".to_string(),
                 code: 1,
             }),
+            ..Default::default()
         };
 
         let result = flatten_span_record(&span);
@@ -713,45 +637,15 @@ mod tests {
 
         // Both records should contain span-level information
         for record in &result {
-            assert_eq!(
-                record.get("span_name").unwrap(),
-                &Value::String("test-span".to_string()),
-                "All records should contain span name"
-            );
-            assert_eq!(
-                record.get("span_kind").unwrap(),
-                &Value::Number(2.into()),
-                "All records should contain span kind"
-            );
-            assert_eq!(
-                record.get("span_kind_description").unwrap(),
-                &Value::String("SERVER".to_string()),
-                "All records should contain span kind description"
-            );
-            assert!(
-                record.contains_key("span_trace_id"),
-                "Should contain trace ID"
-            );
-            assert!(
-                record.contains_key("span_span_id"),
-                "Should contain span ID"
-            );
-            assert!(
-                record.contains_key("span_start_time_unix_nano"),
-                "Should contain start time"
-            );
-            assert!(
-                record.contains_key("span_end_time_unix_nano"),
-                "Should contain end time"
-            );
-            assert!(
-                record.contains_key("service.name"),
-                "Should contain span attributes"
-            );
-            assert!(
-                record.contains_key("span_status_code"),
-                "Should contain status"
-            );
+            assert_eq!(record["span_name"], serde_json::json!("test-span"));
+            assert_eq!(record["span_kind"], serde_json::json!(2));
+            assert_eq!(record["span_kind_description"], serde_json::json!("SERVER"));
+            assert!(record.contains_key("span_trace_id"));
+            assert!(record.contains_key("span_span_id"));
+            assert!(record.contains_key("span_start_time_unix_nano"));
+            assert!(record.contains_key("span_end_time_unix_nano"));
+            assert!(record.contains_key("service.name"));
+            assert!(record.contains_key("span_status_code"));
         }
 
         // One record should be an event, one should be a link
@@ -767,20 +661,11 @@ mod tests {
         let span = Span {
             trace_id: sample_trace_id(),
             span_id: sample_span_id(),
-            trace_state: "".to_string(),
-            parent_span_id: vec![],
-            flags: 0,
             name: "simple-span".to_string(),
             kind: 1, // INTERNAL
             start_time_unix_nano: 1640995200000000000,
             end_time_unix_nano: 1640995201000000000,
-            attributes: vec![],
-            dropped_attributes_count: 0,
-            events: vec![],
-            dropped_events_count: 0,
-            links: vec![],
-            dropped_links_count: 0,
-            status: None,
+            ..Default::default()
         };
 
         let result = flatten_span_record(&span);
@@ -792,23 +677,10 @@ mod tests {
         );
 
         let record = &result[0];
-        assert_eq!(
-            record.get("span_name").unwrap(),
-            &Value::String("simple-span".to_string()),
-            "Should contain span name"
-        );
-        assert!(
-            !record.contains_key("event_name"),
-            "Should not contain event fields"
-        );
-        assert!(
-            !record.contains_key("link_trace_id"),
-            "Should not contain link fields"
-        );
-        assert!(
-            !record.contains_key("span_status_code"),
-            "Should not contain status when none provided"
-        );
+        assert_eq!(record["span_name"], serde_json::json!("simple-span"));
+        assert!(!record.contains_key("event_name"));
+        assert!(!record.contains_key("link_trace_id"));
+        assert!(!record.contains_key("span_status_code"));
     }
 
     #[test]
@@ -820,27 +692,14 @@ mod tests {
         let span = Span {
             trace_id: trace_id.clone(),
             span_id: span_id.clone(),
-            trace_state: "".to_string(),
             parent_span_id: vec![0x87, 0x65, 0x43, 0x21],
-            flags: 0,
             name: "hex-test".to_string(),
-            kind: 0,
-            start_time_unix_nano: 0,
-            end_time_unix_nano: 0,
-            attributes: vec![],
-            dropped_attributes_count: 0,
-            events: vec![],
-            dropped_events_count: 0,
             links: vec![Link {
                 trace_id: trace_id.clone(),
                 span_id: span_id.clone(),
-                trace_state: "".to_string(),
-                attributes: vec![],
-                dropped_attributes_count: 0,
-                flags: 0,
+                ..Default::default()
             }],
-            dropped_links_count: 0,
-            status: None,
+            ..Default::default()
         };
 
         let result = flatten_span_record(&span);
@@ -894,30 +753,22 @@ mod tests {
                     scope: Some(opentelemetry_proto::tonic::common::v1::InstrumentationScope {
                         name: "test-tracer".to_string(),
                         version: "1.0.0".to_string(),
-                        attributes: vec![],
-                        dropped_attributes_count: 0,
-                    }),
+..Default::default()
+}),
                     spans: vec![Span {
                         trace_id: sample_trace_id(),
                         span_id: sample_span_id(),
-                        trace_state: "".to_string(),
-                        parent_span_id: vec![],
-                        flags: 0,
                         name: "integration-test-span".to_string(),
                         kind: 3, // CLIENT
                         start_time_unix_nano: 1640995200000000000,
                         end_time_unix_nano: 1640995201000000000,
                         attributes: sample_attributes(),
-                        dropped_attributes_count: 0,
-                        events: vec![],
-                        dropped_events_count: 0,
-                        links: vec![],
-                        dropped_links_count: 0,
                         status: Some(Status {
                             message: "Success".to_string(),
                             code: 1,
                         }),
-                    }],
+..Default::default()
+}],
                     schema_url: "https://opentelemetry.io/schemas/1.21.0".to_string(),
                 }],
                 schema_url: "https://opentelemetry.io/schemas/1.21.0".to_string(),
@@ -932,54 +783,30 @@ mod tests {
 
         // Verify resource-level fields
         assert_eq!(
-            record.get("deployment.environment").unwrap(),
-            &Value::String("production".to_string()),
-            "Should contain resource attributes"
+            record["deployment.environment"],
+            serde_json::json!("production")
         );
         assert_eq!(
-            record.get("resource_schema_url").unwrap(),
-            &Value::String("https://opentelemetry.io/schemas/1.21.0".to_string()),
-            "Should contain resource schema URL"
+            record["resource_schema_url"],
+            serde_json::json!("https://opentelemetry.io/schemas/1.21.0")
         );
 
         // Verify scope-level fields
+        assert_eq!(record["scope_name"], serde_json::json!("test-tracer"));
+        assert_eq!(record["scope_version"], serde_json::json!("1.0.0"));
         assert_eq!(
-            record.get("scope_name").unwrap(),
-            &Value::String("test-tracer".to_string()),
-            "Should contain scope name"
-        );
-        assert_eq!(
-            record.get("scope_version").unwrap(),
-            &Value::String("1.0.0".to_string()),
-            "Should contain scope version"
-        );
-        assert_eq!(
-            record.get("scope_schema_url").unwrap(),
-            &Value::String("https://opentelemetry.io/schemas/1.21.0".to_string()),
-            "Should contain scope schema URL"
+            record["scope_schema_url"],
+            serde_json::json!("https://opentelemetry.io/schemas/1.21.0")
         );
 
         // Verify span-level fields
         assert_eq!(
-            record.get("span_name").unwrap(),
-            &Value::String("integration-test-span".to_string()),
-            "Should contain span name"
+            record["span_name"],
+            serde_json::json!("integration-test-span")
         );
-        assert_eq!(
-            record.get("span_kind_description").unwrap(),
-            &Value::String("CLIENT".to_string()),
-            "Should contain span kind description"
-        );
-        assert_eq!(
-            record.get("service.name").unwrap(),
-            &Value::String("test-service".to_string()),
-            "Should contain span attributes"
-        );
-        assert_eq!(
-            record.get("span_status_description").unwrap(),
-            &Value::String("OK".to_string()),
-            "Should contain status description"
-        );
+        assert_eq!(record["span_kind_description"], serde_json::json!("CLIENT"));
+        assert_eq!(record["service.name"], serde_json::json!("test-service"));
+        assert_eq!(record["span_status_description"], serde_json::json!("OK"));
     }
 
     #[test]
@@ -1066,53 +893,33 @@ mod tests {
         let span = Span {
             trace_id: sample_trace_id(),
             span_id: sample_span_id(),
-            trace_state: "".to_string(),
-            parent_span_id: vec![],
-            flags: 0,
             name: "events-only-span".to_string(),
             kind: 1,
             start_time_unix_nano: 1640995200000000000,
             end_time_unix_nano: 1640995201000000000,
-            attributes: vec![],
-            dropped_attributes_count: 0,
             events: vec![
                 Event {
                     time_unix_nano: 1640995200100000000,
                     name: "evt-a".to_string(),
-                    attributes: vec![],
-                    dropped_attributes_count: 0,
+                    ..Default::default()
                 },
                 Event {
                     time_unix_nano: 1640995200200000000,
                     name: "evt-b".to_string(),
-                    attributes: vec![],
-                    dropped_attributes_count: 0,
+                    ..Default::default()
                 },
             ],
-            dropped_events_count: 0,
-            links: vec![],
-            dropped_links_count: 0,
-            status: None,
+            ..Default::default()
         };
 
         let result = flatten_span_record(&span);
 
         assert_eq!(result.len(), 2, "One record per event when links are empty");
-        assert_eq!(
-            result[0].get("event_name").unwrap(),
-            &Value::String("evt-a".to_string()),
-        );
-        assert_eq!(
-            result[1].get("event_name").unwrap(),
-            &Value::String("evt-b".to_string()),
-        );
+        assert_eq!(result[0]["event_name"], serde_json::json!("evt-a"));
+        assert_eq!(result[1]["event_name"], serde_json::json!("evt-b"));
         // Each event record must also carry the span-level fields.
         for record in &result {
-            assert_eq!(
-                record.get("span_name").unwrap(),
-                &Value::String("events-only-span".to_string()),
-                "Event records must be enriched with span fields"
-            );
+            assert_eq!(record["span_name"], serde_json::json!("events-only-span"));
         }
     }
 
@@ -1123,40 +930,22 @@ mod tests {
         let span = Span {
             trace_id: sample_trace_id(),
             span_id: sample_span_id(),
-            trace_state: "".to_string(),
-            parent_span_id: vec![],
-            flags: 0,
             name: "links-only-span".to_string(),
             kind: 3,
             start_time_unix_nano: 1640995200000000000,
             end_time_unix_nano: 1640995201000000000,
-            attributes: vec![],
-            dropped_attributes_count: 0,
-            events: vec![],
-            dropped_events_count: 0,
             links: vec![Link {
                 trace_id: sample_trace_id(),
                 span_id: sample_span_id(),
-                trace_state: "".to_string(),
-                attributes: vec![],
-                dropped_attributes_count: 0,
-                flags: 0,
+                ..Default::default()
             }],
-            dropped_links_count: 0,
-            status: None,
+            ..Default::default()
         };
 
         let result = flatten_span_record(&span);
 
         assert_eq!(result.len(), 1, "One record per link when events are empty");
-        assert!(
-            result[0].contains_key("link_trace_id"),
-            "Link record must contain link fields"
-        );
-        assert_eq!(
-            result[0].get("span_name").unwrap(),
-            &Value::String("links-only-span".to_string()),
-            "Link records must be enriched with span fields"
-        );
+        assert!(result[0].contains_key("link_trace_id"));
+        assert_eq!(result[0]["span_name"], serde_json::json!("links-only-span"));
     }
 }

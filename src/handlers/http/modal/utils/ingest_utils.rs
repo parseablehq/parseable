@@ -41,7 +41,10 @@ use crate::{
             kinesis::{Message, flatten_kinesis_logs},
         },
     },
-    otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
+    otel::{
+        logs::flatten_otel_logs, metrics::flatten_otel_metrics, otel_utils::deserialize_otel_json,
+        traces::flatten_otel_traces,
+    },
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::StreamType,
     utils::{
@@ -223,7 +226,8 @@ pub fn flatten_and_push_logs(
             )?;
         }
         LogSource::OtelLogs => {
-            let logs: LogsData = serde_json::from_value(json)?;
+            let logs: LogsData =
+                deserialize_otel_json(json, PARSEABLE.options.normalise_otel_payload)?;
             let records = flatten_otel_logs(&logs, tenant_str);
             if !records.is_empty() {
                 push_logs(
@@ -238,7 +242,8 @@ pub fn flatten_and_push_logs(
             }
         }
         LogSource::OtelTraces => {
-            let traces: TracesData = serde_json::from_value(json)?;
+            let traces: TracesData =
+                deserialize_otel_json(json, PARSEABLE.options.normalise_otel_payload)?;
             let records = flatten_otel_traces(&traces, tenant_str);
             if !records.is_empty() {
                 push_logs(
@@ -253,7 +258,8 @@ pub fn flatten_and_push_logs(
             }
         }
         LogSource::OtelMetrics => {
-            let metrics: MetricsData = serde_json::from_value(json)?;
+            let metrics: MetricsData =
+                deserialize_otel_json(json, PARSEABLE.options.normalise_otel_payload)?;
             let records = flatten_otel_metrics(metrics, tenant_str);
             if !records.is_empty() {
                 push_logs(

@@ -138,7 +138,6 @@ pub async fn query_context(
     let permissions = Users.get_permissions(&creds);
 
     create_streams_for_distributed(vec![context_request.dataset.clone()], &tenant_id).await?;
-    let authorized_datasets = vec![context_request.dataset.clone()];
     user_auth_for_datasets(
         &permissions,
         std::slice::from_ref(&context_request.dataset),
@@ -146,6 +145,19 @@ pub async fn query_context(
     )
     .await?;
 
+    query_context_for_authorized_dataset(context_request, &tenant_id)
+        .await
+        .map(web::Json)
+}
+
+/// Fetches log context after the caller has authorized the dataset and made it
+/// available on the local query node.
+pub(crate) async fn query_context_for_authorized_dataset(
+    context_request: LogContextRequest,
+    tenant_id: &Option<String>,
+) -> Result<LogContextResponse, QueryError> {
+    let span = Span::current();
+    let authorized_datasets = vec![context_request.dataset.clone()];
     let page_size = normalize_log_context_page_size(context_request.page_size)?;
     span.record("page_size", page_size);
     let anchor_timestamp = parse_log_context_timestamp(&context_request.p_timestamp)?;
@@ -164,7 +176,7 @@ pub async fn query_context(
         "query context request normalized"
     );
 
-    let dataset = PARSEABLE.get_stream(&context_request.dataset, &tenant_id)?;
+    let dataset = PARSEABLE.get_stream(&context_request.dataset, tenant_id)?;
     let schema = dataset.get_schema();
     validate_log_context_schema(schema.as_ref(), DEFAULT_TIMESTAMP_KEY)?;
     let match_fields = normalize_log_context_match_fields(
@@ -191,7 +203,7 @@ pub async fn query_context(
         &authorized_datasets,
         &context_start_time_str,
         &context_end_time_str,
-        &tenant_id,
+        tenant_id,
     )
     .await?;
     debug!(
@@ -242,8 +254,8 @@ pub async fn query_context(
     );
 
     let (newer_records, older_records) = tokio::try_join!(
-        execute_log_context_rows(&newer_payload, &authorized_datasets, &tenant_id),
-        execute_log_context_rows(&older_payload, &authorized_datasets, &tenant_id),
+        execute_log_context_rows(&newer_payload, &authorized_datasets, tenant_id),
+        execute_log_context_rows(&older_payload, &authorized_datasets, tenant_id),
     )?;
     let (records, anchor_index) =
         build_log_context_records_window(newer_records, older_records, page_size)?;
@@ -274,7 +286,7 @@ pub async fn query_context(
         tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
     );
 
-    Ok(web::Json(LogContextResponse {
+    Ok(LogContextResponse {
         scope,
         context_start_time: context_start_time_str,
         context_end_time: context_end_time_str,
@@ -284,7 +296,7 @@ pub async fn query_context(
         anchored_duplicate: LOG_CONTEXT_ANCHORED_DUPLICATE,
         records,
         queries,
-    }))
+    })
 }
 
 fn normalize_log_context_page_size(page_size: Option<u64>) -> Result<u64, QueryError> {

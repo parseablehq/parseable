@@ -618,6 +618,14 @@ pub struct Options {
     )]
     pub max_event_payload_size: usize,
 
+    #[arg(
+        long,
+        env = "P_NORMALISE_OTEL_PAYLOAD",
+        default_value = "false",
+        help = "Normalise missing OTLP collection values and retry when JSON deserialization fails"
+    )]
+    pub normalise_otel_payload: bool,
+
     // the duration during which local sync should be completed
     #[arg(
         long,

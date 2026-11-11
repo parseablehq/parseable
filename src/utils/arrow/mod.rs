@@ -22,9 +22,9 @@ use std::{
     sync::Arc,
 };
 
+use arrow::compute::take_record_batch;
 use arrow_array::{ArrayRef, RecordBatch, StringArray, TimestampMillisecondArray, UInt64Array};
 use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
-use arrow_select::take::take;
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
 
@@ -151,12 +151,7 @@ pub fn add_parseable_fields(
 
 pub fn reverse(rb: &RecordBatch) -> RecordBatch {
     let indices = UInt64Array::from_iter_values((0..rb.num_rows()).rev().map(|x| x as u64));
-    let arrays = rb
-        .columns()
-        .iter()
-        .map(|col| take(&col, &indices, None).unwrap())
-        .collect();
-    RecordBatch::try_new(rb.schema(), arrays).unwrap()
+    take_record_batch(rb, &indices).unwrap()
 }
 
 #[cfg(test)]
