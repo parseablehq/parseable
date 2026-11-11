@@ -20,6 +20,7 @@ use crate::{
     connectors::common::processor::Processor,
     event::{
         USER_AGENT_KEY,
+        error::EventError,
         format::{EventFormat, LogSourceEntry, json},
     },
     handlers::TelemetryType,
@@ -35,8 +36,9 @@ use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use super::{ConsumerRecord, StreamConsumer, TopicPartition, config::BufferConfig};
 
@@ -93,7 +95,7 @@ struct StreamMeta {
 /// poll/commit/recv), same reasoning as the rayon offload used for otel and
 /// prometheus remote-write ingestion.
 fn build_and_process_event(
-    records: Vec<ConsumerRecord>,
+    records: &[ConsumerRecord],
     stream_name: String,
     tenant_id: Option<String>,
     meta: StreamMeta,
@@ -131,6 +133,16 @@ fn build_and_process_event(
     Ok(())
 }
 
+/// Matches the ingest-side `Retry-After` for a stream blocked by schema resolution.
+const SCHEMA_BLOCKED_RETRY: Duration = Duration::from_secs(60);
+
+fn is_schema_resolution_blocked(err: &anyhow::Error) -> bool {
+    matches!(
+        err.downcast_ref::<EventError>(),
+        Some(EventError::SchemaResolutionBlocked(_, _))
+    )
+}
+
 #[async_trait]
 impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
     async fn process(&self, records: Vec<ConsumerRecord>) -> anyhow::Result<()> {
@@ -140,14 +152,35 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
         let stream_name = records.first().map(|r| r.topic.clone()).unwrap_or_default();
         let tenant_id = records.first().and_then(|r| r.tenant_id.clone());
 
-        let meta = self.prepare_stream(&stream_name, &tenant_id).await?;
-
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        rayon::spawn(move || {
-            let res = build_and_process_event(records, stream_name, tenant_id, meta);
-            let _ = tx.send(res);
-        });
-        rx.await??;
+        let mut records = records;
+        loop {
+            let meta = self.prepare_stream(&stream_name, &tenant_id).await?;
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let (name, tenant) = (stream_name.clone(), tenant_id.clone());
+            rayon::spawn(move || {
+                let res = build_and_process_event(&records, name, tenant, meta);
+                let _ = tx.send((records, res));
+            });
+            let (returned, res) = rx.await?;
+            match res {
+                // The stream rejects writes until its schema is reconciled with the cluster.
+                // Committing now would drop these records, so hold the chunk (and its
+                // offsets) and retry once resolution had a chance to run.
+                Err(e) if is_schema_resolution_blocked(&e) => {
+                    warn!(
+                        stream = stream_name,
+                        "ingestion blocked by schema resolution, retrying {len} records in {}s: {e}",
+                        SCHEMA_BLOCKED_RETRY.as_secs()
+                    );
+                    records = returned;
+                    tokio::time::sleep(SCHEMA_BLOCKED_RETRY).await;
+                }
+                other => {
+                    other?;
+                    break;
+                }
+            }
+        }
 
         debug!("Processed {len} records");
         Ok(())

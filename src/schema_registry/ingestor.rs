@@ -184,6 +184,10 @@ impl ResolutionState {
                 *self.pending_request.lock().expect("lock poisoned") = None;
                 self.finish(ctx, &next, schemas)
             }
+            // Rolling upgrades: in `require` mode an authority without the resolve endpoint
+            // counts as a failure, so upgrade the querier/Prism before the ingestors.
+            // Ingestors upgraded first block streams with new fields after
+            // `max_deferred_cycles` until the authority is upgraded.
             Err(ResolveFailure::AuthorityTooOld) if ctx.mode == SchemaResolveMode::Prefer => {
                 warn!(
                     stream = ctx.stream,
