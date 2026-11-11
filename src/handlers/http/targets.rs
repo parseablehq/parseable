@@ -49,9 +49,7 @@ pub async fn post_internal(
 ) -> Result<serde_json::Value, AlertError> {
     target.tenant.clone_from(tenant_id);
     target.validate_outbound_policy().await?;
-    // should check for duplicacy and liveness (??)
-    // add to the map
-    TARGETS.update(target.clone()).await?;
+    TARGETS.create(target.clone()).await?;
 
     Ok(serde_json::to_value(target.mask())?)
 }

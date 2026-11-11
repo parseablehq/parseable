@@ -41,12 +41,14 @@ use actix_web::{
     web::{self, Json, Path},
 };
 use chrono::{DateTime, Utc};
+use tokio::sync::Mutex;
 use ulid::Ulid;
 
 // Reserved query parameter names that are not treated as other_fields filters
 const RESERVED_PARAMS: [&str; 3] = ["tags", "offset", "limit"];
 const MAX_LIMIT: usize = 1000;
 const DEFAULT_LIMIT: usize = 100;
+pub static ALERT_MUTATION_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Query parameters for listing alerts
 struct ListQueryParams {
@@ -273,6 +275,7 @@ pub async fn post_internal(
     session_key: &SessionKey,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let mut alert: AlertConfig = alert.into(tenant_id.clone()).await?;
 
     if alert.notification_config.interval > alert.get_eval_frequency() {
@@ -323,6 +326,23 @@ pub async fn post_internal(
     } else {
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
+
+    let existing = alerts.get_all_alerts(tenant_id).await;
+    if existing.contains_key(alert.get_id()) {
+        return Err(AlertError::Conflict(format!(
+            "Alert ID {} already exists",
+            alert.get_id()
+        )));
+    }
+    if existing
+        .values()
+        .any(|current| current.get_title() == alert.get_title())
+    {
+        return Err(AlertError::Conflict(format!(
+            "Alert title {:?} already exists",
+            alert.get_title()
+        )));
+    }
 
     // validate the incoming alert query
     // does the user have access to these tables or not?
@@ -396,6 +416,7 @@ pub async fn delete_internal(
     alert_id: Ulid,
     tenant_id: &Option<String>,
 ) -> Result<String, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -422,7 +443,7 @@ pub async fn delete_internal(
     alerts.delete(alert_id, tenant_id).await?;
 
     // delete the scheduled task
-    alerts.delete_task(alert_id).await?;
+    alerts.delete_task(alert_id, tenant_id).await?;
 
     Ok(format!("Deleted alert with ID- {alert_id}"))
 }
@@ -603,6 +624,7 @@ pub async fn modify_alert_internal(
     alert_request: AlertRequest,
     tenant_id: &Option<String>,
 ) -> Result<AlertConfigResponse, AlertError> {
+    let _mutation_guard = ALERT_MUTATION_LOCK.lock().await;
     // Get alerts manager reference without holding the global lock
     let alerts = {
         let guard = ALERTS.read().await;
@@ -659,6 +681,20 @@ pub async fn modify_alert_internal(
 
     new_alert.validate(session_key).await?;
 
+    if alerts
+        .get_all_alerts(tenant_id)
+        .await
+        .values()
+        .any(|existing| {
+            existing.get_id() != &alert_id && existing.get_title() == new_alert.get_title()
+        })
+    {
+        return Err(AlertError::Conflict(format!(
+            "Alert title {:?} already exists",
+            new_alert.get_title()
+        )));
+    }
+
     // Perform I/O operations
     PARSEABLE
         .metastore
@@ -667,7 +703,7 @@ pub async fn modify_alert_internal(
 
     let is_disabled = new_alert.get_state().eq(&AlertState::Disabled);
     // Now perform the atomic operations
-    alerts.delete_task(alert_id).await?;
+    alerts.delete_task(alert_id, tenant_id).await?;
     alerts.delete(alert_id, tenant_id).await?;
     alerts.update(&*new_alert).await;
 
@@ -712,7 +748,7 @@ pub async fn evaluate_alert_internal(
     let config = alert.to_alert_config().to_response();
 
     // remove task
-    alerts.delete_task(alert_id).await?;
+    alerts.delete_task(alert_id, tenant_id).await?;
 
     // add the task back again so that it evaluates right now
     alerts.start_task(alert).await?;

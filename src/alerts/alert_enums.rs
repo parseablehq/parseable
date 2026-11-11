@@ -29,7 +29,7 @@ use crate::alerts::{
 
 pub enum AlertTask {
     Create(Box<dyn AlertTrait>),
-    Delete(Ulid),
+    Delete(Ulid, String),
 }
 
 #[derive(Default, Debug, serde::Serialize, serde::Deserialize, Clone)]

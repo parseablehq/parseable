@@ -114,7 +114,11 @@ pub trait AlertManagerTrait: Send + Sync {
         tenant_id: &Option<String>,
     ) -> Result<AlertState, AlertError>;
     async fn start_task(&self, alert: Box<dyn AlertTrait>) -> Result<(), AlertError>;
-    async fn delete_task(&self, alert_id: Ulid) -> Result<(), AlertError>;
+    async fn delete_task(
+        &self,
+        alert_id: Ulid,
+        tenant_id: &Option<String>,
+    ) -> Result<(), AlertError>;
     async fn list_tags(&self, tenant_id: &Option<String>) -> Vec<String>;
     async fn get_all_alerts(
         &self,
