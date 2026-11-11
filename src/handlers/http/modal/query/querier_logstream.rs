@@ -296,14 +296,11 @@ pub async fn get_stats_internal(
     }
 
     if PARSEABLE
-        .get_stream(&stream_name, &tenant_id)
+        .get_stream(stream_name, tenant_id)
         .is_ok_and(|stream| stream.is_deleting())
     {
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
-
-    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
-        .map_err(|_| StreamError::InvalidQueryParameter(STATS_DATE_QUERY_PARAM.to_string()))?;
 
     if let Some(date_value) = date
         && !date_value.is_empty()
