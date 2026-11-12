@@ -885,20 +885,6 @@ impl Stream {
                 true
             }
         };
-        // Recheck after waiting for the writer lock: an earlier validation may
-        // predate deletion. Cleanup takes this same lock before removing files.
-        if self.is_deleting() {
-            return Err(StagingError::StreamDeleting(self.stream_name.clone()));
-        }
-        if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
-            let filename =
-                self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
-            let range = TimeRange::granularity_range(
-                parsed_timestamp.and_local_timezone(Utc).unwrap(),
-                OBJECT_STORE_DATA_GRANULARITY,
-            );
-            let file_path = self.data_path.join(&filename);
-
         if should_reschedule {
             let stream = Arc::clone(&self);
             INGEST_WRITER_SCHEDULER
@@ -941,6 +927,16 @@ impl Stream {
                 return;
             }
         };
+
+        // Recheck after waiting for the writer lock: an earlier validation may
+        // predate deletion. Cleanup takes this same lock before removing files.
+        if self.is_deleting() {
+            let message = StagingError::StreamDeleting(self.stream_name.clone()).to_string();
+            for job in groups.into_iter().flatten() {
+                let _ = job.result.send(Err(message.clone()));
+            }
+            return;
+        }
 
         for group in groups {
             let schema = group[0].record.schema();
@@ -1419,17 +1415,6 @@ impl Stream {
                     )))
                 })?;
         }
-        // Swap out stale writers under the lock, drop them after releasing it.
-        // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
-        // outside the lock avoids blocking concurrent push() calls.
-        let stale_writers = {
-            let mut writer = self.writer.lock().map_err(|poisoned| {
-                StagingError::PoisonError(PoisonError::new(format!(
-                    "Writer lock poisoned while flushing data for stream {} - {}",
-                    self.stream_name, poisoned
-                )))
-            })?;
-
         let mut writer = self.writer.lock().map_err(|poisoned| {
             StagingError::PoisonError(PoisonError::new(format!(
                 "Writer lock poisoned while flushing data for stream {} - {}",
@@ -3860,6 +3845,60 @@ mod tests {
         assert!(!queue.scheduled);
         assert!(queue.jobs.is_empty());
         assert_eq!(stream.push_drain_tasks.load(AtomicOrdering::Relaxed), 2);
+    }
+
+    #[test]
+    fn push_queue_rejects_pending_writes_after_deletion_starts() {
+        let temp_dir = TempDir::new().unwrap();
+        let stream = Stream::new(
+            Arc::new(Options {
+                local_staging_path: temp_dir.path().to_path_buf(),
+                ..Default::default()
+            }),
+            "deleting_push_queue",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+        let filename = "schema.date=2026-11-10.hour=12.minute=00.test.data.arrows";
+        let mut receivers = Vec::new();
+        {
+            let mut queue = stream.push_queue.lock().unwrap();
+            queue.scheduled = true;
+            for _ in 0..9 {
+                let (sender, receiver) = sync_channel(1);
+                queue.jobs.push_back(QueuedPush {
+                    schema_key: "schema".to_owned(),
+                    record: batch.clone(),
+                    disk: Some(QueuedDiskPush {
+                        filename: filename.to_owned(),
+                        file_path: stream.data_path.join(filename),
+                        range: TimeRange::granularity_range(
+                            Utc::now(),
+                            OBJECT_STORE_DATA_GRANULARITY,
+                        ),
+                    }),
+                    result: sender,
+                });
+                receivers.push(receiver);
+            }
+        }
+
+        stream.mark_deleting();
+        Arc::clone(&stream).drain_push_queue();
+
+        let expected = StagingError::StreamDeleting(stream.stream_name.clone()).to_string();
+        for receiver in receivers {
+            assert_eq!(
+                receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+                Err(expected.clone())
+            );
+        }
+        stream.flush(true).unwrap();
+        assert!(!stream.data_path.exists());
     }
 
     #[test]
