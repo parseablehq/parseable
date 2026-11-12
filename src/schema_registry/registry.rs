@@ -26,9 +26,6 @@ use crate::event::format::get_datatype_suffix;
 
 use super::protocol::{FieldResolution, Outcome};
 
-/// Max number of `_<suffix>` steps before a field is declared unresolvable.
-pub const MAX_SUFFIX_DEPTH: usize = 3;
-
 /// Types that are the same column type for registry purposes.
 pub fn normalize(data_type: &DataType) -> DataType {
     match data_type {
@@ -119,9 +116,11 @@ impl StreamRegistry {
                             },
                         };
                     }
+                    // No depth limit: every step makes a longer name, and only finitely many
+                    // names are registered or proposed, so the chain always reaches a free one.
+                    // Types sharing a suffix (every list is `list`) chain one level per type.
                     _ => {
-                        depth += 1;
-                        if self.reserved.contains(&original) || depth > MAX_SUFFIX_DEPTH {
+                        if self.reserved.contains(&original) {
                             break FieldResolution {
                                 original_name: original.clone(),
                                 proposed_type: proposed.clone(),
@@ -131,6 +130,7 @@ impl StreamRegistry {
                                 outcome: Outcome::Unresolvable,
                             };
                         }
+                        depth += 1;
                         name = format!("{name}_{}", get_datatype_suffix(proposed));
                     }
                 }
@@ -182,6 +182,8 @@ impl StreamRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use arrow_schema::TimeUnit;
 
@@ -246,16 +248,26 @@ mod tests {
     }
 
     #[test]
-    fn suffix_chain_is_bounded() {
+    fn suffix_chain_continues_until_a_free_name() {
+        // Every list type shares the `list` suffix, so each new list type goes one level deeper.
+        let list = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
         let r = reg(&[
-            ("a", DataType::Int64),
-            ("a_utf8", DataType::Int64),
-            ("a_utf8_utf8", DataType::Int64),
-            ("a_utf8_utf8_utf8", DataType::Int64),
+            ("a", list(DataType::Int64)),
+            ("a_list", list(DataType::Float64)),
+            ("a_list_list", list(DataType::Utf8)),
+            ("a_list_list_list", list(DataType::Boolean)),
         ]);
-        let res = r.resolve(&[f("a", DataType::Utf8)]);
-        assert_eq!(res.resolutions[0].outcome, Outcome::Unresolvable);
-        assert!(res.registered.is_empty());
+        let res = r.resolve(&[f("a", list(DataType::Date32))]);
+        assert_eq!(res.resolutions[0].resolved_name, "a_list_list_list_list");
+        assert_eq!(res.resolutions[0].outcome, Outcome::Renamed);
+        assert_eq!(
+            res.registered,
+            vec![("a_list_list_list_list".to_string(), list(DataType::Date32))]
+        );
+        // An already registered list type still resolves to its existing column.
+        let res = r.resolve(&[f("a", list(DataType::Utf8))]);
+        assert_eq!(res.resolutions[0].resolved_name, "a_list_list");
+        assert_eq!(res.resolutions[0].outcome, Outcome::AlreadyRenamed);
     }
 
     #[test]

@@ -50,7 +50,8 @@ pub enum Outcome {
     Renamed,
     /// Like `Renamed`, and the suffixed name was already registered by an earlier request.
     AlreadyRenamed,
-    /// No safe name exists (reserved column, or the suffix chain is exhausted).
+    /// No safe name exists: the field is a reserved column (`p_*` or a partition column)
+    /// registered with another type.
     Unresolvable,
 }
 
