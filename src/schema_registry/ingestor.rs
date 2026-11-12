@@ -328,7 +328,7 @@ pub fn schema_overrides(
             Some(field) if field.data_type() != data_type => out.push(Arc::new(
                 field.as_ref().clone().with_data_type(data_type.clone()),
             )),
-            None if view.renames.values().any(|to| to == name) => {
+            None if view.renames.values().flatten().any(|to| to == name) => {
                 out.push(Arc::new(Field::new(name, data_type.clone(), true)))
             }
             _ => {}
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(out.deferred.len(), 0);
         assert_eq!(
             state.view().renames[&("a".to_string(), DataType::Utf8)],
-            "a_utf8"
+            vec!["a_utf8".to_string()]
         );
 
         // A later file carries both `a: Utf8` and a literal `a_utf8`: both count as resolved,
@@ -497,6 +497,12 @@ mod tests {
         let renamed = state.view().rename_schema(&schema).unwrap().unwrap();
         let names: Vec<_> = renamed.fields().iter().map(|f| f.name().as_str()).collect();
         assert_eq!(names, ["a_utf8_utf8", "a_utf8"]);
+
+        // The new target is appended: files carrying only `a: Utf8` keep `a_utf8`, so a file
+        // accepted before this answer still converts as it was accepted.
+        let only_a = Schema::new(vec![Field::new("a", DataType::Utf8, true)]);
+        let renamed = state.view().rename_schema(&only_a).unwrap().unwrap();
+        assert_eq!(renamed.field(0).name(), "a_utf8");
     }
 
     #[test]

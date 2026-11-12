@@ -37,15 +37,18 @@ pub const VIEW_FILE_NAME: &str = ".field_resolution.json";
 
 /// Resolved fields and renames for one stream on one ingestor.
 ///
-/// Write-once by construction (it mirrors a write-once registry), so an older snapshot is
-/// always a subset of a newer one.
+/// Append-only by construction (it mirrors a write-once registry), so an older snapshot is
+/// always a prefix-preserving subset of a newer one: a file converts the same way under any
+/// later view.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ResolvedView {
     pub registry_version: u64,
     /// Authoritative type per column name, including rename targets.
     pub fields: HashMap<String, DataType>,
-    /// (name, type written in the arrow file) -> column name to write to parquet.
-    pub renames: HashMap<(String, DataType), String>,
+    /// (name, type written in the arrow file) -> registered columns it may be written to, in
+    /// the order the authority granted them. Append-only: a file whose earlier target is
+    /// taken by another of its columns uses the next one, and existing entries never change.
+    pub renames: HashMap<(String, DataType), Vec<String>>,
     /// (name, type) pairs the authority could not place. Files carrying them are not converted.
     pub unresolvable: HashSet<(String, DataType)>,
 }
@@ -129,7 +132,10 @@ impl ResolvedView {
                         next.fields.insert(r.original_name.clone(), t.clone());
                     }
                     if r.resolved_name != r.original_name {
-                        next.renames.insert(key, r.resolved_name.clone());
+                        let targets = next.renames.entry(key).or_default();
+                        if !targets.contains(&r.resolved_name) {
+                            targets.push(r.resolved_name.clone());
+                        }
                     }
                 }
             }
@@ -139,35 +145,42 @@ impl ResolvedView {
     }
 
     /// Returns the renamed schema of an arrow file, or `None` when no column is renamed.
+    ///
+    /// Each renamed column takes its first target not used by another column of the file.
+    /// Fails when every target is taken; the file then needs a new target from the authority.
     pub fn rename_schema(&self, schema: &Schema) -> Result<Option<Arc<Schema>>, ArrowError> {
         if self.renames.is_empty() {
             return Ok(None);
         }
-        let mut changed = false;
-        let fields: Vec<Arc<Field>> = schema
-            .fields()
-            .iter()
-            .map(
-                |f| match self.renames.get(&(f.name().clone(), f.data_type().clone())) {
-                    Some(to) => {
-                        changed = true;
-                        Arc::new(f.as_ref().clone().with_name(to))
-                    }
-                    None => f.clone(),
-                },
-            )
-            .collect();
-        if !changed {
+        let targets = |f: &Field| {
+            self.renames
+                .get(&(f.name().clone(), f.data_type().clone()))
+                .filter(|t| !t.is_empty())
+        };
+        if !schema.fields().iter().any(|f| targets(f).is_some()) {
             return Ok(None);
         }
-        let mut seen = HashSet::with_capacity(fields.len());
-        for f in &fields {
-            if !seen.insert(f.name().as_str()) {
+        let mut taken: HashSet<&str> = schema
+            .fields()
+            .iter()
+            .filter(|f| targets(f).is_none())
+            .map(|f| f.name().as_str())
+            .collect();
+        let mut fields = Vec::with_capacity(schema.fields().len());
+        for f in schema.fields() {
+            let Some(candidates) = targets(f) else {
+                fields.push(f.clone());
+                continue;
+            };
+            let Some(to) = candidates.iter().find(|t| !taken.contains(t.as_str())) else {
                 return Err(ArrowError::SchemaError(format!(
-                    "renaming produced duplicate column {}",
-                    f.name()
+                    "renaming {} produced a duplicate column: {} already taken",
+                    f.name(),
+                    candidates.join(", ")
                 )));
-            }
+            };
+            taken.insert(to);
+            fields.push(Arc::new(f.as_ref().clone().with_name(to)));
         }
         Ok(Some(Arc::new(Schema::new_with_metadata(
             fields,
@@ -188,11 +201,13 @@ impl ResolvedView {
                     .into_iter()
                     .map(|e| (e.name, e.data_type))
                     .collect(),
-                renames: file
-                    .renames
-                    .into_iter()
-                    .map(|r| ((r.from, r.from_type), r.to))
-                    .collect(),
+                renames: file.renames.into_iter().fold(
+                    HashMap::<_, Vec<String>>::new(),
+                    |mut acc, r| {
+                        acc.entry((r.from, r.from_type)).or_default().push(r.to);
+                        acc
+                    },
+                ),
                 unresolvable: HashSet::new(),
             },
             Err(err) => {
@@ -214,16 +229,19 @@ impl ResolvedView {
             })
             .collect();
         fields.sort_by(|a, b| a.name.cmp(&b.name));
-        let mut renames: Vec<RenameEntry> = self
-            .renames
-            .iter()
-            .map(|((from, from_type), to)| RenameEntry {
-                from: from.clone(),
-                from_type: from_type.clone(),
-                to: to.clone(),
+        // One entry per target, in grant order: `load` rebuilds each list in file order.
+        let mut keys: Vec<&(String, DataType)> = self.renames.keys().collect();
+        keys.sort_by_cached_key(|(from, from_type)| (from.clone(), format!("{from_type:?}")));
+        let renames: Vec<RenameEntry> = keys
+            .into_iter()
+            .flat_map(|key| {
+                self.renames[key].iter().map(|to| RenameEntry {
+                    from: key.0.clone(),
+                    from_type: key.1.clone(),
+                    to: to.clone(),
+                })
             })
             .collect();
-        renames.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
         let file = ViewFile {
             registry_version: self.registry_version,
             fields,
@@ -314,10 +332,73 @@ mod tests {
         assert!(v.rename_schema(&schema).is_err());
     }
 
+    /// `a: Utf8` granted `a_utf8`, then `a_utf8_utf8` for a file that also carries `a_utf8`.
+    fn two_target_view() -> ResolvedView {
+        renamed_view().with_resolutions(
+            3,
+            &[FieldResolution {
+                original_name: "a".into(),
+                proposed_type: DataType::Utf8,
+                resolved_name: "a_utf8_utf8".into(),
+                data_type: DataType::Utf8,
+                registry_type: Some(DataType::Int64),
+                outcome: Outcome::Renamed,
+            }],
+            &[],
+        )
+    }
+
+    fn renamed_names(v: &ResolvedView, fields: &[&str]) -> Vec<String> {
+        let schema = Schema::new(
+            fields
+                .iter()
+                .map(|n| Field::new(*n, DataType::Utf8, true))
+                .collect::<Vec<_>>(),
+        );
+        v.rename_schema(&schema)
+            .unwrap()
+            .expect("renamed")
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect()
+    }
+
+    #[test]
+    fn later_targets_never_change_earlier_renames() {
+        let v = two_target_view();
+        assert_eq!(
+            v.renames[&("a".to_string(), DataType::Utf8)],
+            vec!["a_utf8".to_string(), "a_utf8_utf8".to_string()]
+        );
+        // Files that converted under the first answer still convert the same way.
+        assert_eq!(renamed_names(&v, &["a"]), vec!["a_utf8"]);
+        assert_eq!(
+            renamed_names(&v, &["a", "a_utf8_utf8"]),
+            vec!["a_utf8", "a_utf8_utf8"]
+        );
+        // Only a file whose first target is taken moves to the next one.
+        assert_eq!(
+            renamed_names(&v, &["a", "a_utf8"]),
+            vec!["a_utf8_utf8", "a_utf8"]
+        );
+        // Every target taken: needs a new one from the authority.
+        let all = Schema::new(
+            ["a", "a_utf8", "a_utf8_utf8"]
+                .iter()
+                .map(|n| Field::new(*n, DataType::Utf8, true))
+                .collect::<Vec<_>>(),
+        );
+        assert!(v.rename_schema(&all).is_err());
+    }
+
     #[test]
     fn persist_and_load_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let v = renamed_view();
+        v.persist(dir.path()).unwrap();
+        assert_eq!(ResolvedView::load(dir.path()), v);
+        let v = two_target_view();
         v.persist(dir.path()).unwrap();
         assert_eq!(ResolvedView::load(dir.path()), v);
     }
