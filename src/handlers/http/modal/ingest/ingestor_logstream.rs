@@ -16,7 +16,7 @@
  *
  */
 
-use std::fs;
+use std::sync::Arc;
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -35,11 +35,10 @@ use crate::{
     utils::get_tenant_id_from_request,
 };
 
-// Shared between put_stream and delete: without it, a concurrent create/
-// update could read is_deleting()=false right before delete() flips it,
-// then go on to write fresh stream data into a directory delete() is about
-// to (or just did) remove.
-static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
+// Serializes creation/update and local deletion cleanup on this ingestor.
+// Reconciliation uses the same lock so old cleanup cannot remove files from
+// a dataset recreated under the same name.
+pub(crate) static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub async fn retention_cleanup(
     req: HttpRequest,
@@ -82,19 +81,22 @@ pub async fn delete(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    // The querier owns the tombstone and object-storage deletion. This handler
+    // handles its notification locally, holding off recreation through cleanup.
+    let creation_guard = Arc::new(CREATE_STREAM_LOCK.lock().await);
 
     let stream_dir = {
-        let _guard = CREATE_STREAM_LOCK.lock().await;
-        // Delete from staging
+        // Reject new ingestion before waiting for active local operations.
         let stream_dir = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
         stream_dir.mark_deleting();
         stream_dir
     };
 
-    // delete staging only for ingest server or standalone server
-    // else skip
+    // On ingest/standalone nodes, wait for participating ingestion and local
+    // sync, finalize writers, then remove staging and reset stats. Cleanup is
+    // synchronous here; reconciliation retries it before evicting a stale entry.
     if (PARSEABLE.options.mode == Mode::Ingest || PARSEABLE.options.mode == Mode::All)
-        && let Err(err) = fs::remove_dir_all(&stream_dir.data_path)
+        && let Err(err) = stream_dir.remove_staging(&tenant_id, &creation_guard).await
     {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
@@ -102,13 +104,13 @@ pub async fn delete(
             stream_dir.data_path.to_string_lossy()
         )
     }
-
-    // Not removed from memory here: this node doesn't run the background
-    // deletion job, so it doesn't know when the underlying prefix is
-    // actually gone. The entry is reaped once `sync_all_streams` notices
-    // the tombstone has cleared (see its is_deleting()/is_tombstoned()
-    // self-heal check) -- until then, `is_deleting()` keeps rejecting
-    // ingestion for this stream with a clear "being deleted" error.
+    if let Err(err) = crate::stats::delete_stats(&stream_name, "json", &tenant_id) {
+        warn!("failed to clear stats for deleted stream {stream_name}: {err}");
+    }
+    // Keep the old entry marked deleting until the querier finishes deleting
+    // object storage. Once the tombstone is gone, reconciliation or recreation
+    // self-healing cleans any remaining staging and evicts the entry. Evicting
+    // here would let requests lose the local guard while deletion is ongoing.
     Ok((
         format!("log stream {stream_name} deletion started"),
         StatusCode::ACCEPTED,
@@ -122,9 +124,15 @@ pub async fn put_stream(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let _guard = CREATE_STREAM_LOCK.lock().await;
+    let creation_guard = Arc::new(CREATE_STREAM_LOCK.lock().await);
     PARSEABLE
-        .create_update_stream(req.headers(), &body, &stream_name, &tenant_id)
+        .create_update_stream(
+            req.headers(),
+            &body,
+            &stream_name,
+            &tenant_id,
+            &creation_guard,
+        )
         .await?;
 
     Ok(("Log stream created", StatusCode::OK))

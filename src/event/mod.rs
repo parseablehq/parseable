@@ -84,8 +84,9 @@ impl Event {
                 key.push_str(&format!("&{k}={v}"));
             }
         }
-
-        let stream = PARSEABLE.get_or_create_stream(&self.stream_name, &self.tenant_id);
+        
+        let stream = PARSEABLE.get_stream(&self.stream_name, &self.tenant_id)?;
+        let _ingestion_guard = stream.ingestion_guard()?;
 
         if self.is_first_event {
             commit_schema(&self.stream_name, self.rb.schema(), &self.tenant_id)?;
@@ -131,7 +132,7 @@ impl Event {
         let key = get_schema_key(&self.rb.schema().fields);
 
         PARSEABLE
-            .get_or_create_stream(&self.stream_name, &self.tenant_id)
+            .get_stream(&self.stream_name, &self.tenant_id)?
             .push(
                 &key,
                 &self.rb,
@@ -174,14 +175,18 @@ pub fn commit_schema(
 }
 
 pub mod error {
-
-    use crate::{parseable::StagingError, storage::ObjectStorageError};
-
+    use crate::{
+        parseable::{StagingError, StreamNotFound},
+        storage::ObjectStorageError,
+    };
     #[derive(Debug, thiserror::Error)]
+
     pub enum EventError {
         #[error("Staging Failed: {0}")]
         Staging(#[from] StagingError),
         #[error("ObjectStorage Error: {0}")]
         ObjectStorage(#[from] ObjectStorageError),
+        #[error(transparent)]
+        StreamNotFound(#[from] StreamNotFound),
     }
 }

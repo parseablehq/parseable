@@ -40,6 +40,8 @@ pub enum StagingError {
     TenantNotFound(#[from] TenantNotFound),
     #[error("{0}")]
     PoisonError(#[from] PoisonError<String>),
+    #[error("Dataset {0} is being deleted")]
+    StreamDeleting(String),
     #[error("JSON Error {0}")]
     Json(#[from] serde_json::Error),
     #[error("Queued ingestion write failed: {0}")]

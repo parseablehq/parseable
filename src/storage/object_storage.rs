@@ -42,7 +42,8 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use dashmap::{DashMap, DashSet, mapref::entry::Entry};
+use dashmap::mapref::entry::Entry;
+use dashmap::{DashMap, DashSet};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use itertools::Itertools;
 use object_store::ListResult;
@@ -60,6 +61,7 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use std::time::Instant;
 use tokio::task::JoinSet;
@@ -1071,7 +1073,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         info!("Starting object_store_sync for stream- {stream_name}");
 
-        let stream = PARSEABLE.get_or_create_stream(stream_name, &tenant_id);
+        let stream = PARSEABLE.get_stream(stream_name, &tenant_id)?;
         let upload_context = UploadContext::new(stream);
 
         // Process parquet files concurrently and collect results
@@ -1396,11 +1398,37 @@ fn stream_relative_path(
 pub static ACTIVE_STREAM_DELETIONS: Lazy<DashMap<(Option<String>, String), Instant>> =
     Lazy::new(DashMap::new);
 
+static STREAM_DELETION_OWNER_OVERRIDE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_stream_deletion_owner(is_owner: bool) {
+    STREAM_DELETION_OWNER_OVERRIDE.store(if is_owner { 1 } else { 2 }, Ordering::Relaxed);
+}
+
+pub(crate) fn is_stream_deletion_owner() -> bool {
+    match STREAM_DELETION_OWNER_OVERRIDE.load(Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => matches!(PARSEABLE.options.mode, Mode::Query | Mode::Prism | Mode::All),
+    }
+}
+
 /// RAII guard that removes a stream's entry from `ACTIVE_STREAM_DELETIONS` on
 /// drop, including on an unexpected panic inside the deletion task -- so a
 /// single bad run can't wedge all future retries for that stream by leaving
 /// its dedup entry stuck forever.
 struct StreamDeletionGuard(Option<(Option<String>, String)>);
+
+impl StreamDeletionGuard {
+    fn claim(key: (Option<String>, String)) -> Option<Self> {
+        match ACTIVE_STREAM_DELETIONS.entry(key.clone()) {
+            Entry::Occupied(_) => None,
+            Entry::Vacant(entry) => {
+                entry.insert(Instant::now());
+                Some(Self(Some(key)))
+            }
+        }
+    }
+}
 
 impl Drop for StreamDeletionGuard {
     fn drop(&mut self) {
@@ -1415,50 +1443,126 @@ impl Drop for StreamDeletionGuard {
 /// prefix delete completes. Safe to call more than once for the same
 /// stream: a job already in flight is skipped rather than duplicated.
 pub fn spawn_stream_deletion(stream_name: String, tenant_id: Option<String>) {
-    let key = (tenant_id, stream_name);
-    match ACTIVE_STREAM_DELETIONS.entry(key.clone()) {
-        Entry::Occupied(_) => return,
-        Entry::Vacant(entry) => {
-            entry.insert(Instant::now());
-        }
+    if !is_stream_deletion_owner() {
+        return;
     }
-    tokio::spawn(async move {
-        let _guard = StreamDeletionGuard(Some(key.clone()));
-        let (tenant_id, stream_name) = &key;
+
+    spawn_claimed_stream_deletion((tenant_id.clone(), stream_name.clone()), async move {
         let storage = PARSEABLE.storage.get_object_store();
-        match storage.delete_stream(stream_name, tenant_id).await {
-            Ok(()) => {
-                // Clear the map entry and stats *before* the tombstone, not
-                // after: while the tombstone is still present, any
-                // concurrent create/update for this name is rejected with
-                // 409 by reject_if_stream_deleting's own tombstone check, so
-                // nothing can have recreated this name yet. Clearing the
-                // tombstone first would open a window where a legitimate
-                // recreate succeeds before this cleanup runs -- harmless for
-                // the map entry itself (delete_if_still_deleting only
-                // touches an entry still flagged deleting), but
-                // stats::delete_stats has no such per-entry guard and would
-                // zero out the freshly recreated stream's stats instead.
-                PARSEABLE
-                    .streams
-                    .delete_if_still_deleting(stream_name, tenant_id);
-                if let Err(e) = stats::delete_stats(stream_name, "json", tenant_id) {
-                    warn!("failed to clear stats for deleted stream {stream_name}: {e:?}");
-                }
-                if let Err(e) = storage
-                    .delete_object(&tombstone_path(stream_name, tenant_id), tenant_id)
-                    .await
-                {
-                    warn!(
-                        "background deletion of {stream_name} finished but failed to clear its tombstone: {e}"
-                    );
+        let creation_lock = match PARSEABLE.options.mode {
+            Mode::Query | Mode::Prism => {
+                &crate::handlers::http::modal::query::querier_logstream::CREATE_STREAM_LOCK
+            }
+            _ => &crate::handlers::http::logstream::CREATE_STREAM_LOCK,
+        };
+        run_stream_deletion(
+            storage.as_ref(),
+            &PARSEABLE.streams,
+            &PARSEABLE.options,
+            creation_lock,
+            &stream_name,
+            &tenant_id,
+        )
+        .await;
+    });
+}
+
+fn spawn_claimed_stream_deletion(
+    key: (Option<String>, String),
+    job: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let guard = StreamDeletionGuard::claim(key)?;
+    // Capture the guard before spawning so cancellation before the first poll
+    // releases the claim too.
+    Some(tokio::spawn(async move {
+        let _guard = guard;
+        job.await;
+    }))
+}
+
+// Explicit dependencies let regression tests run the production job without
+// initializing the CLI-backed PARSEABLE singleton.
+async fn run_stream_deletion(
+    storage: &dyn ObjectStorage,
+    streams: &crate::parseable::Streams,
+    options: &crate::cli::Options,
+    creation_lock: &'static tokio::sync::Mutex<()>,
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) {
+    {
+        let creation_guard = Arc::new(creation_lock.lock().await);
+
+        match is_tombstoned(storage, stream_name, tenant_id).await {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(err) => {
+                warn!("failed to check deletion tombstone for {stream_name}: {err}");
+                return;
+            }
+        }
+
+        let stream = streams
+            .read()
+            .expect("stream map lock poisoned")
+            .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            .and_then(|streams| streams.get(stream_name))
+            .cloned();
+        let cleanup: Result<(), crate::parseable::StagingError> = match stream {
+            Some(stream) => {
+                stream.mark_deleting();
+                stream.remove_staging(tenant_id, &creation_guard).await
+            }
+            None => {
+                // Recovery may have no resident Stream to clean through.
+                let path = options.local_stream_data_path(stream_name, tenant_id);
+                let creation_guard = Arc::clone(&creation_guard);
+                let cleanup = tokio::task::spawn_blocking(move || {
+                    let _creation_guard = creation_guard;
+                    std::fs::remove_dir_all(path)
+                })
+                .await
+                .map_err(std::io::Error::other)
+                .and_then(|result| result);
+                match cleanup {
+                    Ok(()) => Ok(()),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(err) => Err(err.into()),
                 }
             }
-            Err(e) => error!(
-                "background deletion failed for {stream_name}: {e}. tombstone left in place, retried on next restart or repeat DELETE"
-            ),
+        };
+
+        if let Err(err) = cleanup {
+            warn!(
+                "failed to clean staging for deleting stream {stream_name}: \
+                 {err}; retaining tombstone for retry"
+            );
+            return;
         }
-    });
+    }
+    match storage.delete_stream(stream_name, tenant_id).await {
+        Ok(()) => {
+            // Evict and reset stats before clearing the tombstone: once the
+            // marker is gone, a replacement can be created under this name.
+            streams.delete_if_still_deleting(stream_name, tenant_id);
+            if let Err(e) =
+                stats::delete_stats_for_mode(options.mode, stream_name, "json", tenant_id)
+            {
+                warn!("failed to clear stats for deleted stream {stream_name}: {e:?}");
+            }
+            if let Err(e) = storage
+                .delete_object(&tombstone_path(stream_name, tenant_id), tenant_id)
+                .await
+            {
+                warn!(
+                    "background deletion of {stream_name} finished but failed to clear its tombstone: {e}"
+                );
+            }
+        }
+        Err(e) => error!(
+            "background deletion failed for {stream_name}: {e}. tombstone left in place, retried on next restart or repeat DELETE"
+        ),
+    }
 }
 
 // Extracted out of sync_all_streams to keep its own cyclomatic complexity
@@ -1478,15 +1582,9 @@ fn spawn_deleting_stream_reconciliation(
     tenant_id: Option<String>,
     stream_name: String,
 ) {
-    // Only a node type that can actually receive a client's original DELETE
-    // request (query/standalone) ever resumes the physical delete here. An
-    // ingestor only ever gets is_deleting()=true via the delete handler's
-    // own fan-out push, which never starts a job on the ingestor itself --
-    // letting it also spawn one here would mean every ingestor independently
-    // runs a redundant, uncoordinated bulk delete against the same prefix
-    // for the entire (possibly long) duration of every deletion, not just
-    // the rare case of a genuinely missed notification.
-    let is_deletion_owner = PARSEABLE.options.mode != Mode::Ingest;
+    // Only the designated coordinator resumes physical deletion: Query in
+    // OSS, Prism in Enterprise, or All in standalone mode.
+    let is_deletion_owner = is_stream_deletion_owner();
     joinset.spawn_on(
         async move {
             match is_tombstoned(object_store.as_ref(), &stream_name, &tenant_id).await {
@@ -1495,27 +1593,35 @@ fn spawn_deleting_stream_reconciliation(
                         spawn_stream_deletion(stream_name, tenant_id);
                     }
                 }
-                Ok(false) if !is_deletion_owner => {
-                    // Deletion already finished elsewhere and the tombstone
-                    // is gone, but this node's resident entry was never
-                    // dropped -- e.g. an ingestor, which doesn't run the
-                    // background deletion job itself. Reap it so a stream
-                    // recreated under the same name doesn't inherit a stuck
-                    // deleting=true state.
-                    PARSEABLE
-                        .streams
-                        .delete_if_still_deleting(&stream_name, &tenant_id);
+                Ok(false) if PARSEABLE.options.mode == Mode::Ingest => {
+                    let creation_guard = Arc::new(
+                        crate::handlers::http::modal::ingest::ingestor_logstream::CREATE_STREAM_LOCK
+                            .lock()
+                            .await,
+                    );
+
+                    if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id)
+                        && stream.is_deleting()
+                    {
+                        match stream.remove_staging(&tenant_id, &creation_guard).await {
+                            Ok(()) => {
+                                if let Err(err) = stats::delete_stats(&stream_name, "json", &tenant_id) {
+                                    warn!("failed to clear stats for deleted stream {stream_name}: {err}");
+                                }
+                                PARSEABLE
+                                    .streams
+                                    .delete_if_still_deleting(&stream_name, &tenant_id);
+                            }
+                            Err(err) => {
+                                warn!(
+                                    "failed to clean staging for deleting stream \
+                     {stream_name}, retrying next sync interval: {err}"
+                                );
+                            }
+                        }
+                    }
                 }
-                Ok(false) => {
-                    // On the owning node, an absent tombstone can also just
-                    // mean this delete hasn't written it yet (mark_deleting()
-                    // runs first, with the tombstone write still in flight).
-                    // Reaping here would race that window and let a
-                    // concurrent reload resurrect the stream mid-deletion --
-                    // the owner's own spawn_stream_deletion job removes this
-                    // entry once the actual delete (and tombstone clear)
-                    // completes.
-                }
+                Ok(false) => {}
                 Err(e) => error!("failed to check tombstone status for {stream_name}: {e}"),
             }
             Ok(())
@@ -1547,7 +1653,7 @@ fn spawn_tombstone_directory_reconciliation(
     object_store: Arc<dyn ObjectStorage>,
     tenant_id: Option<String>,
 ) {
-    let is_deletion_owner = PARSEABLE.options.mode != Mode::Ingest;
+    let is_deletion_owner = is_stream_deletion_owner();
     joinset.spawn_on(
         async move {
             match list_tombstoned_streams(object_store.as_ref(), &tenant_id).await {
@@ -1578,6 +1684,17 @@ async fn reconcile_one_tombstoned_stream(
     stream_name: String,
     is_deletion_owner: bool,
 ) {
+    let creation_lock = match PARSEABLE.options.mode {
+        Mode::Ingest => {
+            &crate::handlers::http::modal::ingest::ingestor_logstream::CREATE_STREAM_LOCK
+        }
+        Mode::Query | Mode::Prism => {
+            &crate::handlers::http::modal::query::querier_logstream::CREATE_STREAM_LOCK
+        }
+        _ => &crate::handlers::http::logstream::CREATE_STREAM_LOCK,
+    };
+
+    let creation_guard = Arc::new(creation_lock.lock().await);
     match PARSEABLE.get_stream(&stream_name, tenant_id) {
         Ok(stream) if !stream.is_deleting() => {
             // list_tombstoned_streams is a snapshot -- by the time we get
@@ -1588,7 +1705,16 @@ async fn reconcile_one_tombstoned_stream(
             // stream can't be flagged deleting based on stale snapshot data
             // with no tombstone left to ever clear it again.
             match is_tombstoned(object_store, &stream_name, tenant_id).await {
-                Ok(true) => stream.mark_deleting(),
+                Ok(true) => {
+                    stream.mark_deleting();
+
+                    if let Err(err) = stream.remove_staging(tenant_id, &creation_guard).await {
+                        warn!(
+                            "failed to remove local staging for deleting stream \
+                            {stream_name}: {err}"
+                        );
+                    }
+                }
                 Ok(false) => {}
                 // A real error here (as opposed to "no tombstone") is not
                 // evidence the tombstone is gone -- folding it into Ok(false)
@@ -2055,44 +2181,369 @@ mod tombstone_tests {
 }
 
 #[cfg(test)]
-mod stream_deletion_dedup_tests {
-    use super::ACTIVE_STREAM_DELETIONS;
+mod stream_deletion_tests {
+    use super::*;
+    use crate::{
+        cli::Options,
+        metadata::LogStreamMetadata,
+        metrics::{EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED},
+        parseable::Streams,
+        storage::{LocalFS, StreamType},
+    };
+    use std::{fs, sync::Barrier, sync::atomic::AtomicUsize};
+    use temp_dir::TempDir;
+    use tokio::{sync::Mutex, task::JoinHandle};
 
-    // `spawn_stream_deletion` itself isn't unit-testable here: it reads
-    // PARSEABLE.storage/PARSEABLE.streams, and the global PARSEABLE static
-    // isn't initialized under `cargo test`. This instead exercises the same
-    // map the real function uses. The real function's actual dedup guard is
-    // an atomic `entry()` check-and-insert; a plain contains_key-then-insert
-    // here is fine since these tests are single-threaded and only need to
-    // assert the map's observable state, not re-prove atomicity.
-    #[test]
-    fn duplicate_key_is_recognized_as_already_running() {
-        let key = (Some("tenant-a".to_string()), "stream-a".to_string());
-        ACTIVE_STREAM_DELETIONS.remove(&key);
+    struct DeletionFixture {
+        _dir: TempDir,
+        root: PathBuf,
+        storage: Arc<LocalFS>,
+        options: Arc<Options>,
+        streams: Arc<Streams>,
+        name: String,
+    }
 
-        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&key));
-        ACTIVE_STREAM_DELETIONS.insert(key.clone(), std::time::Instant::now());
-        assert!(ACTIVE_STREAM_DELETIONS.contains_key(&key));
-        // A second caller sees the job as already in flight and would skip
-        // re-inserting -- this is the exact check spawn_stream_deletion
-        // makes before spawning its background task.
-        assert!(ACTIVE_STREAM_DELETIONS.contains_key(&key));
+    impl DeletionFixture {
+        async fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path().join("storage");
+            let storage = Arc::new(LocalFS::new(root.clone()));
+            let fixture = Self {
+                options: Arc::new(Options {
+                    mode: Mode::All,
+                    local_staging_path: dir.path().join("staging"),
+                    ..Default::default()
+                }),
+                _dir: dir,
+                root,
+                storage,
+                streams: Arc::new(Streams::default()),
+                name: format!("deletion-{}", Ulid::new()),
+            };
+            fixture
+                .storage
+                .put_object(&tombstone_path(&fixture.name, &None), to_bytes(&()), &None)
+                .await
+                .unwrap();
+            fs::create_dir_all(fixture.remote_data().parent().unwrap()).unwrap();
+            fs::write(fixture.remote_data(), b"old remote data").unwrap();
+            fs::create_dir_all(fixture.staging()).unwrap();
+            fs::write(fixture.staging().join("old.parquet"), b"old staged data").unwrap();
+            fixture
+        }
 
-        ACTIVE_STREAM_DELETIONS.remove(&key);
-        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&key));
+        fn key(&self) -> (Option<String>, String) {
+            (None, self.name.clone())
+        }
+
+        fn staging(&self) -> PathBuf {
+            self.options.local_stream_data_path(&self.name, &None)
+        }
+
+        fn remote_data(&self) -> PathBuf {
+            self.root.join(&self.name).join("data.parquet")
+        }
+
+        fn marker(&self) -> PathBuf {
+            tombstone_path(&self.name, &None).to_path(&self.root)
+        }
+
+        fn insert_stream(&self) -> Arc<Stream> {
+            self.streams.get_or_create(
+                self.options.clone(),
+                self.name.clone(),
+                LogStreamMetadata::default(),
+                None,
+                &None,
+            )
+        }
+
+        fn spawn(
+            &self,
+            lock: &'static Mutex<()>,
+        ) -> (JoinHandle<()>, tokio::sync::oneshot::Receiver<()>) {
+            let storage = self.storage.clone();
+            let streams = self.streams.clone();
+            let options = self.options.clone();
+            let name = self.name.clone();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let job = spawn_claimed_stream_deletion(self.key(), async move {
+                let _ = started_tx.send(());
+                run_stream_deletion(storage.as_ref(), &streams, &options, lock, &name, &None).await;
+            })
+            .expect("deletion should be claimable");
+            (job, started_rx)
+        }
+
+        async fn run(&self, lock: &'static Mutex<()>) {
+            let (job, _) = self.spawn(lock);
+            finish(job).await;
+            assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&self.key()));
+        }
+
+        fn set_stats(&self, count: i64) {
+            let labels = stats::event_labels(&self.name, "json", &None);
+            EVENTS_INGESTED.with_label_values(&labels).set(count);
+            LIFETIME_EVENTS_INGESTED
+                .with_label_values(&labels)
+                .set(count);
+        }
+
+        fn assert_stats(&self, count: i64) {
+            let labels = stats::event_labels(&self.name, "json", &None);
+            assert_eq!(EVENTS_INGESTED.with_label_values(&labels).get(), count);
+            assert_eq!(
+                LIFETIME_EVENTS_INGESTED.with_label_values(&labels).get(),
+                count
+            );
+        }
+
+        async fn assert_finished(&self) {
+            assert!(!self.staging().exists());
+            assert!(!self.remote_data().parent().unwrap().exists());
+            assert!(!self.streams.contains(&self.name, &None));
+            assert!(
+                !is_tombstoned(self.storage.as_ref(), &self.name, &None)
+                    .await
+                    .unwrap()
+            );
+            assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&self.key()));
+        }
+    }
+
+    impl Drop for DeletionFixture {
+        fn drop(&mut self) {
+            stats::delete_stats_for_mode(Mode::All, &self.name, "json", &None).unwrap();
+        }
+    }
+
+    async fn finish(job: JoinHandle<()>) {
+        tokio::time::timeout(Duration::from_secs(5), job)
+            .await
+            .expect("deletion job timed out")
+            .unwrap();
     }
 
     #[test]
-    fn same_stream_name_different_tenant_is_a_distinct_key() {
-        let key_a = (Some("tenant-a".to_string()), "shared-name".to_string());
-        let key_b = (Some("tenant-b".to_string()), "shared-name".to_string());
-        ACTIVE_STREAM_DELETIONS.remove(&key_a);
-        ACTIVE_STREAM_DELETIONS.remove(&key_b);
+    fn concurrent_claims_have_one_owner_and_release_for_retry() {
+        let key = (None, format!("claim-{}", Ulid::new()));
+        let barrier = Barrier::new(8);
+        let owners = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    let guard = StreamDeletionGuard::claim(key.clone());
+                    if guard.is_some() {
+                        owners.fetch_add(1, Ordering::SeqCst);
+                    }
+                    // Nobody releases their claim until every contender tried.
+                    barrier.wait();
+                    drop(guard);
+                });
+            }
+        });
+        assert_eq!(owners.load(Ordering::SeqCst), 1);
+        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&key));
+        assert!(StreamDeletionGuard::claim(key).is_some());
+    }
 
-        ACTIVE_STREAM_DELETIONS.insert(key_a.clone(), std::time::Instant::now());
-        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&key_b));
+    #[test]
+    fn claims_are_isolated_by_tenant() {
+        let name = format!("claim-{}", Ulid::new());
+        let first = StreamDeletionGuard::claim((Some("tenant-a".into()), name.clone())).unwrap();
+        let second = StreamDeletionGuard::claim((Some("tenant-b".into()), name)).unwrap();
+        drop((first, second));
+    }
 
-        ACTIVE_STREAM_DELETIONS.remove(&key_a);
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_before_first_poll_and_panic_release_claims() {
+        let key = (None, format!("cancel-{}", Ulid::new()));
+        let job = spawn_claimed_stream_deletion(key.clone(), async {
+            panic!("cancelled job must never be polled");
+        })
+        .unwrap();
+        job.abort();
+        assert!(job.await.unwrap_err().is_cancelled());
+        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&key));
+
+        let job = spawn_claimed_stream_deletion(key.clone(), async {
+            panic!("simulated deletion failure");
+        })
+        .unwrap();
+        assert!(job.await.unwrap_err().is_panic());
+        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&key));
+        finish(spawn_claimed_stream_deletion(key, async {}).unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn queued_stale_job_preserves_recreated_stream_and_files() {
+        static LOCK: Mutex<()> = Mutex::const_new(());
+        let fixture = DeletionFixture::new().await;
+        let old = fixture.insert_stream();
+        old.mark_deleting();
+        let creation = LOCK.lock().await;
+        let (job, started) = fixture.spawn(&LOCK);
+        started.await.unwrap();
+        assert!(
+            spawn_claimed_stream_deletion(fixture.key(), async {
+                panic!("duplicate job must not run");
+            })
+            .is_none()
+        );
+
+        // Finish the old deletion and recreate while the queued job waits.
+        fs::remove_file(fixture.marker()).unwrap();
+        fixture.streams.delete(&fixture.name, &None);
+        let replacement = fixture.insert_stream();
+        fs::write(fixture.remote_data(), b"replacement remote data").unwrap();
+        fs::write(
+            fixture.staging().join("old.parquet"),
+            b"replacement staged data",
+        )
+        .unwrap();
+        fixture.set_stats(42);
+        drop(creation);
+        finish(job).await;
+
+        assert!(Arc::ptr_eq(&fixture.insert_stream(), &replacement));
+        assert!(!replacement.is_deleting());
+        assert_eq!(
+            fs::read(fixture.remote_data()).unwrap(),
+            b"replacement remote data"
+        );
+        assert_eq!(
+            fs::read(fixture.staging().join("old.parquet")).unwrap(),
+            b"replacement staged data"
+        );
+        fixture.assert_stats(42);
+        assert!(!ACTIVE_STREAM_DELETIONS.contains_key(&fixture.key()));
+    }
+
+    #[tokio::test]
+    async fn successful_job_finalizes_writers_cleans_files_stats_and_entry() {
+        static LOCK: Mutex<()> = Mutex::const_new(());
+        let fixture = DeletionFixture::new().await;
+        let stream = fixture.insert_stream();
+        let batch = arrow_array::RecordBatch::try_from_iter(vec![(
+            "value",
+            Arc::new(arrow_array::Int64Array::from(vec![1])) as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        stream
+            .push(
+                "schema",
+                &batch,
+                Utc::now().naive_utc(),
+                &HashMap::new(),
+                StreamType::UserDefined,
+            )
+            .unwrap();
+        assert!(!stream.writer.lock().unwrap().disk.is_empty());
+        fixture.set_stats(17);
+
+        fixture.run(&LOCK).await;
+
+        fixture.assert_finished().await;
+        fixture.assert_stats(0);
+        assert!(stream.is_deleting());
+        assert!(stream.writer.lock().unwrap().disk.is_empty());
+    }
+
+    #[tokio::test]
+    async fn staging_failure_retains_marker_and_remote_data_then_retries() {
+        static LOCK: Mutex<()> = Mutex::const_new(());
+        for resident in [true, false] {
+            let fixture = DeletionFixture::new().await;
+            let stream = resident.then(|| fixture.insert_stream());
+            fs::remove_dir_all(fixture.staging()).unwrap();
+            fs::write(fixture.staging(), b"not a directory").unwrap();
+            fixture.set_stats(17);
+
+            fixture.run(&LOCK).await;
+
+            assert!(fixture.marker().exists());
+            assert!(fixture.remote_data().exists());
+            fixture.assert_stats(17);
+            if let Some(stream) = stream {
+                assert!(stream.is_deleting());
+                assert!(fixture.streams.contains(&fixture.name, &None));
+            }
+            fs::remove_file(fixture.staging()).unwrap();
+            fs::create_dir_all(fixture.staging()).unwrap();
+            fs::write(fixture.staging().join("old.schema"), b"old schema").unwrap();
+            fixture.run(&LOCK).await;
+            fixture.assert_finished().await;
+            fixture.assert_stats(0);
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_delete_failure_retains_entry_and_marker_then_retries() {
+        static LOCK: Mutex<()> = Mutex::const_new(());
+        let fixture = DeletionFixture::new().await;
+        let stream = fixture.insert_stream();
+        let remote_dir = fixture.root.join(&fixture.name);
+        fs::remove_dir_all(&remote_dir).unwrap();
+        fs::write(&remote_dir, b"not a directory").unwrap();
+
+        fixture.run(&LOCK).await;
+
+        assert!(fixture.marker().exists());
+        assert!(fixture.streams.contains(&fixture.name, &None));
+        assert!(stream.is_deleting());
+        fs::remove_file(remote_dir).unwrap();
+        fixture.run(&LOCK).await;
+        fixture.assert_finished().await;
+    }
+
+    #[tokio::test]
+    async fn tombstone_clear_failure_can_retry_after_entry_was_evicted() {
+        static LOCK: Mutex<()> = Mutex::const_new(());
+        let fixture = DeletionFixture::new().await;
+        fixture.insert_stream();
+        fixture.set_stats(17);
+        // LocalFS HEAD accepts a directory, but delete_object cannot unlink it.
+        fs::remove_file(fixture.marker()).unwrap();
+        fs::create_dir(fixture.marker()).unwrap();
+
+        fixture.run(&LOCK).await;
+
+        assert!(
+            is_tombstoned(fixture.storage.as_ref(), &fixture.name, &None)
+                .await
+                .unwrap()
+        );
+        assert!(!fixture.streams.contains(&fixture.name, &None));
+        assert!(!fixture.staging().exists());
+        assert!(!fixture.remote_data().exists());
+        fixture.assert_stats(0);
+        fs::remove_dir(fixture.marker()).unwrap();
+        fs::write(fixture.marker(), b"null").unwrap();
+        fixture.run(&LOCK).await;
+        fixture.assert_finished().await;
+    }
+
+    #[tokio::test]
+    async fn tombstone_check_failure_does_not_start_cleanup() {
+        static LOCK: Mutex<()> = Mutex::const_new(());
+        let fixture = DeletionFixture::new().await;
+        let stream = fixture.insert_stream();
+        let marker_parent = fixture.marker().parent().unwrap().to_path_buf();
+        fs::remove_dir_all(&marker_parent).unwrap();
+        fs::write(marker_parent, b"not a directory").unwrap();
+        assert!(
+            is_tombstoned(fixture.storage.as_ref(), &fixture.name, &None)
+                .await
+                .is_err()
+        );
+
+        fixture.run(&LOCK).await;
+
+        assert!(!stream.is_deleting());
+        assert!(fixture.streams.contains(&fixture.name, &None));
+        assert!(fixture.staging().join("old.parquet").exists());
+        assert!(fixture.remote_data().exists());
     }
 }
 
