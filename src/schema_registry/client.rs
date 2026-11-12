@@ -18,10 +18,7 @@
 
 //! Ingestor-side client of the schema authority.
 
-use std::{
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use reqwest::{StatusCode, header};
@@ -46,7 +43,6 @@ use super::{authority_node_type, nodes_of_type};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ATTEMPTS: u32 = 3;
 const BACKOFF_BASE: Duration = Duration::from_millis(200);
-const AUTHORITY_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// An authority without the resolve endpoint (or protocol) blocks streams with new fields
 /// until it is upgraded, so upgrade the querier/Prism before the ingestors.
@@ -86,29 +82,17 @@ static RESOLVER_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
 static PERMITS: Lazy<Semaphore> =
     Lazy::new(|| Semaphore::new(PARSEABLE.options.schema_resolve_concurrency as usize));
 
-static AUTHORITY: Lazy<Mutex<Option<(Instant, Target)>>> = Lazy::new(|| Mutex::new(None));
-
-fn invalidate_authority() {
-    *AUTHORITY.lock().expect("authority cache poisoned") = None;
-}
-
+/// The authority (Prism if the cluster has one, else the querier) publishes its address in
+/// its node metadata. A cluster runs one such node; the liveness check only skips metadata
+/// left behind by a node that is gone. Looked up on every request: requests are rare (only
+/// for fields a node has not resolved yet), and a fresh lookup follows a restarted authority.
 async fn find_authority(tenant_id: &Option<String>) -> Result<Target, ResolveFailure> {
-    if let Some((at, target)) = AUTHORITY.lock().expect("authority cache poisoned").clone()
-        && at.elapsed() < AUTHORITY_CACHE_TTL
-    {
-        return Ok(target);
-    }
-
-    // The authority (Prism if the cluster has one, else the querier) publishes its address
-    // in its node metadata. Pick deterministically (lowest live node id) so every ingestor
-    // talks to the same node.
     let node_type = authority_node_type(tenant_id)
         .await
         .map_err(|e| ResolveFailure::Transient(e.to_string()))?;
-    let mut nodes: Vec<NodeMetadata> = nodes_of_type(node_type.clone(), tenant_id)
+    let nodes: Vec<NodeMetadata> = nodes_of_type(node_type.clone(), tenant_id)
         .await
         .map_err(|e| ResolveFailure::Transient(e.to_string()))?;
-    nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     let mut chosen = None;
     for node in nodes {
         if check_liveness(&node.domain_name).await {
@@ -126,13 +110,10 @@ async fn find_authority(tenant_id: &Option<String>) -> Result<Target, ResolveFai
     } else {
         format!("{}/", q.domain_name)
     };
-    let target = Target {
+    Ok(Target {
         domain,
         authorization: q.token,
-    };
-
-    *AUTHORITY.lock().expect("authority cache poisoned") = Some((Instant::now(), target.clone()));
-    Ok(target)
+    })
 }
 
 fn headers(target: &Target, tenant_id: &Option<String>) -> header::HeaderMap {
@@ -195,10 +176,7 @@ async fn attempt(req: &ResolveRequest) -> Attempt {
         .await;
     let response = match response {
         Ok(r) => r,
-        Err(e) => {
-            invalidate_authority();
-            return Attempt::Retry(e.to_string());
-        }
+        Err(e) => return Attempt::Retry(e.to_string()),
     };
     let status = response.status();
     let bytes = match response.bytes().await {
@@ -224,9 +202,6 @@ async fn attempt(req: &ResolveRequest) -> Attempt {
         // Not one of our error bodies: an authority without the route answers a bare 404.
         Err(_) => match status {
             StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => {
-                // Also a node that never serves resolution (an enterprise querier picked
-                // before Prism registered): re-discover on the next attempt.
-                invalidate_authority();
                 Attempt::Done(Err(ResolveFailure::Rejected(UPGRADE_AUTHORITY.into())))
             }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Attempt::Done(Err(
