@@ -52,13 +52,18 @@ use rayon::{
 };
 use relative_path::RelativePathBuf;
 use std::sync::PoisonError;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions, remove_file, write},
     io::{Read, Write},
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        Arc, Condvar, Mutex, RwLock,
+        mpsc::{Sender, SyncSender, channel, sync_channel},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinSet;
@@ -105,6 +110,28 @@ static METRIC_PARQUET_THREADPOOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
         .thread_name(|index| format!("metric-parquet-{index}"))
         .build()
         .expect("Metric Parquet thread pool should be constructible")
+});
+static INGEST_WRITER_THREADPOOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus::get().max(2))
+        .thread_name(|index| format!("ingest-writer-{index}"))
+        .build()
+        .expect("ingestion writer thread pool should be constructible")
+});
+static INGEST_WRITER_SCHEDULER: Lazy<Sender<Arc<Stream>>> = Lazy::new(|| {
+    let (sender, receiver) = channel::<Arc<Stream>>();
+    std::thread::Builder::new()
+        .name("ingest-writer-scheduler".to_owned())
+        .spawn(move || {
+            while let Ok(stream) = receiver.recv() {
+                // This dispatcher is outside the Rayon pool, so every drain is
+                // injected into the shared queue instead of a worker's private
+                // FIFO. Hot streams therefore cannot hide other streams' work.
+                INGEST_WRITER_THREADPOOL.spawn_fifo(move || stream.drain_push_queue());
+            }
+        })
+        .expect("ingestion writer scheduler should be constructible");
+    sender
 });
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
@@ -379,11 +406,34 @@ pub struct Stream {
     pub data_path: PathBuf,
     pub options: Arc<Options>,
     pub writer: Mutex<Writer>,
+    push_queue: Mutex<PushQueue>,
+    push_queue_empty: Condvar,
+    #[cfg(test)]
+    push_drain_tasks: AtomicUsize,
     schema_writer: Mutex<()>,
     pub ingestor_id: Option<String>,
     // Ingestion/local sync hold read access; staging cleanup holds write access.
     // Acquire before schema_writer or writer when an operation needs both.
     staging_activity: RwLock<()>,
+}
+
+#[derive(Default)]
+struct PushQueue {
+    scheduled: bool,
+    jobs: VecDeque<QueuedPush>,
+}
+
+struct QueuedPush {
+    schema_key: String,
+    record: RecordBatch,
+    disk: Option<QueuedDiskPush>,
+    result: SyncSender<Result<(), String>>,
+}
+
+struct QueuedDiskPush {
+    filename: String,
+    file_path: PathBuf,
+    range: TimeRange,
 }
 
 /// Startup conversion owns this immutable processing-file snapshot. Periodic
@@ -702,6 +752,10 @@ impl Stream {
             data_path,
             options,
             writer: Mutex::new(Writer::default()),
+            push_queue: Mutex::new(PushQueue::default()),
+            push_queue_empty: Condvar::default(),
+            #[cfg(test)]
+            push_drain_tasks: AtomicUsize::new(0),
             schema_writer: Mutex::new(()),
             ingestor_id,
             staging_activity: RwLock::new(()),
@@ -711,7 +765,7 @@ impl Stream {
     // Concatenates record batches and puts them in memory store for each event.
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn push(
-        &self,
+        self: &Arc<Self>,
         schema_key: &str,
         record: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
@@ -725,21 +779,110 @@ impl Stream {
         )
         .entered();
 
-        let mut guard = {
-            let _lock_span = info_span!("acquire_writer_lock").entered();
-            match self.writer.lock() {
-                Ok(guard) => guard,
+        let disk = if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
+            let filename =
+                self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
+            let range = TimeRange::granularity_range(
+                parsed_timestamp.and_local_timezone(Utc).unwrap(),
+                OBJECT_STORE_DATA_GRANULARITY,
+            );
+            let file_path = self.data_path.join(&filename);
+            Some(QueuedDiskPush {
+                filename,
+                file_path,
+                range,
+            })
+        } else {
+            None
+        };
+
+        let (sender, receiver) = sync_channel(1);
+        let should_schedule = {
+            let mut queue = self.push_queue.lock().map_err(|poisoned| {
+                StagingError::PoisonError(PoisonError::new(format!(
+                    "Push queue lock poisoned for stream {} - {}",
+                    self.stream_name, poisoned
+                )))
+            })?;
+            queue.jobs.push_back(QueuedPush {
+                schema_key: schema_key.to_owned(),
+                record: record.clone(),
+                disk,
+                result: sender,
+            });
+            if queue.scheduled {
+                false
+            } else {
+                queue.scheduled = true;
+                true
+            }
+        };
+
+        if should_schedule {
+            let stream = Arc::clone(self);
+            INGEST_WRITER_SCHEDULER
+                .send(stream)
+                .expect("ingestion writer scheduler should remain available");
+        }
+
+        receiver
+            .recv()
+            .map_err(|err| StagingError::QueuedWrite(err.to_string()))?
+            .map_err(StagingError::QueuedWrite)
+    }
+
+    /// Flat-combines concurrent writes for this stream. Compatible record
+    /// batches become one Arrow IPC write and one flush, while each request is
+    /// acknowledged only after the combined write succeeds.
+    fn drain_push_queue(self: Arc<Self>) {
+        const MAX_COMBINED_PUSHES: usize = 8;
+
+        #[cfg(test)]
+        self.push_drain_tasks.fetch_add(1, AtomicOrdering::Relaxed);
+
+        // Give requests already racing for the stream a chance to join this
+        // write without adding a fixed batching delay.
+        std::thread::yield_now();
+
+        let jobs = {
+            let mut queue = match self.push_queue.lock() {
+                Ok(queue) => queue,
                 Err(poisoned) => {
                     error!(
-                        "Writer lock poisoned while ingesting data for stream {}",
-                        self.stream_name
-                    );
-
-                    return Err(StagingError::PoisonError(PoisonError::new(format!(
-                        "Writer lock poisoned while ingesting data for stream {} - {}",
+                        "Push queue lock poisoned for stream {} - {}",
                         self.stream_name, poisoned
-                    ))));
+                    );
+                    return;
                 }
+            };
+            if queue.jobs.is_empty() {
+                queue.scheduled = false;
+                self.push_queue_empty.notify_all();
+                return;
+            }
+            let count = queue.jobs.len().min(MAX_COMBINED_PUSHES);
+            queue.jobs.drain(..count).collect_vec()
+        };
+
+        self.write_queued_pushes(jobs);
+
+        let should_reschedule = {
+            let mut queue = match self.push_queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => {
+                    error!(
+                        "Push queue lock poisoned for stream {} - {}",
+                        self.stream_name, poisoned
+                    );
+                    return;
+                }
+            };
+            if queue.jobs.is_empty() {
+                queue.scheduled = false;
+                self.push_queue_empty.notify_all();
+                false
+            } else {
+                true
             }
         };
         // Recheck after waiting for the writer lock: an earlier validation may
@@ -756,14 +899,78 @@ impl Stream {
             );
             let file_path = self.data_path.join(&filename);
 
-            guard.push_disk(filename, record, file_path, range)?;
+        if should_reschedule {
+            let stream = Arc::clone(&self);
+            INGEST_WRITER_SCHEDULER
+                .send(stream)
+                .expect("ingestion writer scheduler should remain available");
+        }
+    }
+
+    fn write_queued_pushes(&self, jobs: Vec<QueuedPush>) {
+        let mut groups: Vec<Vec<QueuedPush>> = Vec::new();
+        for job in jobs {
+            let group_index = groups.iter().position(|group| {
+                let first = &group[0];
+                let same_disk = match (&first.disk, &job.disk) {
+                    (Some(left), Some(right)) => left.filename == right.filename,
+                    (None, None) => true,
+                    _ => false,
+                };
+                same_disk
+                    && first.schema_key == job.schema_key
+                    && first.record.schema() == job.record.schema()
+            });
+            if let Some(index) = group_index {
+                groups[index].push(job);
+            } else {
+                groups.push(vec![job]);
+            }
         }
 
-        if let Some(mem) = guard.mem.as_mut() {
-            mem.push(schema_key, record)?;
-        }
+        let mut writer = match self.writer.lock() {
+            Ok(writer) => writer,
+            Err(poisoned) => {
+                let message = format!(
+                    "Writer lock poisoned while ingesting data for stream {} - {}",
+                    self.stream_name, poisoned
+                );
+                for job in groups.into_iter().flatten() {
+                    let _ = job.result.send(Err(message.clone()));
+                }
+                return;
+            }
+        };
 
-        Ok(())
+        for group in groups {
+            let schema = group[0].record.schema();
+            let combined = if group.len() == 1 {
+                Ok(group[0].record.clone())
+            } else {
+                arrow::compute::concat_batches(&schema, group.iter().map(|job| &job.record))
+            };
+            let result = combined
+                .map_err(StagingError::Arrow)
+                .and_then(|record| {
+                    if let Some(disk) = &group[0].disk {
+                        writer.push_disk(
+                            disk.filename.clone(),
+                            &record,
+                            disk.file_path.clone(),
+                            disk.range.clone(),
+                        )?;
+                    }
+                    if let Some(mem) = writer.mem.as_mut() {
+                        mem.push(&group[0].schema_key, &record)?;
+                    }
+                    Ok(())
+                })
+                .map_err(|err| err.to_string());
+
+            for job in group {
+                let _ = job.result.send(result.clone());
+            }
+        }
     }
 
     pub fn filename_by_partition(
@@ -1195,6 +1402,33 @@ impl Stream {
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn flush(&self, forced: bool) -> Result<(), StagingError> {
         let _span = info_span!("flush", stream_name = %self.stream_name, forced).entered();
+        if forced {
+            let queue = self.push_queue.lock().map_err(|poisoned| {
+                StagingError::PoisonError(PoisonError::new(format!(
+                    "Push queue lock poisoned while flushing stream {} - {}",
+                    self.stream_name, poisoned
+                )))
+            })?;
+            let _queue = self
+                .push_queue_empty
+                .wait_while(queue, |queue| queue.scheduled || !queue.jobs.is_empty())
+                .map_err(|poisoned| {
+                    StagingError::PoisonError(PoisonError::new(format!(
+                        "Push queue lock poisoned while flushing stream {} - {}",
+                        self.stream_name, poisoned
+                    )))
+                })?;
+        }
+        // Swap out stale writers under the lock, drop them after releasing it.
+        // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
+        // outside the lock avoids blocking concurrent push() calls.
+        let stale_writers = {
+            let mut writer = self.writer.lock().map_err(|poisoned| {
+                StagingError::PoisonError(PoisonError::new(format!(
+                    "Writer lock poisoned while flushing data for stream {} - {}",
+                    self.stream_name, poisoned
+                )))
+            })?;
 
         let mut writer = self.writer.lock().map_err(|poisoned| {
             StagingError::PoisonError(PoisonError::new(format!(
@@ -3514,6 +3748,118 @@ mod tests {
             staging.data_path,
             options.local_stream_data_path(stream_name, &None)
         );
+    }
+
+    #[test]
+    fn concurrent_push_group_is_written_as_one_arrow_batch() {
+        let temp_dir = TempDir::new().unwrap();
+        let options = Arc::new(Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        });
+        let stream = Stream::new(
+            options,
+            "combined_pushes",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+        let filename = "schema.date=2026-11-10.hour=12.minute=00.test.data.arrows";
+        let file_path = stream.data_path.join(filename);
+        let range = TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
+        let (first_tx, first_rx) = sync_channel(1);
+        let (second_tx, second_rx) = sync_channel(1);
+
+        stream.write_queued_pushes(vec![
+            QueuedPush {
+                schema_key: "schema".to_owned(),
+                record: batch.clone(),
+                disk: Some(QueuedDiskPush {
+                    filename: filename.to_owned(),
+                    file_path: file_path.clone(),
+                    range: range.clone(),
+                }),
+                result: first_tx,
+            },
+            QueuedPush {
+                schema_key: "schema".to_owned(),
+                record: batch,
+                disk: Some(QueuedDiskPush {
+                    filename: filename.to_owned(),
+                    file_path,
+                    range,
+                }),
+                result: second_tx,
+            },
+        ]);
+
+        assert!(first_rx.recv().unwrap().is_ok());
+        assert!(second_rx.recv().unwrap().is_ok());
+        stream.flush(true).unwrap();
+
+        let arrow_file = stream.arrow_files().pop().unwrap();
+        let mut reader =
+            arrow_ipc::reader::StreamReader::try_new(File::open(arrow_file).unwrap(), None)
+                .unwrap();
+        let combined = reader.next().unwrap().unwrap();
+        assert_eq!(combined.num_rows(), 6);
+        assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn push_queue_reschedules_after_bounded_batch() {
+        let stream = Stream::new(
+            Arc::new(Options::default()),
+            "fair_push_queue",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+        let mut receivers = Vec::new();
+
+        {
+            let mut queue = stream.push_queue.lock().unwrap();
+            queue.scheduled = true;
+            for _ in 0..9 {
+                let (sender, receiver) = sync_channel(1);
+                queue.jobs.push_back(QueuedPush {
+                    schema_key: "schema".to_owned(),
+                    record: batch.clone(),
+                    disk: None,
+                    result: sender,
+                });
+                receivers.push(receiver);
+            }
+        }
+
+        Arc::clone(&stream).drain_push_queue();
+        for receiver in receivers {
+            assert!(
+                receiver
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .is_ok()
+            );
+        }
+
+        let queue = stream.push_queue.lock().unwrap();
+        let (queue, wait_result) = stream
+            .push_queue_empty
+            .wait_timeout_while(queue, Duration::from_secs(5), |queue| queue.scheduled)
+            .unwrap();
+        assert!(
+            !wait_result.timed_out(),
+            "push queue did not finish draining"
+        );
+        assert!(!queue.scheduled);
+        assert!(queue.jobs.is_empty());
+        assert_eq!(stream.push_drain_tasks.load(AtomicOrdering::Relaxed), 2);
     }
 
     #[test]

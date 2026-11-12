@@ -32,9 +32,8 @@ use crate::{
     handlers::TelemetryType,
     metadata::update_stats,
     metrics::{increment_events_ingested_by_date, increment_events_ingested_size_by_date},
-    parseable::{DEFAULT_TENANT, PARSEABLE, StagingError, StreamNotFound},
+    parseable::{DEFAULT_TENANT, PARSEABLE, StagingError},
     storage::StreamType,
-    tenants::TenantNotFound,
 };
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
@@ -162,17 +161,12 @@ pub fn commit_schema(
     tenant_id: &Option<String>,
 ) -> Result<(), StagingError> {
     let _span = info_span!("commit_schema", stream_name).entered();
-    let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
-    let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    let map = &mut stream_metadata
-        .get_mut(tenant_id)
-        .ok_or_else(|| TenantNotFound(tenant_id.to_owned()))?
-        .get_mut(stream_name)
-        .ok_or_else(|| StreamNotFound(stream_name.to_string()))?
-        .metadata
-        .write()
-        .expect(LOCK_EXPECT)
-        .schema;
+    // The streams map is only needed to clone the target stream. Holding its
+    // global lock while waiting for the per-stream metadata lock can deadlock
+    // concurrent ingestion that needs the map to finish processing an event.
+    let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
+    let mut metadata = stream.metadata.write().expect(LOCK_EXPECT);
+    let map = &mut metadata.schema;
     let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
     let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
     map.clear();
