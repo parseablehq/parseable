@@ -44,6 +44,20 @@ pub fn flatten_json_body(
     validation_required: bool,
     log_source: &LogSource,
 ) -> Result<Value, anyhow::Error> {
+    // The common V1 ingestion shape is already an array of flat objects.  The
+    // generic flattener clones every key and value, then `flatten` rebuilds
+    // every object map even though neither operation can change this shape.
+    // Partition validation is the only other work performed by `flatten`, so
+    // it is safe to return the body unchanged when no partitions are present.
+    if schema_version == SchemaVersion::V1
+        && time_partition.is_none()
+        && custom_partition.is_none()
+        && matches!(log_source, LogSource::Json | LogSource::Custom(_))
+        && is_flat_scalar_body(&body)
+    {
+        return Ok(body);
+    }
+
     // Flatten the json body only if new schema and has less than 4 levels of nesting
     let mut nested_value = if schema_version == SchemaVersion::V1
         && !has_more_than_max_allowed_levels(&body, 1)
@@ -63,6 +77,24 @@ pub fn flatten_json_body(
         validation_required,
     )?;
     Ok(nested_value)
+}
+
+/// Returns true when flattening cannot alter the event shape. Arrays nested
+/// inside an event are deliberately excluded because V1 expands them to rows.
+fn is_flat_scalar_body(value: &Value) -> bool {
+    fn is_flat_object(value: &Value) -> bool {
+        value.as_object().is_some_and(|object| {
+            object
+                .values()
+                .all(|value| !value.is_object() && !value.is_array())
+        })
+    }
+
+    match value {
+        Value::Object(_) => is_flat_object(value),
+        Value::Array(values) => values.iter().all(is_flat_object),
+        _ => false,
+    }
 }
 
 /// Checks if generic flattening should be applied based on schema version and log source
@@ -317,6 +349,28 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
+
+    #[test]
+    fn detects_only_flat_scalar_event_bodies() {
+        assert!(super::is_flat_scalar_body(&json!({
+            "message": "ok",
+            "status": 200,
+            "cached": false,
+            "optional": null
+        })));
+        assert!(super::is_flat_scalar_body(&json!([
+            {"message": "one", "status": 200},
+            {"message": "two", "status": 201}
+        ])));
+        assert!(super::is_flat_scalar_body(&json!([])));
+
+        assert!(!super::is_flat_scalar_body(
+            &json!({"nested": {"value": 1}})
+        ));
+        assert!(!super::is_flat_scalar_body(&json!({"values": [1, 2]})));
+        assert!(!super::is_flat_scalar_body(&json!([{"value": 1}, 2])));
+        assert!(!super::is_flat_scalar_body(&json!("not-an-event")));
+    }
     #[derive(Serialize, Deserialize)]
     struct TestBool {
         #[serde(

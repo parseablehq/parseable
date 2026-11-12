@@ -35,9 +35,7 @@ use tracing::{error, info_span};
 
 use super::EventFormat;
 use super::{detect_schema_conflicts, rename_conflicting_fields_in_json};
-use crate::{
-    handlers::TelemetryType, metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field,
-};
+use crate::{handlers::TelemetryType, metadata::SchemaVersion, storage::StreamType};
 
 pub struct Event {
     pub json: Value,
@@ -83,6 +81,16 @@ impl EventFormat for Event {
         // Rename JSON keys starting with '@' to '_' to match the schema
         // Reject event if renaming would cause a key collision
         let value_arr = rename_json_keys(value_arr)?;
+
+        // Stable V1 primitive batches can use the existing stream schema
+        // directly. This avoids inferring the same Arrow schema on every
+        // request. New fields and incompatible/complex values fall through to
+        // the full conflict-detection and schema-evolution path below.
+        if schema_version == SchemaVersion::V1
+            && let Some(schema) = compatible_existing_primitive_schema(stream_schema, &value_arr)
+        {
+            return Ok((value_arr, schema, false));
+        }
 
         // First, infer raw schema from incoming event to detect type conflicts
         // IMPORTANT: Detect conflicts BEFORE update_field_type_in_schema, because
@@ -173,10 +181,13 @@ impl EventFormat for Event {
             }
         };
 
-        if let Some(mismatch) = value_arr
+        let schema_by_name: HashMap<&str, &Field> = schema
             .iter()
-            .find_map(|value| fields_mismatch(&schema, value, schema_version, static_schema_flag))
-        {
+            .map(|field| (field.name().as_str(), field.as_ref()))
+            .collect();
+        if let Some(mismatch) = value_arr.iter().find_map(|value| {
+            fields_mismatch(&schema_by_name, value, schema_version, static_schema_flag)
+        }) {
             return Err(anyhow!(
                 "Could not process this event due to mismatch in datatype: {mismatch}"
             ));
@@ -326,6 +337,55 @@ fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a s
     Ok(keys)
 }
 
+/// Selects existing fields when every non-null value can be decoded into an
+/// already-known primitive type. Returning `None` sends the batch through the
+/// existing inference/conflict path, preserving schema-evolution behaviour.
+fn compatible_existing_primitive_schema(
+    existing_schema: &HashMap<String, Arc<Field>>,
+    values: &[Value],
+) -> Option<Vec<Arc<Field>>> {
+    if existing_schema.is_empty() {
+        return None;
+    }
+
+    let fields = collect_keys(values.iter()).ok()?;
+    let schema = derive_arrow_schema(existing_schema, fields).ok()?;
+
+    let compatible = values.iter().all(|value| {
+        value.as_object().is_some_and(|object| {
+            object.iter().all(|(name, value)| {
+                value.is_null()
+                    || existing_schema.get(name).is_some_and(|field| {
+                        matches!(
+                            field.data_type(),
+                            DataType::Boolean
+                                | DataType::Int8
+                                | DataType::Int16
+                                | DataType::Int32
+                                | DataType::Int64
+                                | DataType::UInt8
+                                | DataType::UInt16
+                                | DataType::UInt32
+                                | DataType::UInt64
+                                | DataType::Float16
+                                | DataType::Float32
+                                | DataType::Float64
+                                | DataType::Utf8
+                                | DataType::LargeUtf8
+                                | DataType::Timestamp(_, _)
+                        ) && super::value_compatible_with_type(
+                            value,
+                            field.data_type(),
+                            SchemaVersion::V1,
+                        )
+                    })
+            })
+        })
+    });
+
+    compatible.then_some(schema)
+}
+
 /// Renames JSON keys to match the schema transformation using normalize_field_name.
 /// Returns an error if renaming would cause a key collision.
 fn rename_json_keys(values: Vec<Value>) -> Result<Vec<Value>, anyhow::Error> {
@@ -377,7 +437,7 @@ fn rename_json_keys(values: Vec<Value>) -> Result<Vec<Value>, anyhow::Error> {
 /// `reason` names the offending field and includes the expected vs. actual
 /// types so the caller can surface it in the error message.
 fn fields_mismatch(
-    schema: &[Arc<Field>],
+    schema: &HashMap<&str, &Field>,
     body: &Value,
     schema_version: SchemaVersion,
     static_schema_flag: bool,
@@ -386,7 +446,7 @@ fn fields_mismatch(
         if val.is_null() {
             continue;
         }
-        let Some(field) = get_field(schema, name) else {
+        let Some(field) = schema.get(name.as_str()).copied() else {
             return Some(format!(
                 "field '{name}' not present in stream schema (got {})",
                 json_value_kind(val)
@@ -531,6 +591,53 @@ mod tests {
 
     use super::*;
     use crate::otel::metrics::SERIES_HASH_COLUMN;
+
+    #[test]
+    fn selects_existing_schema_for_compatible_v1_primitives() {
+        let schema = HashMap::from([
+            (
+                "message".to_string(),
+                Arc::new(Field::new("message", DataType::Utf8, true)),
+            ),
+            (
+                "status".to_string(),
+                Arc::new(Field::new("status", DataType::Int64, true)),
+            ),
+        ]);
+        let values = vec![
+            json!({"message": "one", "status": 200}),
+            json!({"message": "two", "status": null}),
+        ];
+
+        let selected = compatible_existing_primitive_schema(&schema, &values).unwrap();
+
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].name(), "message");
+        assert_eq!(selected[1].name(), "status");
+    }
+
+    #[test]
+    fn falls_back_for_new_conflicting_or_complex_fields() {
+        let schema = HashMap::from([
+            (
+                "message".to_string(),
+                Arc::new(Field::new("message", DataType::Utf8, true)),
+            ),
+            (
+                "status".to_string(),
+                Arc::new(Field::new("status", DataType::Int64, true)),
+            ),
+        ]);
+
+        assert!(compatible_existing_primitive_schema(&schema, &[json!({"new": 1})]).is_none());
+        assert!(
+            compatible_existing_primitive_schema(&schema, &[json!({"status": "bad"})]).is_none()
+        );
+        assert!(
+            compatible_existing_primitive_schema(&schema, &[json!({"message": ["nested"]})])
+                .is_none()
+        );
+    }
 
     #[test]
     fn series_hash_is_decoded_as_uint64_without_precision_loss() {

@@ -42,4 +42,6 @@ pub enum StagingError {
     PoisonError(#[from] PoisonError<String>),
     #[error("JSON Error {0}")]
     Json(#[from] serde_json::Error),
+    #[error("Queued ingestion write failed: {0}")]
+    QueuedWrite(String),
 }
