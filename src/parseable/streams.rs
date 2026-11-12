@@ -2349,7 +2349,8 @@ impl Stream {
         // Metrics sort every output row group explicitly, so reading their IPC
         // streams forward avoids reverse seeks and a full-column row reversal.
         // Renames decided by the schema authority are applied per file before merging.
-        // The view only grows, so the current one is valid for every file it accepted.
+        // Renames are append-only, so every file converts under the current view exactly
+        // as it did under the view that accepted it.
         let view = self.resolution.view();
         let record_reader =
             ConversionRecordReader::for_stream(&arrow_files, self.is_otel_metrics(), &view);
