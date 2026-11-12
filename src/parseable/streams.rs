@@ -427,7 +427,7 @@ struct QueuedPush {
     schema_key: String,
     record: RecordBatch,
     disk: Option<QueuedDiskPush>,
-    result: SyncSender<Result<(), String>>,
+    result: SyncSender<Result<(), StagingError>>,
 }
 
 struct QueuedDiskPush {
@@ -828,7 +828,6 @@ impl Stream {
         receiver
             .recv()
             .map_err(|err| StagingError::QueuedWrite(err.to_string()))?
-            .map_err(StagingError::QueuedWrite)
     }
 
     /// Flat-combines concurrent writes for this stream. Compatible record
@@ -922,7 +921,9 @@ impl Stream {
                     self.stream_name, poisoned
                 );
                 for job in groups.into_iter().flatten() {
-                    let _ = job.result.send(Err(message.clone()));
+                    let _ = job
+                        .result
+                        .send(Err(StagingError::QueuedWrite(message.clone())));
                 }
                 return;
             }
@@ -931,9 +932,10 @@ impl Stream {
         // Recheck after waiting for the writer lock: an earlier validation may
         // predate deletion. Cleanup takes this same lock before removing files.
         if self.is_deleting() {
-            let message = StagingError::StreamDeleting(self.stream_name.clone()).to_string();
             for job in groups.into_iter().flatten() {
-                let _ = job.result.send(Err(message.clone()));
+                let _ = job
+                    .result
+                    .send(Err(StagingError::StreamDeleting(self.stream_name.clone())));
             }
             return;
         }
@@ -964,7 +966,9 @@ impl Stream {
                 .map_err(|err| err.to_string());
 
             for job in group {
-                let _ = job.result.send(result.clone());
+                let _ = job
+                    .result
+                    .send(result.clone().map_err(StagingError::QueuedWrite));
             }
         }
     }
@@ -3890,15 +3894,65 @@ mod tests {
         stream.mark_deleting();
         Arc::clone(&stream).drain_push_queue();
 
-        let expected = StagingError::StreamDeleting(stream.stream_name.clone()).to_string();
         for receiver in receivers {
-            assert_eq!(
+            assert!(matches!(
                 receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
-                Err(expected.clone())
-            );
+                Err(StagingError::StreamDeleting(name)) if name == stream.stream_name
+            ));
         }
         stream.flush(true).unwrap();
         assert!(!stream.data_path.exists());
+    }
+
+    #[test]
+    fn queued_push_errors_preserve_http_status() {
+        use actix_web::{ResponseError, http::StatusCode};
+
+        for deleting in [true, false] {
+            let temp_dir = TempDir::new().unwrap();
+            let stream = Stream::new(
+                Arc::new(Options {
+                    local_staging_path: temp_dir.path().to_path_buf(),
+                    ..Default::default()
+                }),
+                "queued_push_error",
+                LogStreamMetadata::default(),
+                None,
+                &None,
+            );
+            if deleting {
+                stream.mark_deleting();
+            } else {
+                fs::create_dir_all(stream.data_path.parent().unwrap()).unwrap();
+                fs::write(&stream.data_path, b"not a directory").unwrap();
+            }
+            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+            let batch =
+                RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+            let error = stream
+                .push(
+                    "schema",
+                    &batch,
+                    Utc::now().naive_utc(),
+                    &HashMap::new(),
+                    StreamType::UserDefined,
+                )
+                .unwrap_err();
+            let expected = if deleting {
+                assert!(
+                    matches!(&error, StagingError::StreamDeleting(name) if name == &stream.stream_name)
+                );
+                StatusCode::CONFLICT
+            } else {
+                assert!(matches!(&error, StagingError::QueuedWrite(_)));
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            let response_error = crate::handlers::http::ingest::PostError::Event(
+                crate::event::error::EventError::Staging(error),
+            );
+            assert_eq!(response_error.status_code(), expected);
+            assert_eq!(response_error.error_response().status(), expected);
+        }
     }
 
     #[test]
