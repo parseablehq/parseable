@@ -504,11 +504,13 @@ fn value_compatible_with_type(
 /// Returns a HashMap mapping original field names to new field names (with datatype suffix)
 /// for fields that have conflicting types.
 /// Takes JSON values to check if values are actually compatible with existing types.
+/// The suffix is the type the new column is stored as (see [`renamed_column_type`]).
 pub fn detect_schema_conflicts(
     inferred_schema: &Schema,
     existing_schema: &HashMap<String, Arc<Field>>,
     values: &[Value],
     schema_version: SchemaVersion,
+    infer_timestamp: bool,
 ) -> HashMap<String, String> {
     let mut conflicts = HashMap::new();
 
@@ -516,26 +518,34 @@ pub fn detect_schema_conflicts(
         if let Some(existing_field) = existing_schema.get(field.name()) {
             // Check if data types are different (potential conflict)
             if existing_field.data_type() != field.data_type() && !field.data_type().is_null() {
-                // Before declaring conflict, check if all values can be coerced to existing type
-                let all_values_compatible = values.iter().all(|v| {
-                    if let Some(field_value) = v.get(field.name()) {
-                        if field_value.is_null() {
-                            return true; // null is compatible with any type
-                        }
-                        value_compatible_with_type(
-                            field_value,
-                            existing_field.data_type(),
-                            schema_version,
-                        )
-                    } else {
-                        true // field not present in this value, no conflict
-                    }
-                });
+                // The values that cannot be coerced to the existing type: exactly the ones
+                // `rename_conflicting_fields_in_json` moves to the new column. Nulls and
+                // records without the field never conflict.
+                let moved: Vec<&Value> = values
+                    .iter()
+                    .filter_map(|v| v.get(field.name()))
+                    .filter(|v| {
+                        !v.is_null()
+                            && !value_compatible_with_type(
+                                v,
+                                existing_field.data_type(),
+                                schema_version,
+                            )
+                    })
+                    .collect();
 
                 // Only mark as conflict if values cannot be coerced to existing type
-                if !all_values_compatible {
-                    let suffix = get_datatype_suffix(field.data_type());
-                    let new_name = format!("{}_{}", field.name(), suffix);
+                if !moved.is_empty() {
+                    let data_type = match renamed_column_type(
+                        field.name(),
+                        moved,
+                        schema_version,
+                        infer_timestamp,
+                    ) {
+                        DataType::Null => field.data_type().clone(),
+                        data_type => data_type,
+                    };
+                    let new_name = format!("{}_{}", field.name(), get_datatype_suffix(&data_type));
                     conflicts.insert(field.name().to_string(), new_name);
                 }
             }
@@ -543,6 +553,44 @@ pub fn detect_schema_conflicts(
     }
 
     conflicts
+}
+
+/// The type of the new column a conflict rename creates for `values` (the values of field
+/// `name` that move to it): what ingestion infers for them as a new column, after the schema
+/// version's overrides (V1 stores every number as Float64, and date strings in a time-named
+/// field as Timestamp). Suffixing with this type rather than the raw JSON type keeps the
+/// column's name in step with its type, which is also the name the distributed schema
+/// authority gives the same data.
+fn renamed_column_type<'a>(
+    name: &str,
+    values: impl IntoIterator<Item = &'a Value>,
+    schema_version: SchemaVersion,
+    infer_timestamp: bool,
+) -> DataType {
+    // Evaluated under a stand-in for the new name `<name>_<suffix>`. It contains `name`, so
+    // the time-name rule matches it exactly when it matches the new name (only the
+    // `timestamp_*` suffixes contain a time part, and they are chosen only for timestamps).
+    // It is never the series-hash column, whose name alone decides that column's type.
+    let column = format!("{name}_");
+    let values: Vec<&Value> = values.into_iter().filter(|v| !v.is_null()).collect();
+    let records: Vec<Value> = values
+        .iter()
+        .map(|v| Value::Object(serde_json::Map::from_iter([(column.clone(), (*v).clone())])))
+        .collect();
+    let Ok(inferred) = arrow_json::reader::infer_json_schema_from_iterator(records.iter().map(Ok))
+    else {
+        return values
+            .first()
+            .map_or(DataType::Null, |v| datatype_for_value(v));
+    };
+    // Same per-record pass as `update_field_type_in_schema`, which types the new column.
+    let schema = records.iter().fold(Arc::new(inferred), |schema, record| {
+        override_data_type(schema, record.clone(), schema_version, infer_timestamp)
+    });
+    schema
+        .fields()
+        .first()
+        .map_or(DataType::Null, |f| f.data_type().clone())
 }
 
 /// Renames fields in JSON values according to the provided field mapping.
@@ -606,8 +654,9 @@ pub fn rename_conflicting_fields_in_json(
 ///
 /// For each record, scan each non-null field. If the value doesn't satisfy
 /// the storage type, rename that field in this specific record to
-/// `<original>_<value-type-suffix>` so it routes to (or creates) a typed
-/// sibling column instead of crashing the batch.
+/// `<original>_<suffix>`, the suffix being the type the value is stored as
+/// (see `renamed_column_type`), so it routes to (or creates) a typed sibling
+/// column instead of crashing the batch.
 ///
 /// This is a no-op (and skips the per-record loop entirely) when:
 ///   - the batch has at most one record — for a single record arrow's
@@ -621,6 +670,7 @@ pub fn rename_per_record_type_mismatches(
     inferred_schema: &Schema,
     existing_schema: &HashMap<String, Arc<Field>>,
     schema_version: SchemaVersion,
+    infer_timestamp: bool,
 ) -> Vec<Value> {
     if values.len() <= 1 {
         return values;
@@ -697,8 +747,9 @@ pub fn rename_per_record_type_mismatches(
                     if value_compatible_with_type(&val, target_type, schema_version) {
                         return (key, val);
                     }
-                    let suffix = get_datatype_suffix(&datatype_for_value(&val));
-                    let new_key = format!("{key}_{suffix}");
+                    let data_type =
+                        renamed_column_type(&key, [&val], schema_version, infer_timestamp);
+                    let new_key = format!("{key}_{}", get_datatype_suffix(&data_type));
                     (new_key, val)
                 })
                 .collect();
@@ -707,8 +758,8 @@ pub fn rename_per_record_type_mismatches(
         .collect()
 }
 
-/// Best-effort mapping from a JSON value to its arrow DataType. Used only to
-/// pick a type-suffix for the per-record rename (e.g. "bool", "i64", "f64").
+/// Best-effort mapping from a JSON value to its arrow DataType. Used only as the
+/// fallback in `renamed_column_type` when schema inference fails.
 fn datatype_for_value(value: &Value) -> DataType {
     match value {
         Value::Null => DataType::Null,
@@ -774,6 +825,7 @@ mod tests {
             &existing_schema,
             &values,
             SchemaVersion::V1,
+            true,
         );
 
         // Should detect conflict for body_timestamp (timestamp string can't be parsed as Float64)
@@ -804,6 +856,7 @@ mod tests {
             &existing_schema,
             &values,
             SchemaVersion::V1,
+            true,
         );
 
         // No conflicts - types match for existing field
@@ -913,6 +966,7 @@ mod tests {
             &existing_schema,
             &values,
             SchemaVersion::V1,
+            true,
         );
 
         // Should detect conflict and rename to body_timestamp_utf8
@@ -947,6 +1001,7 @@ mod tests {
             &existing_schema,
             &values,
             SchemaVersion::V1,
+            true,
         );
 
         // Should NOT detect conflict because the value can be parsed as timestamp
@@ -973,6 +1028,7 @@ mod tests {
             &existing_schema,
             &values,
             SchemaVersion::V1,
+            true,
         );
 
         assert_eq!(conflicts.get("date"), Some(&"date_utf8".to_string()));
@@ -999,6 +1055,7 @@ mod tests {
             &existing_schema,
             &values,
             SchemaVersion::V1,
+            true,
         );
 
         // Should detect conflict because number cannot be stored in Utf8 field
@@ -1030,6 +1087,7 @@ mod tests {
             &existing_schema,
             &values,
             SchemaVersion::V0,
+            true,
         );
 
         // Should detect conflict because integer doesn't match strict Float64 validation
@@ -1061,6 +1119,7 @@ mod tests {
             &existing_schema,
             &values,
             SchemaVersion::V1,
+            true,
         );
 
         // Should NOT detect conflict because V1 allows any number for Float64
@@ -1227,8 +1286,13 @@ mod tests {
             json!({"escaped": true}),
             json!({"escaped": null}),
         ];
-        let renamed =
-            rename_per_record_type_mismatches(value_arr, &inferred, &storage, SchemaVersion::V1);
+        let renamed = rename_per_record_type_mismatches(
+            value_arr,
+            &inferred,
+            &storage,
+            SchemaVersion::V1,
+            true,
+        );
 
         assert!(renamed[0].as_object().unwrap().contains_key("escaped"));
         // bool record routes to escaped_bool
@@ -1252,6 +1316,7 @@ mod tests {
             &inferred,
             &storage,
             SchemaVersion::V1,
+            true,
         );
         for v in &renamed {
             assert!(v.as_object().unwrap().contains_key("amount"));
@@ -1268,12 +1333,13 @@ mod tests {
             &inferred,
             &storage,
             SchemaVersion::V1,
+            true,
         );
         assert!(renamed[0].as_object().unwrap().contains_key("new_field"));
     }
 
     #[test]
-    fn rename_per_record_number_into_utf8_uses_int64_suffix() {
+    fn rename_per_record_number_into_utf8_uses_stored_float64_suffix() {
         let mut storage: HashMap<String, Arc<Field>> = HashMap::new();
         storage.insert(
             "request_body".to_string(),
@@ -1282,7 +1348,8 @@ mod tests {
         let inferred = Schema::new(vec![Field::new("request_body", DataType::Utf8, true)]);
         // Need >= 2 records for the per-record pass to run; second record's
         // string keeps inferred type at Utf8 (matches storage), unblocking
-        // the precheck so the int record gets renamed.
+        // the precheck so the int record gets renamed. V1 stores every number
+        // as Float64, so the sibling is named for that, not for the JSON integer.
         let renamed = rename_per_record_type_mismatches(
             vec![
                 json!({"request_body": 200}),
@@ -1291,12 +1358,13 @@ mod tests {
             &inferred,
             &storage,
             SchemaVersion::V1,
+            true,
         );
         assert!(
             renamed[0]
                 .as_object()
                 .unwrap()
-                .contains_key("request_body_int64")
+                .contains_key("request_body_float64")
         );
     }
 
@@ -1317,6 +1385,7 @@ mod tests {
             &inferred,
             &storage,
             SchemaVersion::V1,
+            true,
         );
         // No rename because the loop is skipped for single-record batches.
         assert!(renamed[0].as_object().unwrap().contains_key("escaped"));
@@ -1336,6 +1405,7 @@ mod tests {
             &inferred,
             &storage,
             SchemaVersion::V1,
+            true,
         );
         assert!(renamed[0].as_object().unwrap().contains_key("escaped"));
         assert!(renamed[1].as_object().unwrap().contains_key("escaped_bool"));
