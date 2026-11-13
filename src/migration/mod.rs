@@ -38,8 +38,7 @@ use crate::{
     storage::{
         ObjectStorage, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME, StorageMetadata,
         object_storage::{
-            is_stream_deletion_owner, is_tombstoned, list_tombstoned_streams,
-            spawn_stream_deletion,
+            is_stream_deletion_owner, is_tombstoned, list_tombstoned_streams, spawn_stream_deletion,
         },
     },
 };

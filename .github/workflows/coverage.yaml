@@ -10,6 +10,9 @@ name: Lint, Test and Coverage Report
 jobs:
   coverage:
     runs-on: ubuntu-latest
+    env:
+      # Cyrus SASL 2.1.28 uses C constructs rejected by GCC's C23 default on Ubuntu 26.04.
+      CFLAGS: -std=gnu17
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

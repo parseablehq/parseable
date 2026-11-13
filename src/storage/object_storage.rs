@@ -1408,7 +1408,10 @@ pub(crate) fn is_stream_deletion_owner() -> bool {
     match STREAM_DELETION_OWNER_OVERRIDE.load(Ordering::Relaxed) {
         1 => true,
         2 => false,
-        _ => matches!(PARSEABLE.options.mode, Mode::Query | Mode::Prism | Mode::All),
+        _ => matches!(
+            PARSEABLE.options.mode,
+            Mode::Query | Mode::Prism | Mode::All
+        ),
     }
 }
 
