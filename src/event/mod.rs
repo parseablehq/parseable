@@ -84,7 +84,7 @@ impl Event {
                 key.push_str(&format!("&{k}={v}"));
             }
         }
-        
+
         let stream = PARSEABLE.get_stream(&self.stream_name, &self.tenant_id)?;
         let _ingestion_guard = stream.ingestion_guard()?;
 

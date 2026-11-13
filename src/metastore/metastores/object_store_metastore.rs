@@ -57,9 +57,9 @@ use crate::{
         SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
         TARGETS_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
         object_storage::{
-            alert_json_path, alert_state_json_path, filter_path, manifest_path, mttr_json_path,
-            outbound_http_policy_json_path, parseable_json_path, schema_path, stream_json_path,
-            to_bytes,
+            alert_json_path, alert_state_json_path, filter_path, list_tombstoned_streams,
+            manifest_path, mttr_json_path, outbound_http_policy_json_path, parseable_json_path,
+            schema_path, stream_json_path, to_bytes,
         },
     },
     users::{
@@ -1401,6 +1401,9 @@ impl Metastore for ObjectStoreMetastore {
                 {
                     result_file_list.insert(stream);
                 }
+            }
+            for stream in list_tombstoned_streams(self.storage.as_ref(), tenant_id).await? {
+                result_file_list.remove(&stream);
             }
             Ok(result_file_list)
         }

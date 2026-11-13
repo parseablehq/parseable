@@ -73,7 +73,6 @@ pub async fn delete(
     // deletion and permit recreation while this handler still has cleanup left.
     let creation_guard = Arc::new(CREATE_STREAM_LOCK.lock().await);
     let stream = {
-
         if !PARSEABLE
             .check_or_load_stream(&stream_name, &tenant_id)
             .await
@@ -772,7 +771,6 @@ pub async fn get_stream_hot_tier_internal(
     {
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
-
 
     let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() else {
         return Err(StreamError::HotTierNotEnabled(stream_name.to_owned()));
