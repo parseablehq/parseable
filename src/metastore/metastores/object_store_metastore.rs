@@ -1355,12 +1355,16 @@ impl Metastore for ObjectStoreMetastore {
     ) -> Result<HashSet<String>, MetastoreError> {
         // using LocalFS list_streams because it doesn't implement list_with_delimiter
         if PARSEABLE.storage.name() == "drive" {
-            PARSEABLE
+            let mut streams = PARSEABLE
                 .storage
                 .get_object_store()
                 .list_streams()
                 .await
-                .map_err(MetastoreError::ObjectStorageError)
+                .map_err(MetastoreError::ObjectStorageError)?;
+            for stream in list_tombstoned_streams(self.storage.as_ref(), tenant_id).await? {
+                streams.remove(&stream);
+            }
+            Ok(streams)
         } else {
             // not local-disk, object storage
             let mut result_file_list = HashSet::new();
