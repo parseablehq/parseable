@@ -560,6 +560,31 @@ pub struct Options {
 
     #[arg(
         long,
+        env = "P_SCHEMA_RESOLUTION",
+        default_value = "true",
+        help = "Distributed ingestors: reconcile new field types with the schema authority (querier or Prism) before writing parquet. Upgrade the authority before the ingestors."
+    )]
+    pub schema_resolution: bool,
+
+    #[arg(
+        long,
+        env = "P_SCHEMA_RESOLVE_MAX_DEFERRED_CYCLES",
+        default_value = "3",
+        help = "Failed resolution cycles after which a stream rejects ingestion with 503 (0 = never)"
+    )]
+    pub schema_resolve_max_deferred_cycles: u32,
+
+    #[arg(
+        long,
+        env = "P_SCHEMA_RESOLVE_CONCURRENCY",
+        default_value = "8",
+        value_parser = value_parser!(u16).range(1..),
+        help = "Maximum concurrent schema resolution requests from one ingestor"
+    )]
+    pub schema_resolve_concurrency: u16,
+
+    #[arg(
+        long,
         env = "P_PRISM_ENDPOINT",
         default_value = "",
         help = "URL to connect to the prism node. Default is the address of the server"

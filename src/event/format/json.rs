@@ -113,6 +113,7 @@ impl EventFormat for Event {
                 stream_schema,
                 &value_arr,
                 schema_version,
+                infer_timestamp,
             );
 
             // If there are conflicts, rename the fields in JSON values
@@ -137,6 +138,7 @@ impl EventFormat for Event {
                 &raw_inferred_schema,
                 stream_schema,
                 schema_version,
+                infer_timestamp,
             )
         };
 
@@ -587,6 +589,7 @@ mod tests {
     use std::str::FromStr;
 
     use arrow_array::UInt64Array;
+    use arrow_schema::TimeUnit;
     use serde_json::json;
 
     use super::*;
@@ -689,5 +692,155 @@ mod tests {
         let parsed = extract_and_parse_time(&json, "timestamp");
 
         assert!(parsed.is_err());
+    }
+
+    /// Runs `to_data` on `body` against a stream that already has `existing`, decodes the
+    /// result, and returns the columns the event adds to the stream.
+    fn new_columns(
+        existing: &[(&str, DataType)],
+        body: Value,
+        schema_version: SchemaVersion,
+        infer_timestamp: bool,
+    ) -> Vec<(String, DataType)> {
+        let schema: HashMap<String, Arc<Field>> = existing
+            .iter()
+            .map(|(n, t)| (n.to_string(), Arc::new(Field::new(*n, t.clone(), true))))
+            .collect();
+        let (data, fields, _) = Event::new(body, Utc::now())
+            .to_data(&schema, None, schema_version, false, infer_timestamp)
+            .unwrap();
+        Event::decode(data, Arc::new(Schema::new(fields.clone()))).unwrap();
+        fields
+            .iter()
+            .filter(|f| !schema.contains_key(f.name()))
+            .map(|f| (f.name().clone(), f.data_type().clone()))
+            .collect()
+    }
+
+    /// A conflict rename names the new column after the type it is stored as, so the
+    /// suffix always matches the column's type (and the schema authority's naming).
+    #[test]
+    fn conflict_rename_suffix_matches_stored_type() {
+        let ts = DataType::Timestamp(TimeUnit::Millisecond, None);
+        let v1 = SchemaVersion::V1;
+        // (existing columns, event, schema version, infer_timestamp, expected new column)
+        type Case = (
+            Vec<(&'static str, DataType)>,
+            Value,
+            SchemaVersion,
+            bool,
+            (&'static str, DataType),
+        );
+        let cases: Vec<Case> = vec![
+            // V1 stores every number as Float64, integers included.
+            (
+                vec![("g", DataType::Utf8)],
+                json!({"g": 1000}),
+                v1,
+                true,
+                ("g_float64", DataType::Float64),
+            ),
+            (
+                vec![("g", DataType::Utf8)],
+                json!({"g": 1.5}),
+                v1,
+                true,
+                ("g_float64", DataType::Float64),
+            ),
+            // Per-record path: mixed types in one batch.
+            (
+                vec![("g", DataType::Utf8)],
+                json!([{"g": "a"}, {"g": 1000}]),
+                v1,
+                true,
+                ("g_float64", DataType::Float64),
+            ),
+            // A date string in a time-named field is stored as Timestamp.
+            (
+                vec![("event_time", DataType::Float64)],
+                json!({"event_time": "2025-01-01T00:00:00Z"}),
+                v1,
+                true,
+                ("event_time_timestamp_ms", ts.clone()),
+            ),
+            (
+                vec![("event_time", DataType::Float64)],
+                json!([{"event_time": 5}, {"event_time": "2025-01-01T00:00:00Z"}]),
+                v1,
+                true,
+                ("event_time_timestamp_ms", ts.clone()),
+            ),
+            // ... but not with timestamp inference off,
+            (
+                vec![("event_time", DataType::Float64)],
+                json!({"event_time": "2025-01-01T00:00:00Z"}),
+                v1,
+                false,
+                ("event_time_utf8", DataType::Utf8),
+            ),
+            // nor when the string is not a date,
+            (
+                vec![("event_time", DataType::Float64)],
+                json!({"event_time": "abc"}),
+                v1,
+                true,
+                ("event_time_utf8", DataType::Utf8),
+            ),
+            // nor in a field whose name is not time-like.
+            (
+                vec![("g", DataType::Float64)],
+                json!({"g": "2025-01-01T00:00:00Z"}),
+                v1,
+                true,
+                ("g_utf8", DataType::Utf8),
+            ),
+            // Numbers into a Timestamp field.
+            (
+                vec![("event_time", ts.clone())],
+                json!({"event_time": 5}),
+                v1,
+                true,
+                ("event_time_float64", DataType::Float64),
+            ),
+            // V0 keeps integers as Int64.
+            (
+                vec![("g", DataType::Utf8)],
+                json!({"g": 1000}),
+                SchemaVersion::V0,
+                true,
+                ("g_int64", DataType::Int64),
+            ),
+        ];
+        for (existing, body, version, infer_timestamp, (name, data_type)) in cases {
+            let label =
+                format!("{existing:?} + {body} ({version:?}, infer_timestamp={infer_timestamp})");
+            let added = new_columns(&existing, body, version, infer_timestamp);
+            assert_eq!(
+                added,
+                vec![(name.to_string(), data_type.clone())],
+                "{label}"
+            );
+            assert!(
+                name.ends_with(super::super::get_datatype_suffix(&data_type)),
+                "{label}"
+            );
+        }
+    }
+
+    /// An event carrying both a conflicting `f` and a literal `f_utf8` keeps both values
+    /// end to end: the moved value lands in `f_utf8_utf8`, the literal one in `f_utf8`.
+    #[test]
+    fn conflict_rename_keeps_literal_key_of_the_same_name() {
+        let existing = [("f", DataType::Float64), ("f_utf8", DataType::Utf8)];
+        for body in [
+            json!({"f": "moved", "f_utf8": "literal"}),
+            json!([{"f": 1.5}, {"f": "moved", "f_utf8": "literal"}]),
+        ] {
+            assert_eq!(
+                new_columns(&existing, body.clone(), SchemaVersion::V1, true),
+                vec![("f_utf8_utf8".to_string(), DataType::Utf8)],
+                "{body}"
+            );
+        }
     }
 }
