@@ -136,6 +136,12 @@ fn build_and_process_event(
 /// Matches the ingest-side `Retry-After` for a stream blocked by schema resolution.
 const SCHEMA_BLOCKED_RETRY: Duration = Duration::from_secs(60);
 
+/// Chunks of one partition processed at once. A chunk blocked by schema resolution keeps
+/// its records until it succeeds, so an unbounded count would keep reading the partition
+/// into ever more held chunks for as long as the block lasts. With a bound, blocked chunks
+/// stop the reads instead: the partition's queue fills and the consumer waits.
+const MAX_CHUNKS_IN_FLIGHT: Option<usize> = Some(4);
+
 fn is_schema_resolution_blocked(err: &anyhow::Error) -> bool {
     matches!(
         err.downcast_ref::<EventError>(),
@@ -228,7 +234,7 @@ where
         );
 
         chunked_stream
-            .for_each_concurrent(None, |records| async {
+            .for_each_concurrent(MAX_CHUNKS_IN_FLIGHT, |records| async {
                 if let Some(last_record) = records.iter().max_by_key(|r| r.offset) {
                     let tpl = last_record.offset_to_commit().unwrap();
 

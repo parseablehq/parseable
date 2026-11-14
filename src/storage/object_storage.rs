@@ -1554,6 +1554,12 @@ async fn run_stream_deletion(
             return;
         }
     }
+    // Wait for schema resolutions of this stream in flight, and keep new ones out until its
+    // files are gone: one that already passed its deletion check would otherwise write
+    // `.schema` back after the prefix is removed. Held to the end of this function.
+    let _resolutions = crate::schema_registry::authority::SCHEMA_AUTHORITY
+        .lock_and_invalidate(tenant_id, stream_name)
+        .await;
     match storage.delete_stream(stream_name, tenant_id).await {
         Ok(()) => {
             // Evict and reset stats before clearing the tombstone: once the
