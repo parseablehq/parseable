@@ -34,7 +34,7 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
@@ -231,10 +231,75 @@ impl<'a> PartitionPause<'a> {
         let mut blocked = self.blocked_chunks.lock().expect("pause lock poisoned");
         *blocked -= 1;
         if *blocked == 0 {
-            match self.consumer.resume(&self.tpl()) {
-                Ok(()) => info!("Resumed {:?}", self.tp),
-                Err(e) => error!(error = %e, "Failed to resume {:?}", self.tp),
-            }
+            self.resume();
+        }
+    }
+
+    fn resume(&self) {
+        match self.consumer.resume(&self.tpl()) {
+            Ok(()) => info!("Resumed {:?}", self.tp),
+            Err(e) => error!(error = %e, "Failed to resume {:?}", self.tp),
+        }
+    }
+}
+
+impl Drop for PartitionPause<'_> {
+    /// A revoked partition drops its worker with chunks still held. Resume it anyway, so a
+    /// later assignment of the partition does not start paused with nothing to resume it.
+    fn drop(&mut self) {
+        let blocked = self.blocked_chunks.get_mut().map_or(0, |b| *b);
+        if blocked > 0 {
+            self.resume();
+        }
+    }
+}
+
+/// Commits one partition's chunks in order.
+///
+/// Chunks finish out of order: one can wait out a schema block while later ones go
+/// through. Committing each chunk's own offset would then move the committed offset past
+/// records not written yet, and a restart or rebalance would skip them. A chunk's offset
+/// is committed only once every earlier chunk is done, so the committed offset never
+/// passes an unwritten record. Records written after it may be read again after a restart.
+#[derive(Default)]
+struct OrderedCommits<T = rdkafka::TopicPartitionList> {
+    state: std::sync::Mutex<CommitState<T>>,
+}
+
+struct CommitState<T> {
+    /// Sequence number of the earliest chunk not done yet.
+    next: usize,
+    /// Done chunks after `next`, with the offsets each would commit.
+    done: BTreeMap<usize, Option<T>>,
+}
+
+impl<T> Default for CommitState<T> {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            done: BTreeMap::new(),
+        }
+    }
+}
+
+impl<T> OrderedCommits<T> {
+    /// Marks chunk `seq` (numbered from 0 in stream order) done and calls `commit` with the
+    /// offsets of the latest chunk that every earlier chunk is done before. Runs `commit`
+    /// under the lock, so commits never go backwards.
+    fn complete(&self, seq: usize, offsets: Option<T>, commit: impl FnOnce(T)) {
+        let mut state = self.state.lock().expect("commit lock poisoned");
+        state.done.insert(seq, offsets);
+        let mut latest = None;
+        loop {
+            let next = state.next;
+            let Some(offsets) = state.done.remove(&next) else {
+                break;
+            };
+            state.next += 1;
+            latest = offsets.or(latest);
+        }
+        if let Some(offsets) = latest {
+            commit(offsets);
         }
     }
 }
@@ -318,27 +383,36 @@ where
             self.buffer_config.buffer_timeout,
         );
         let pause = PartitionPause::new(&self.consumer, &tp);
+        let commits = OrderedCommits::default();
 
         // Unbounded on purpose: blocked chunks must keep draining the partition's queue, or
         // a full queue would stall the consumer loop shared by every partition. The pause
         // bounds what a blocked partition holds.
         chunked_stream
-            .for_each_concurrent(None, |records| async {
-                if let Some(last_record) = records.iter().max_by_key(|r| r.offset) {
-                    let tpl = last_record.offset_to_commit().unwrap();
-
-                    if let Err(e) = self.process_chunk(&tp, &pause, records).await {
+            .enumerate()
+            .for_each_concurrent(None, |(seq, records)| {
+                let (tp, pause, commits) = (&tp, &pause, &commits);
+                async move {
+                    let tpl = records
+                        .iter()
+                        .max_by_key(|r| r.offset)
+                        .map(|last| last.offset_to_commit().unwrap());
+                    if !records.is_empty()
+                        && let Err(e) = self.process_chunk(tp, pause, records).await
+                    {
                         error!("Failed to process records for {:?}: {:?}", tp, e);
                     }
 
-                    //CommitMode::Async race condition.
-                    //@see https://github.com/confluentinc/librdkafka/issues/4534
-                    //@see https://github.com/confluentinc/librdkafka/issues/4059
-                    if let Err(e) = self.consumer.commit(&tpl, CommitMode::Sync) {
-                        error!(error = %e, "Failed to commit offsets for {:?}", tpl);
-                    } else {
-                        debug!("Committed offsets for {:?}", tpl);
-                    }
+                    commits.complete(seq, tpl, |tpl| {
+                        //CommitMode::Async race condition.
+                        //@see https://github.com/confluentinc/librdkafka/issues/4534
+                        //@see https://github.com/confluentinc/librdkafka/issues/4059
+                        if let Err(e) = self.consumer.commit(&tpl, CommitMode::Sync) {
+                            error!(error = %e, "Failed to commit offsets for {:?}", tpl);
+                        } else {
+                            debug!("Committed offsets for {:?}", tpl);
+                        }
+                    });
                 }
             })
             .await;
@@ -346,5 +420,36 @@ where
         self.processor.post_stream().await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn complete(commits: &OrderedCommits<i64>, seq: usize, offset: Option<i64>) -> Option<i64> {
+        let mut committed = None;
+        commits.complete(seq, offset, |o| committed = Some(o));
+        committed
+    }
+
+    #[test]
+    fn later_chunk_waits_for_earlier_ones() {
+        let commits = OrderedCommits::<i64>::default();
+        // Chunk 0 is held (schema block) while 1 and 2 go through: nothing committed.
+        assert_eq!(complete(&commits, 1, Some(20)), None);
+        assert_eq!(complete(&commits, 2, Some(30)), None);
+        // Chunk 0 done: commits through the furthest consecutive chunk.
+        assert_eq!(complete(&commits, 0, Some(10)), Some(30));
+        assert_eq!(complete(&commits, 3, Some(40)), Some(40));
+    }
+
+    #[test]
+    fn chunk_without_offsets_still_advances() {
+        let commits = OrderedCommits::<i64>::default();
+        assert_eq!(complete(&commits, 1, Some(20)), None);
+        assert_eq!(complete(&commits, 0, None), Some(20));
+        assert_eq!(complete(&commits, 2, None), None);
+        assert_eq!(complete(&commits, 3, Some(40)), Some(40));
     }
 }

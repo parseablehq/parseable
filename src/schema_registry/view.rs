@@ -103,6 +103,27 @@ impl ResolvedView {
         }
     }
 
+    /// Whether a batch field typed `incoming` predates a type the authority set for `name`:
+    /// the stream's type `current` is the authority's, and `incoming` is another one.
+    ///
+    /// Such a batch was built against the schema from before a resolution changed the
+    /// type (a stream switches to the authority's type whatever told it so: a rename, a
+    /// registry snapshot or a restart). It must still be accepted: its arrow file carries
+    /// `incoming`, which conversion resolves like any other unresolved type, renaming it or
+    /// holding the file back.
+    pub fn predates_resolved_type(
+        &self,
+        name: &str,
+        current: &DataType,
+        incoming: &DataType,
+    ) -> bool {
+        current != incoming
+            && self
+                .fields
+                .get(name)
+                .is_some_and(|resolved| compatible(resolved, current))
+    }
+
     /// Folds an authority answer into a new view.
     pub fn with_resolutions(
         &self,
@@ -401,6 +422,32 @@ mod tests {
         let v = two_target_view();
         v.persist(dir.path()).unwrap();
         assert_eq!(ResolvedView::load(dir.path()), v);
+    }
+
+    /// A type learned only from a registry snapshot carries no rename, yet the stream
+    /// switches to it; a batch still carrying the local type must be accepted.
+    #[test]
+    fn snapshot_type_tolerates_batches_typed_before_it() {
+        let v = ResolvedView::default().with_resolutions(
+            4,
+            &[],
+            &[RegistryEntry {
+                name: "b".into(),
+                data_type: DataType::Float64,
+            }],
+        );
+        assert!(v.renames.is_empty());
+        // The stream switched to the authority's type: an older Utf8 batch predates it.
+        assert!(v.predates_resolved_type("b", &DataType::Float64, &DataType::Utf8));
+        // Same type: nothing to tolerate.
+        assert!(!v.predates_resolved_type("b", &DataType::Float64, &DataType::Float64));
+        // The stream's type is not the authority's: a real conflict, not a stale batch.
+        assert!(!v.predates_resolved_type("b", &DataType::Utf8, &DataType::Float64));
+        // Nothing resolved for the name.
+        assert!(!v.predates_resolved_type("c", &DataType::Float64, &DataType::Utf8));
+        // A renamed type is covered the same way.
+        let v = renamed_view();
+        assert!(v.predates_resolved_type("a", &DataType::Int64, &DataType::Utf8));
     }
 
     #[test]

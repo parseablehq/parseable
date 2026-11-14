@@ -177,21 +177,18 @@ pub fn commit_schema(
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
     let mut metadata = stream.metadata.write().expect(LOCK_EXPECT);
     // Read under the schema lock: a resolution publishes its view before it changes the
-    // schema, so a resolved type seen here always comes with the renames it allows.
+    // schema, so a type the authority set is always in the view seen here.
     let view = stream.resolution.view();
     let map = &mut metadata.schema;
     // A batch built against the schema from before a resolved type change can still carry
-    // the old type. Its arrow file is renamed at conversion, so it must not fail here.
+    // the old type. Its arrow file is resolved at conversion, so it must not fail here.
     let incoming: Vec<Arc<Field>> = schema
         .fields()
         .iter()
         .filter(|f| {
-            !(map
-                .get(f.name())
-                .is_some_and(|cur| cur.data_type() != f.data_type())
-                && view
-                    .renames
-                    .contains_key(&(f.name().clone(), f.data_type().clone())))
+            !map.get(f.name()).is_some_and(|cur| {
+                view.predates_resolved_type(f.name(), cur.data_type(), f.data_type())
+            })
         })
         .cloned()
         .collect();
