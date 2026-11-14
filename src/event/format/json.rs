@@ -826,4 +826,21 @@ mod tests {
             );
         }
     }
+
+    /// An event carrying both a conflicting `f` and a literal `f_utf8` keeps both values
+    /// end to end: the moved value lands in `f_utf8_utf8`, the literal one in `f_utf8`.
+    #[test]
+    fn conflict_rename_keeps_literal_key_of_the_same_name() {
+        let existing = [("f", DataType::Float64), ("f_utf8", DataType::Utf8)];
+        for body in [
+            json!({"f": "moved", "f_utf8": "literal"}),
+            json!([{"f": 1.5}, {"f": "moved", "f_utf8": "literal"}]),
+        ] {
+            assert_eq!(
+                new_columns(&existing, body.clone(), SchemaVersion::V1, true),
+                vec![("f_utf8_utf8".to_string(), DataType::Utf8)],
+                "{body}"
+            );
+        }
+    }
 }
