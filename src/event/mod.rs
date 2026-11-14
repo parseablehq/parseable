@@ -1,21 +1,21 @@
 /*
-* Parseable Server (C) 2022 - 2025 Parseable, Inc.
-*
-* This program is free software: you can redistribute it and/or modify
-* it under the terms of the GNU Affero General Public License as
-* published by the Free Software Foundation, either version 3 of the
-* License, or (at your option) any later version.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-* GNU Affero General Public License for more details.
-*
-* You should have received a copy of the GNU Affero General Public License
-* along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*
-*/
+ * Parseable Server (C) 2022 - 2025 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ */
 
 pub mod format;
 
@@ -175,8 +175,10 @@ pub fn commit_schema(
     // global lock while waiting for the per-stream metadata lock can deadlock
     // concurrent ingestion that needs the map to finish processing an event.
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
-    let view = stream.resolution.view();
     let mut metadata = stream.metadata.write().expect(LOCK_EXPECT);
+    // Read under the schema lock: a resolution publishes its view before it changes the
+    // schema, so a resolved type seen here always comes with the renames it allows.
+    let view = stream.resolution.view();
     let map = &mut metadata.schema;
     // A batch built against the schema from before a resolved type change can still carry
     // the old type. Its arrow file is renamed at conversion, so it must not fail here.

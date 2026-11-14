@@ -126,8 +126,8 @@ impl ResolutionState {
     }
 
     /// Splits `files` into convertible and deferred, asking the authority about any
-    /// field not yet resolved. `on_apply` runs after a new view was persisted and before
-    /// it becomes visible, so the stream can align its in-memory and staged schemas.
+    /// field not yet resolved. `on_apply` runs after a new view was persisted and made
+    /// visible, so the stream can align its in-memory and staged schemas with it.
     pub fn ensure_resolved(
         &self,
         ctx: &ResolveContext<'_>,
@@ -175,12 +175,15 @@ impl ResolutionState {
                     self.record_failure(ctx, format!("could not persist resolved fields: {err}"));
                     return self.split(&view, schemas);
                 }
-                on_apply(&next);
+                // Publish the view before `on_apply` moves the in-memory schema to the
+                // resolved types: `commit_schema` reads the view under the schema lock, so
+                // whoever sees a resolved type also sees the rename that allows the old one.
                 let next = Arc::new(next);
                 self.view
                     .write()
                     .expect("view lock poisoned")
                     .clone_from(&next);
+                on_apply(&next);
                 *self.pending_request.lock().expect("lock poisoned") = None;
                 self.finish(ctx, &next, schemas)
             }
@@ -441,6 +444,39 @@ mod tests {
             ResolutionState::load(d2.path()).view().as_ref(),
             v2.as_ref()
         );
+    }
+
+    /// `on_apply` moves the in-memory schema to the resolved types, so the view carrying
+    /// the matching renames must already be visible to other threads when it runs.
+    #[test]
+    fn resolved_view_is_visible_before_on_apply() {
+        let registry = RefCell::new(StreamRegistry::default());
+        registry
+            .borrow_mut()
+            .apply(&[("a".to_string(), DataType::Int64)]);
+        let resolver = registry_resolver(&registry);
+        let tenant = None;
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_arrow(
+            dir.path(),
+            "a.arrows",
+            Field::new("a", DataType::Utf8, true),
+            Arc::new(StringArray::from(vec!["x"])),
+        );
+
+        let state = ResolutionState::default();
+        let applied = RefCell::new(false);
+        state.ensure_resolved(&ctx(dir.path(), &resolver, &tenant), vec![file], |next| {
+            let visible = state.view();
+            assert_eq!(visible.registry_version, next.registry_version);
+            assert!(
+                visible
+                    .renames
+                    .contains_key(&("a".to_string(), DataType::Utf8))
+            );
+            *applied.borrow_mut() = true;
+        });
+        assert!(*applied.borrow());
     }
 
     #[test]

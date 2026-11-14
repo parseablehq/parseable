@@ -171,6 +171,12 @@ impl SchemaAuthority {
 
         let reserved = reserved_fields(&stream);
         let mut guard = self.slot(&req.tenant_id, &req.stream).lock_owned().await;
+        // Deletion marks the stream, then takes this lock before removing its files and
+        // holds it until they are gone. Checking again under the lock means a resolution
+        // that waited behind deletion never writes `.schema` for the deleted stream.
+        if stream.is_deleting() {
+            return Err(AuthorityError::StreamDeleting(req.stream));
+        }
         if guard.is_none() {
             *guard = Some(load_registry(&req.stream, &req.tenant_id, reserved).await?);
         }
