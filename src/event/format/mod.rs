@@ -618,29 +618,85 @@ pub fn rename_conflicting_fields_in_json(
     values
         .into_iter()
         .map(|value| {
-            if let Value::Object(map) = value {
-                let new_map: serde_json::Map<String, Value> = map
-                    .into_iter()
-                    .map(|(key, val)| {
-                        if let Some(new_key) = field_mapping.get(&key) {
-                            if existing_schema.get(&key).is_some_and(|field| {
-                                value_compatible_with_type(&val, field.data_type(), schema_version)
-                            }) {
-                                (key, val)
-                            } else {
-                                (new_key.clone(), val)
-                            }
-                        } else {
-                            (key, val)
-                        }
-                    })
-                    .collect();
-                Value::Object(new_map)
-            } else {
-                value
-            }
+            let Value::Object(map) = value else {
+                return value;
+            };
+            let entries = map
+                .into_iter()
+                .map(|(key, val)| {
+                    let Some(new_key) = field_mapping.get(&key) else {
+                        return (key, val, None);
+                    };
+                    if existing_schema.get(&key).is_some_and(|field| {
+                        value_compatible_with_type(&val, field.data_type(), schema_version)
+                    }) {
+                        return (key, val, None);
+                    }
+                    // `new_key` is `<key>_<suffix>`; a collision chains the same suffix.
+                    let suffix = new_key
+                        .strip_prefix(key.as_str())
+                        .and_then(|rest| rest.strip_prefix('_'))
+                        .unwrap_or(new_key);
+                    let target = (new_key.clone(), suffix);
+                    (key, val, Some(target))
+                })
+                .collect();
+            Value::Object(place_record_values(
+                entries,
+                existing_schema,
+                schema_version,
+            ))
         })
         .collect()
+}
+
+/// One key of a record, its value, and where the value moves: the target name
+/// `<key>_<suffix>` and the suffix, or `None` to keep the key.
+type RecordEntry<'a> = (String, Value, Option<(String, &'a str)>);
+
+/// Builds one record from its `(key, value, move)` entries, where `move` is the typed
+/// sibling name `<key>_<suffix>` a value moves to plus that suffix (`None` keeps the key).
+///
+/// Kept keys claim their names first. A moved value whose target is already a non-null key
+/// of the record, or a stream column the value does not fit, chains one more suffix
+/// (`a_utf8` → `a_utf8_utf8`) until the name is free, the way the schema authority chains.
+/// So a record carrying both `a` and a literal `a_utf8` keeps both values instead of one
+/// overwriting the other. A null in the target is dropped: null and absent mean the same.
+fn place_record_values(
+    entries: Vec<RecordEntry<'_>>,
+    existing_schema: &HashMap<String, Arc<Field>>,
+    schema_version: SchemaVersion,
+) -> serde_json::Map<String, Value> {
+    let mut record = serde_json::Map::with_capacity(entries.len());
+    let mut moved = Vec::new();
+    for (key, val, target) in entries {
+        match target {
+            None => {
+                record.insert(key, val);
+            }
+            Some((name, suffix)) => moved.push((name, suffix, val)),
+        }
+    }
+    for (mut name, suffix, val) in moved {
+        // Terminates: each step makes a longer name, and the record and stream are finite.
+        while record.get(&name).is_some_and(|v| !v.is_null())
+            || existing_schema
+                .get(&name)
+                .is_some_and(|f| !value_fits_type(&val, f.data_type(), schema_version))
+        {
+            name = format!("{name}_{suffix}");
+        }
+        record.insert(name, val);
+    }
+    record
+}
+
+/// Whether `value` can be stored in a column of `data_type`. Nested values are left to
+/// arrow when the column is nested too: `value_compatible_with_type` cannot judge them.
+fn value_fits_type(value: &Value, data_type: &DataType, schema_version: SchemaVersion) -> bool {
+    ((value.is_array() || value.is_object())
+        && (data_type.is_list() || matches!(data_type, DataType::Struct(_) | DataType::Map(_, _))))
+        || value_compatible_with_type(value, data_type, schema_version)
 }
 
 /// Per-record fallback when batch-level conflict detection misses a type
@@ -694,66 +750,40 @@ pub fn rename_per_record_type_mismatches(
             let Value::Object(map) = value else {
                 return value;
             };
-            let needs_rename = map.iter().any(|(key, val)| {
-                if val.is_null() {
-                    return false;
-                }
-                let target_type = existing_schema
-                    .get(key)
-                    .map(|f| f.data_type())
-                    .or_else(|| inferred_types.get(key.as_str()).copied());
-                let Some(target_type) = target_type else {
-                    return false;
-                };
-                if (val.is_array() || val.is_object())
-                    && (target_type.is_list()
-                        || matches!(target_type, DataType::Struct(_) | DataType::Map(_, _)))
-                {
-                    return false;
-                }
-                !value_compatible_with_type(val, target_type, schema_version)
-            });
-            if !needs_rename {
+            // Prefer storage's declared type; fall back to the inferred type so
+            // within-batch mismatches on new fields are caught. Nested values on a
+            // nested column are left to arrow (see `value_fits_type`); scalars still
+            // flow through the check, so an array on e.g. a Utf8 column is routed to a
+            // typed sibling rather than crashing decode.
+            let mismatched = |key: &str, val: &Value| {
+                !val.is_null()
+                    && existing_schema
+                        .get(key)
+                        .map(|f| f.data_type())
+                        .or_else(|| inferred_types.get(key).copied())
+                        .is_some_and(|t| !value_fits_type(val, t, schema_version))
+            };
+            if !map.iter().any(|(key, val)| mismatched(key, val)) {
                 return Value::Object(map);
             }
-            let new_map: serde_json::Map<String, Value> = map
+            let entries = map
                 .into_iter()
                 .map(|(key, val)| {
-                    if val.is_null() {
-                        return (key, val);
-                    }
-                    // Prefer storage's declared type; fall back to the inferred
-                    // type so within-batch mismatches on new fields are caught.
-                    let target_type = existing_schema
-                        .get(&key)
-                        .map(|f| f.data_type())
-                        .or_else(|| inferred_types.get(key.as_str()).copied());
-                    let Some(target_type) = target_type else {
-                        return (key, val);
-                    };
-                    // When the resolved target is a structural arrow type
-                    // (list/struct/map), arrow validates conformance at decode
-                    // time and value_compatible_with_type can't reliably judge
-                    // arrays/objects — skip to avoid spurious renames of valid
-                    // nested values. Scalars still flow through the check, so
-                    // an array landing on e.g. a Utf8 column is still routed
-                    // to a typed sibling rather than crashing decode.
-                    if (val.is_array() || val.is_object())
-                        && (target_type.is_list()
-                            || matches!(target_type, DataType::Struct(_) | DataType::Map(_, _)))
-                    {
-                        return (key, val);
-                    }
-                    if value_compatible_with_type(&val, target_type, schema_version) {
-                        return (key, val);
+                    if !mismatched(&key, &val) {
+                        return (key, val, None);
                     }
                     let data_type =
                         renamed_column_type(&key, [&val], schema_version, infer_timestamp);
-                    let new_key = format!("{key}_{}", get_datatype_suffix(&data_type));
-                    (new_key, val)
+                    let suffix = get_datatype_suffix(&data_type);
+                    let target = (format!("{key}_{suffix}"), suffix);
+                    (key, val, Some(target))
                 })
                 .collect();
-            Value::Object(new_map)
+            Value::Object(place_record_values(
+                entries,
+                existing_schema,
+                schema_version,
+            ))
         })
         .collect()
 }
@@ -1435,5 +1465,120 @@ mod tests {
             updated.field(0).data_type(),
             &DataType::Timestamp(TimeUnit::Millisecond, None)
         );
+    }
+
+    fn storage(fields: &[(&str, DataType)]) -> HashMap<String, Arc<Field>> {
+        fields
+            .iter()
+            .map(|(n, t)| (n.to_string(), Arc::new(Field::new(*n, t.clone(), true))))
+            .collect()
+    }
+
+    /// A record carrying both `f` (moving to `f_utf8`) and a literal `f_utf8` keeps both
+    /// values: the moved one chains to `f_utf8_utf8`, as the schema authority names it.
+    #[test]
+    fn rename_into_key_the_record_already_has_chains_suffix() {
+        let existing = storage(&[("f", DataType::Float64), ("f_utf8", DataType::Utf8)]);
+        let mapping = HashMap::from([("f".to_string(), "f_utf8".to_string())]);
+        let renamed = rename_conflicting_fields_in_json(
+            vec![
+                json!({"f": "moved", "f_utf8": "literal"}),
+                json!({"f": "alone"}),
+            ],
+            &mapping,
+            &existing,
+            SchemaVersion::V1,
+        );
+        assert_eq!(
+            renamed,
+            vec![
+                json!({"f_utf8": "literal", "f_utf8_utf8": "moved"}),
+                json!({"f_utf8": "alone"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn per_record_rename_into_key_the_record_already_has_chains_suffix() {
+        let existing = storage(&[("f", DataType::Float64), ("f_utf8", DataType::Utf8)]);
+        let inferred = Schema::new(vec![
+            Field::new("f", DataType::Float64, true),
+            Field::new("f_utf8", DataType::Utf8, true),
+        ]);
+        let renamed = rename_per_record_type_mismatches(
+            vec![
+                json!({"f": 1.5}),
+                json!({"f": "moved", "f_utf8": "literal"}),
+            ],
+            &inferred,
+            &existing,
+            SchemaVersion::V1,
+            true,
+        );
+        assert_eq!(renamed[0], json!({"f": 1.5}));
+        assert_eq!(
+            renamed[1],
+            json!({"f_utf8": "literal", "f_utf8_utf8": "moved"})
+        );
+    }
+
+    /// A target that is a stream column of another type is skipped the same way.
+    #[test]
+    fn rename_into_column_of_other_type_chains_suffix() {
+        let existing = storage(&[("f", DataType::Float64), ("f_utf8", DataType::Boolean)]);
+        let mapping = HashMap::from([("f".to_string(), "f_utf8".to_string())]);
+        let renamed = rename_conflicting_fields_in_json(
+            vec![json!({"f": "x"})],
+            &mapping,
+            &existing,
+            SchemaVersion::V1,
+        );
+        assert_eq!(renamed, vec![json!({"f_utf8_utf8": "x"})]);
+    }
+
+    /// The chain continues past every taken name, and a literal key whose own value moves
+    /// away frees its name for the value moving in.
+    #[test]
+    fn rename_chain_skips_every_taken_name_and_reuses_freed_ones() {
+        let existing = storage(&[("f", DataType::Float64), ("f_utf8", DataType::Utf8)]);
+        let mapping = HashMap::from([("f".to_string(), "f_utf8".to_string())]);
+        let renamed = rename_conflicting_fields_in_json(
+            vec![json!({"f": "m", "f_utf8": "a", "f_utf8_utf8": "b"})],
+            &mapping,
+            &existing,
+            SchemaVersion::V1,
+        );
+        assert_eq!(
+            renamed,
+            vec![json!({"f_utf8": "a", "f_utf8_utf8": "b", "f_utf8_utf8_utf8": "m"})]
+        );
+
+        // `f_utf8: true` cannot stay in the Utf8 `f_utf8` and moves to `f_utf8_bool`.
+        let inferred = Schema::new(vec![
+            Field::new("f", DataType::Utf8, true),
+            Field::new("f_utf8", DataType::Utf8, true),
+        ]);
+        let renamed = rename_per_record_type_mismatches(
+            vec![json!({"f": 1.5}), json!({"f": "m", "f_utf8": true})],
+            &inferred,
+            &existing,
+            SchemaVersion::V1,
+            true,
+        );
+        assert_eq!(renamed[1], json!({"f_utf8": "m", "f_utf8_bool": true}));
+    }
+
+    /// A null literal holds no value, so the moved value takes its name.
+    #[test]
+    fn rename_target_holding_null_is_reused() {
+        let existing = storage(&[("f", DataType::Float64), ("f_utf8", DataType::Utf8)]);
+        let mapping = HashMap::from([("f".to_string(), "f_utf8".to_string())]);
+        let renamed = rename_conflicting_fields_in_json(
+            vec![json!({"f": "x", "f_utf8": null})],
+            &mapping,
+            &existing,
+            SchemaVersion::V1,
+        );
+        assert_eq!(renamed, vec![json!({"f_utf8": "x"})]);
     }
 }
