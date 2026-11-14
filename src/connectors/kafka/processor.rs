@@ -38,7 +38,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use super::{ConsumerRecord, StreamConsumer, TopicPartition, config::BufferConfig};
 
@@ -136,21 +136,28 @@ fn build_and_process_event(
 /// Matches the ingest-side `Retry-After` for a stream blocked by schema resolution.
 const SCHEMA_BLOCKED_RETRY: Duration = Duration::from_secs(60);
 
-/// Chunks of one partition processed at once. A chunk blocked by schema resolution keeps
-/// its records until it succeeds, so an unbounded count would keep reading the partition
-/// into ever more held chunks for as long as the block lasts. With a bound, blocked chunks
-/// stop the reads instead: the partition's queue fills and the consumer waits.
-const MAX_CHUNKS_IN_FLIGHT: Option<usize> = Some(4);
+/// A chunk whose stream rejects writes until its schema is reconciled with the cluster.
+/// Carries the records back, so the chunk can be held (and its offsets left uncommitted)
+/// and retried instead of dropped.
+#[derive(thiserror::Error)]
+#[error("ingestion blocked by schema resolution: {reason}")]
+pub struct SchemaBlocked {
+    pub records: Vec<ConsumerRecord>,
+    reason: String,
+}
 
-fn is_schema_resolution_blocked(err: &anyhow::Error) -> bool {
-    matches!(
-        err.downcast_ref::<EventError>(),
-        Some(EventError::SchemaResolutionBlocked(_, _))
-    )
+impl std::fmt::Debug for SchemaBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SchemaBlocked")
+            .field("records", &self.records.len())
+            .field("reason", &self.reason)
+            .finish()
+    }
 }
 
 #[async_trait]
 impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
+    /// Fails with [`SchemaBlocked`] while the stream rejects writes.
     async fn process(&self, records: Vec<ConsumerRecord>) -> anyhow::Result<()> {
         let len = records.len();
         debug!("Processing {len} records");
@@ -158,38 +165,77 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
         let stream_name = records.first().map(|r| r.topic.clone()).unwrap_or_default();
         let tenant_id = records.first().and_then(|r| r.tenant_id.clone());
 
-        let mut records = records;
-        loop {
-            let meta = self.prepare_stream(&stream_name, &tenant_id).await?;
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let (name, tenant) = (stream_name.clone(), tenant_id.clone());
-            rayon::spawn(move || {
-                let res = build_and_process_event(&records, name, tenant, meta);
-                let _ = tx.send((records, res));
+        let meta = self.prepare_stream(&stream_name, &tenant_id).await?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        rayon::spawn(move || {
+            let res = build_and_process_event(&records, stream_name, tenant_id, meta);
+            let _ = tx.send((records, res));
+        });
+        let (records, res) = rx.await?;
+        if let Err(err) = res {
+            return Err(match err.downcast::<EventError>() {
+                Ok(EventError::SchemaResolutionBlocked(_, reason)) => {
+                    SchemaBlocked { records, reason }.into()
+                }
+                Ok(other) => other.into(),
+                Err(other) => other,
             });
-            let (returned, res) = rx.await?;
-            match res {
-                // The stream rejects writes until its schema is reconciled with the cluster.
-                // Committing now would drop these records, so hold the chunk (and its
-                // offsets) and retry once resolution had a chance to run.
-                Err(e) if is_schema_resolution_blocked(&e) => {
-                    warn!(
-                        stream = stream_name,
-                        "ingestion blocked by schema resolution, retrying {len} records in {}s: {e}",
-                        SCHEMA_BLOCKED_RETRY.as_secs()
-                    );
-                    records = returned;
-                    tokio::time::sleep(SCHEMA_BLOCKED_RETRY).await;
-                }
-                other => {
-                    other?;
-                    break;
-                }
-            }
         }
 
         debug!("Processed {len} records");
         Ok(())
+    }
+}
+
+/// Pauses fetching for one partition while any of its chunks is blocked by schema
+/// resolution, and resumes it when the last one goes through.
+///
+/// All partitions share one consumer loop, which waits whenever a partition's queue is
+/// full. Pausing keeps a blocked partition from filling its queue, so the loop keeps
+/// serving the other partitions; the blocked chunks hold at most what was already fetched.
+/// A resumed partition fetches again from the last record handed to the application, so
+/// nothing is skipped or read twice.
+struct PartitionPause<'a> {
+    consumer: &'a StreamConsumer,
+    tp: &'a TopicPartition,
+    blocked_chunks: std::sync::Mutex<usize>,
+}
+
+impl<'a> PartitionPause<'a> {
+    fn new(consumer: &'a StreamConsumer, tp: &'a TopicPartition) -> Self {
+        Self {
+            consumer,
+            tp,
+            blocked_chunks: std::sync::Mutex::new(0),
+        }
+    }
+
+    fn tpl(&self) -> rdkafka::TopicPartitionList {
+        let mut tpl = rdkafka::TopicPartitionList::new();
+        tpl.add_partition(&self.tp.topic, self.tp.partition);
+        tpl
+    }
+
+    fn hold(&self) {
+        let mut blocked = self.blocked_chunks.lock().expect("pause lock poisoned");
+        if *blocked == 0 {
+            match self.consumer.pause(&self.tpl()) {
+                Ok(()) => warn!("Paused {:?}: its stream rejects writes", self.tp),
+                Err(e) => error!(error = %e, "Failed to pause {:?}", self.tp),
+            }
+        }
+        *blocked += 1;
+    }
+
+    fn release(&self) {
+        let mut blocked = self.blocked_chunks.lock().expect("pause lock poisoned");
+        *blocked -= 1;
+        if *blocked == 0 {
+            match self.consumer.resume(&self.tpl()) {
+                Ok(()) => info!("Resumed {:?}", self.tp),
+                Err(e) => error!(error = %e, "Failed to resume {:?}", self.tp),
+            }
+        }
     }
 }
 
@@ -222,6 +268,45 @@ where
         }
     }
 
+    /// Processes one chunk, holding it while its stream is blocked by schema resolution:
+    /// committing then would drop its records. Returns once the chunk went through or
+    /// failed for another reason.
+    async fn process_chunk(
+        &self,
+        tp: &TopicPartition,
+        pause: &PartitionPause<'_>,
+        mut records: Vec<ConsumerRecord>,
+    ) -> anyhow::Result<()> {
+        let mut held = false;
+        let result = loop {
+            match self.processor.process(records).await {
+                Err(err) => match err.downcast::<SchemaBlocked>() {
+                    Ok(blocked) => {
+                        if !held {
+                            pause.hold();
+                            held = true;
+                        }
+                        warn!(
+                            "{:?}: {}; retrying {} records in {}s",
+                            tp,
+                            blocked.reason,
+                            blocked.records.len(),
+                            SCHEMA_BLOCKED_RETRY.as_secs()
+                        );
+                        records = blocked.records;
+                        tokio::time::sleep(SCHEMA_BLOCKED_RETRY).await;
+                    }
+                    Err(err) => break Err(err),
+                },
+                Ok(()) => break Ok(()),
+            }
+        };
+        if held {
+            pause.release();
+        }
+        result
+    }
+
     pub async fn process_partition(
         &self,
         tp: TopicPartition,
@@ -232,13 +317,17 @@ where
             self.buffer_config.buffer_size,
             self.buffer_config.buffer_timeout,
         );
+        let pause = PartitionPause::new(&self.consumer, &tp);
 
+        // Unbounded on purpose: blocked chunks must keep draining the partition's queue, or
+        // a full queue would stall the consumer loop shared by every partition. The pause
+        // bounds what a blocked partition holds.
         chunked_stream
-            .for_each_concurrent(MAX_CHUNKS_IN_FLIGHT, |records| async {
+            .for_each_concurrent(None, |records| async {
                 if let Some(last_record) = records.iter().max_by_key(|r| r.offset) {
                     let tpl = last_record.offset_to_commit().unwrap();
 
-                    if let Err(e) = self.processor.process(records).await {
+                    if let Err(e) = self.process_chunk(&tp, &pause, records).await {
                         error!("Failed to process records for {:?}: {:?}", tp, e);
                     }
 
