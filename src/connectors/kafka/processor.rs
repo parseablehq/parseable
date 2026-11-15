@@ -195,18 +195,30 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
 /// serving the other partitions; the blocked chunks hold at most what was already fetched.
 /// A resumed partition fetches again from the last record handed to the application, so
 /// nothing is skipped or read twice.
+///
+/// The pause belongs to the partition, not to one worker: it outlives a revoke, and a
+/// revoked worker can still be shutting down when a reassignment starts a new one. The
+/// count of blocked chunks is therefore shared by every worker of the partition, and the
+/// partition is paused exactly while it is above zero.
 struct PartitionPause<'a> {
     consumer: &'a StreamConsumer,
     tp: &'a TopicPartition,
-    blocked_chunks: std::sync::Mutex<usize>,
+    blocked: &'a BlockedChunks,
+    /// This worker's share of the partition's blocked chunks.
+    held: std::sync::atomic::AtomicUsize,
 }
 
 impl<'a> PartitionPause<'a> {
-    fn new(consumer: &'a StreamConsumer, tp: &'a TopicPartition) -> Self {
+    fn new(
+        consumer: &'a StreamConsumer,
+        tp: &'a TopicPartition,
+        blocked: &'a BlockedChunks,
+    ) -> Self {
         Self {
             consumer,
             tp,
-            blocked_chunks: std::sync::Mutex::new(0),
+            blocked,
+            held: std::sync::atomic::AtomicUsize::default(),
         }
     }
 
@@ -217,22 +229,20 @@ impl<'a> PartitionPause<'a> {
     }
 
     fn hold(&self) {
-        let mut blocked = self.blocked_chunks.lock().expect("pause lock poisoned");
-        if *blocked == 0 {
-            match self.consumer.pause(&self.tpl()) {
+        // A worker pauses on its first blocked chunk even if an older worker's pause should
+        // still be in effect: pausing again is harmless, and the new worker does not have
+        // to rely on that pause having survived the reassignment.
+        let first = self.held.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
+        self.blocked
+            .add(self.tp, first, || match self.consumer.pause(&self.tpl()) {
                 Ok(()) => warn!("Paused {:?}: its stream rejects writes", self.tp),
                 Err(e) => error!(error = %e, "Failed to pause {:?}", self.tp),
-            }
-        }
-        *blocked += 1;
+            });
     }
 
     fn release(&self) {
-        let mut blocked = self.blocked_chunks.lock().expect("pause lock poisoned");
-        *blocked -= 1;
-        if *blocked == 0 {
-            self.resume();
-        }
+        self.held.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.blocked.remove(self.tp, 1, || self.resume());
     }
 
     fn resume(&self) {
@@ -244,13 +254,56 @@ impl<'a> PartitionPause<'a> {
 }
 
 impl Drop for PartitionPause<'_> {
-    /// A revoked partition drops its worker with chunks still held. Resume it anyway, so a
-    /// later assignment of the partition does not start paused with nothing to resume it.
+    /// A revoked partition drops its worker with chunks still held. Give them back, so a
+    /// later assignment of the partition does not stay paused with nothing to resume it,
+    /// while a newer worker's blocked chunks keep it paused.
     fn drop(&mut self) {
-        let blocked = self.blocked_chunks.get_mut().map_or(0, |b| *b);
-        if blocked > 0 {
-            self.resume();
+        let held = *self.held.get_mut();
+        if held > 0 {
+            self.blocked.remove(self.tp, held, || self.resume());
         }
+    }
+}
+
+/// Blocked chunks per partition, across every worker of one consumer.
+#[derive(Default)]
+struct BlockedChunks<K = TopicPartition> {
+    counts: std::sync::Mutex<HashMap<K, usize>>,
+}
+
+impl<K: Eq + std::hash::Hash + Clone> BlockedChunks<K> {
+    /// Adds one blocked chunk of `tp`, calling `pause` if it is the first or `force` is
+    /// set. Runs `pause` under the lock, so pauses and resumes reach the consumer in count
+    /// order.
+    fn add(&self, tp: &K, force: bool, pause: impl FnOnce()) {
+        let mut counts = self.lock();
+        let count = counts.entry(tp.clone()).or_default();
+        if *count == 0 || force {
+            pause();
+        }
+        *count += 1;
+    }
+
+    /// Removes `n` blocked chunks of `tp`, calling `resume` (under the lock) if none is
+    /// left.
+    fn remove(&self, tp: &K, n: usize, resume: impl FnOnce()) {
+        let mut counts = self.lock();
+        let Some(count) = counts.get_mut(tp) else {
+            return;
+        };
+        *count = count.saturating_sub(n);
+        if *count == 0 {
+            counts.remove(tp);
+            resume();
+        }
+    }
+
+    /// Also used from `Drop`, which must not panic: the counts stay consistent even if a
+    /// holder panicked, since every update is a single step.
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<K, usize>> {
+        self.counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -312,6 +365,7 @@ where
     processor: Arc<P>,
     consumer: Arc<StreamConsumer>,
     buffer_config: BufferConfig,
+    blocked: Arc<BlockedChunks>,
 }
 
 impl<P> StreamWorker<P>
@@ -330,6 +384,7 @@ where
             processor,
             consumer,
             buffer_config,
+            blocked: Arc::default(),
         }
     }
 
@@ -382,7 +437,7 @@ where
             self.buffer_config.buffer_size,
             self.buffer_config.buffer_timeout,
         );
-        let pause = PartitionPause::new(&self.consumer, &tp);
+        let pause = PartitionPause::new(&self.consumer, &tp, &self.blocked);
         let commits = OrderedCommits::default();
 
         // Unbounded on purpose: blocked chunks must keep draining the partition's queue, or
@@ -442,6 +497,44 @@ mod tests {
         // Chunk 0 done: commits through the furthest consecutive chunk.
         assert_eq!(complete(&commits, 0, Some(10)), Some(30));
         assert_eq!(complete(&commits, 3, Some(40)), Some(40));
+    }
+
+    /// Applies one change to the counts and reports the pause or resume it made, if any.
+    fn hold(blocked: &BlockedChunks<u8>, first_of_worker: bool) -> Option<&'static str> {
+        let mut call = None;
+        blocked.add(&0, first_of_worker, || call = Some("pause"));
+        call
+    }
+
+    fn release(blocked: &BlockedChunks<u8>, n: usize) -> Option<&'static str> {
+        let mut call = None;
+        blocked.remove(&0, n, || call = Some("resume"));
+        call
+    }
+
+    #[test]
+    fn partition_paused_while_any_chunk_is_blocked() {
+        let blocked = BlockedChunks::<u8>::default();
+        assert_eq!(hold(&blocked, true), Some("pause"));
+        assert_eq!(hold(&blocked, false), None);
+        assert_eq!(release(&blocked, 1), None);
+        assert_eq!(release(&blocked, 1), Some("resume"));
+        // Nothing left to resume.
+        assert_eq!(release(&blocked, 1), None);
+    }
+
+    #[test]
+    fn revoked_worker_keeps_newer_workers_pause() {
+        let blocked = BlockedChunks::<u8>::default();
+        // The old worker pauses the partition with two blocked chunks, then is revoked.
+        assert_eq!(hold(&blocked, true), Some("pause"));
+        assert_eq!(hold(&blocked, false), None);
+        // The partition is reassigned and a new worker blocks before the old one is dropped.
+        assert_eq!(hold(&blocked, true), Some("pause"));
+        // Dropping the old worker gives back its two chunks without resuming.
+        assert_eq!(release(&blocked, 2), None);
+        // The new worker's chunk goes through and resumes the partition.
+        assert_eq!(release(&blocked, 1), Some("resume"));
     }
 
     #[test]
