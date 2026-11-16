@@ -270,12 +270,10 @@ impl Users {
                 && let Some(group) = groups.get(&group)
             {
                 let group_roles = &group.roles;
-                for role in group_roles {
-                    if let Some(roles) = roles().get(&tenant_id)
-                        && let Some(privilege_list) = roles.get(role)
-                    {
-                        for privelege in privilege_list.privileges() {
-                            permissions.extend(RoleBuilder::from(privelege).build());
+                for role_name in group_roles {
+                    if let Some(role) = role_for(&tenant_id, role_name) {
+                        for privilege in role.privileges() {
+                            permissions.extend(RoleBuilder::from(privilege).build());
                         }
                     }
                 }
@@ -512,6 +510,51 @@ mod system_role_tests {
             "tenant-without-a-role-map",
         );
 
+        assert!(permissions.contains(&Permission::Resource(
+            Action::Query,
+            Some(ParseableResourceType::Stream("*".to_string())),
+        )));
+    }
+
+    #[test]
+    fn group_only_global_querier_is_included_in_get_permissions() {
+        let tenant = "group-only-system-role-test".to_string();
+        let group_name = "global-query-group".to_string();
+        let (mut user, _) =
+            User::new_basic("group-query-user".to_string(), Some(tenant.clone()), false);
+        user.user_groups.insert(group_name.clone());
+
+        map::ROLES
+            .set(parking_lot::RwLock::new(HashMap::from([(
+                tenant.clone(),
+                HashMap::new(),
+            )])))
+            .expect("roles map should be uninitialized");
+        map::USERS
+            .set(parking_lot::RwLock::new(map::Users::from(vec![
+                user.clone(),
+            ])))
+            .expect("users map should be uninitialized");
+        map::SESSIONS
+            .set(parking_lot::RwLock::new(map::Sessions::default()))
+            .expect("sessions map should be uninitialized");
+        map::USER_GROUPS
+            .set(parking_lot::RwLock::new(map::UserGroups::default()))
+            .expect("user groups map should be uninitialized");
+
+        map::write_user_groups().insert(
+            user::UserGroup::new(
+                group_name,
+                HashSet::from([GLOBAL_QUERIER_ROLE.to_string()]),
+                HashSet::new(),
+            ),
+            &tenant,
+        );
+
+        let session = SessionKey::SessionId(ulid::Ulid::new());
+        Users.new_session(&user, session.clone(), TimeDelta::hours(1));
+
+        let permissions = Users.get_permissions(&session);
         assert!(permissions.contains(&Permission::Resource(
             Action::Query,
             Some(ParseableResourceType::Stream("*".to_string())),
