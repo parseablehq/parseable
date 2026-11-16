@@ -36,7 +36,7 @@ use crate::handlers::http::rbac::RBACError;
 use crate::parseable::DEFAULT_TENANT;
 use crate::rbac::map::{mut_sessions, mut_users, read_user_groups, roles, sessions, users};
 use crate::rbac::role::Action;
-use crate::rbac::role::model::{Role, RoleUI};
+use crate::rbac::role::model::{Role, RoleType, RoleUI};
 use crate::rbac::user::User;
 use crate::utils::get_tenant_id_from_key;
 
@@ -65,7 +65,7 @@ pub fn system_role(name: &str) -> Option<Role> {
 }
 
 pub fn is_system_role(name: &str) -> bool {
-    matches!(name, GLOBAL_INGESTOR_ROLE | GLOBAL_QUERIER_ROLE)
+    system_role(name).is_some()
 }
 
 pub fn role_for(tenant_id: &str, name: &str) -> Option<Role> {
@@ -81,6 +81,16 @@ pub fn role_exists(tenant_id: &str, name: &str) -> bool {
         || roles()
             .get(tenant_id)
             .is_some_and(|roles| roles.contains_key(name))
+}
+
+/// Whether a role can be assigned to a user group. System roles are
+/// assignable, while other server-internal roles remain protected.
+pub fn role_assignable_to_group(tenant_id: &str, name: &str) -> bool {
+    is_system_role(name)
+        || roles()
+            .get(tenant_id)
+            .and_then(|roles| roles.get(name))
+            .is_some_and(|role| role.role_type().eq(&RoleType::User))
 }
 
 #[derive(PartialEq, Debug)]
@@ -482,4 +492,29 @@ pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permissio
         };
     }
     perms.into_iter().collect()
+}
+
+#[cfg(test)]
+mod system_role_tests {
+    use super::*;
+
+    #[test]
+    fn system_roles_are_assignable_to_groups() {
+        for role in [GLOBAL_INGESTOR_ROLE, GLOBAL_QUERIER_ROLE] {
+            assert!(role_assignable_to_group("tenant-without-a-role-map", role));
+        }
+    }
+
+    #[test]
+    fn global_querier_grants_query_access_to_all_streams() {
+        let permissions = roles_to_permission(
+            vec![GLOBAL_QUERIER_ROLE.to_string()],
+            "tenant-without-a-role-map",
+        );
+
+        assert!(permissions.contains(&Permission::Resource(
+            Action::Query,
+            Some(ParseableResourceType::Stream("*".to_string())),
+        )));
+    }
 }

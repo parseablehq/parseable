@@ -25,7 +25,7 @@ use crate::{parseable::PARSEABLE, storage::StorageMetadata};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use super::Response;
+use super::{Response, role_for};
 use super::{
     role::{Action, Permission, RoleBuilder, model::DefaultPrivilege},
     user,
@@ -522,19 +522,12 @@ fn aggregate_group_permissions(username: &str, tenant_id: &String) -> HashSet<Pe
             && let Some(group) = groups.get(group_name)
         {
             for role_name in group.roles.iter() {
-                let roles = if let Some(tenant_roles) = roles().get(tenant_id)
-                    && let Some(role) = tenant_roles.get(role_name)
-                {
-                    role.clone()
-                } else {
+                let Some(role) = role_for(tenant_id, role_name) else {
                     continue;
                 };
-                // let Some(privileges) = roles().get(role_name).cloned() else {
-                //     continue;
-                // };
 
-                for role in roles.privileges() {
-                    group_perms.extend(RoleBuilder::from(role).build());
+                for privilege in role.privileges() {
+                    group_perms.extend(RoleBuilder::from(privilege).build());
                 }
             }
         } else {

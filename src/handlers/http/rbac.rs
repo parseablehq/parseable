@@ -22,7 +22,7 @@ use crate::{
     parseable::DEFAULT_TENANT,
     rbac::{
         self, Users,
-        map::{read_user_groups, roles, users},
+        map::{read_user_groups, users},
         role::model::Role,
         user::{self, UpdateUser, UserType},
         utils::to_prism_user,
@@ -307,13 +307,7 @@ pub fn get_role_internal(
                 .roles
                 .iter()
                 .filter_map(|role_name| {
-                    if let Some(roles) = roles().get(tenant)
-                        && let Some(role) = roles.get(role_name)
-                    {
-                        Some((role_name.to_owned(), role.clone()))
-                    } else {
-                        None
-                    }
+                    rbac::role_for(tenant, role_name).map(|role| (role_name.to_owned(), role))
                 })
                 .collect();
             group_roles.insert(group.name.clone(), ug_roles);

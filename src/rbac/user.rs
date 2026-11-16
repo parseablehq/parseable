@@ -40,7 +40,7 @@ use crate::{
         Users,
         map::{mut_sessions, read_user_groups, roles, users},
         role::model::RoleType,
-        roles_to_permission,
+        role_assignable_to_group, roles_to_permission,
     },
 };
 
@@ -505,19 +505,10 @@ impl UserGroup {
         }
         let mut non_existent_roles = Vec::new();
         if !self.roles.is_empty() {
-            // validate that the roles exist
-            // can't add internal roles to a group
-            if let Some(tenant_roles) = roles().get(tenant) {
-                for role in &self.roles {
-                    if let Some(role) = tenant_roles.get(role)
-                        && role.role_type().eq(&RoleType::User)
-                    {
-                    } else {
-                        non_existent_roles.push(role.clone());
-                    }
+            for role_name in &self.roles {
+                if !role_assignable_to_group(tenant, role_name) {
+                    non_existent_roles.push(role_name.clone());
                 }
-            } else {
-                non_existent_roles.extend(self.roles.iter().cloned());
             }
         }
         let mut non_existent_users = Vec::new();

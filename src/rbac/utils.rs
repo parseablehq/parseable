@@ -26,7 +26,6 @@ use crate::{
 
 use super::{
     Users, UsersPrism,
-    map::roles,
     user::{User, UserType},
 };
 
@@ -78,13 +77,7 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
                 .roles
                 .iter()
                 .filter_map(|role_name| {
-                    roles()
-                        .get(tenant_id)
-                        .filter(|roles| roles.get(role_name).is_some())
-                        .map(|roles| {
-                            let role = roles.get(role_name).unwrap();
-                            (role_name.to_owned(), RoleUI(role.clone()))
-                        })
+                    role_for(tenant_id, role_name).map(|role| (role_name.to_owned(), RoleUI(role)))
                 })
                 .collect();
             group_roles.insert(group.name.clone(), ug_roles);
