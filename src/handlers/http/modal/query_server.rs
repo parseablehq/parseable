@@ -261,9 +261,10 @@ impl QueryServer {
         web::scope("/internal/schema").service(
             web::resource("/resolve")
                 .route(
+                    // Authorised in the handler: a cluster-secret caller is a node, not a
+                    // user (see `authority::caller_tenant`).
                     web::post()
                         .to(schema_registry::authority::resolve_handler)
-                        .authorize(Action::ResolveSchema)
                         .wrap(IntraClusterRequest),
                 )
                 .app_data(web::JsonConfig::default().limit(1 << 20)),

@@ -135,7 +135,9 @@ fn headers(target: &Target, tenant_id: &Option<String>) -> header::HeaderMap {
             header::HeaderValue::from_str(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
         {
             map.insert(
-                header::HeaderName::from_static("intra-cluster-tenant"),
+                header::HeaderName::from_static(
+                    crate::handlers::http::middleware::INTRA_CLUSTER_TENANT_HEADER,
+                ),
                 tenant,
             );
         }

@@ -27,7 +27,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use actix_web::{HttpRequest, HttpResponse, ResponseError, http::StatusCode, web};
+use actix_web::{
+    HttpRequest, HttpResponse, ResponseError, error::ErrorUnauthorized, http::StatusCode, web,
+};
 use arrow_schema::{Field, Schema};
 use once_cell::sync::Lazy;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
@@ -38,8 +40,10 @@ use crate::{
         DEFAULT_TIMESTAMP_KEY, FORMAT_KEY, FORMAT_VERIFY_KEY, SOURCE_IP_KEY, USER_AGENT_KEY,
         commit_schema,
     },
+    handlers::http::middleware::{CLUSTER_SECRET, INTRA_CLUSTER_TENANT_HEADER},
     parseable::{DEFAULT_TENANT, PARSEABLE, Stream},
-    utils::get_tenant_id_from_request,
+    rbac::{self, Users, role::Action},
+    utils::{actix::extract_session_key_from_req, get_tenant_id_from_key},
 };
 
 use super::{
@@ -348,10 +352,34 @@ async fn load_registry(
     Ok(registry)
 }
 
-/// The tenant comes from authentication, never from the body: with `P_CLUSTER_SECRET` the
-/// route only admits verified intra-cluster requests and the tenant is their
-/// `intra-cluster-tenant`; without it, the caller's own tenant. The body may only repeat it,
-/// so no caller can name another tenant. Returns `None` for the default tenant.
+/// Authenticates the caller and returns the tenant it acts for.
+///
+/// With `P_CLUSTER_SECRET`, the route's `IntraClusterRequest` has already verified the
+/// secret, which only cluster nodes hold. The caller is that node, acting for the tenant it
+/// names in `intra-cluster-tenant`: an ingestor resolves on its own behalf, so no user of
+/// that tenant is involved, and none need exist under the user id it sends. The secret
+/// already lets a node act as any user of any tenant, so this grants nothing more.
+///
+/// Without the secret the caller is a user, who must be allowed `ResolveSchema` and acts
+/// for their own tenant.
+fn caller_tenant(req: &HttpRequest) -> Result<Option<String>, actix_web::Error> {
+    if CLUSTER_SECRET.get().is_some() {
+        return Ok(req
+            .headers()
+            .get(INTRA_CLUSTER_TENANT_HEADER)
+            .and_then(|tenant| tenant.to_str().ok())
+            .map(String::from));
+    }
+    let key = extract_session_key_from_req(req)?;
+    match Users.authorize(key.clone(), Action::ResolveSchema, None, None) {
+        rbac::Response::Authorized => Ok(get_tenant_id_from_key(&key)),
+        _ => Err(ErrorUnauthorized("not allowed to resolve schemas")),
+    }
+}
+
+/// The tenant comes from authentication (see [`caller_tenant`]), never from the body. The
+/// body may only repeat it, so no caller can name another tenant. Returns `None` for the
+/// default tenant.
 fn authorized_tenant(
     header: Option<String>,
     body: Option<String>,
@@ -370,9 +398,9 @@ fn authorized_tenant(
 pub async fn resolve_handler(
     req: HttpRequest,
     body: web::Json<ResolveRequest>,
-) -> Result<HttpResponse, AuthorityError> {
+) -> Result<HttpResponse, actix_web::Error> {
     let mut body = body.into_inner();
-    body.tenant_id = authorized_tenant(get_tenant_id_from_request(&req), body.tenant_id)?;
+    body.tenant_id = authorized_tenant(caller_tenant(&req)?, body.tenant_id)?;
     let response = SCHEMA_AUTHORITY.resolve(body).await?;
     Ok(HttpResponse::Ok().json(response))
 }

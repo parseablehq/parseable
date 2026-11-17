@@ -57,6 +57,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 pub const CLUSTER_SECRET_HEADER: &str = "x-p-cluster-secret";
+/// Tenant an intra-cluster request acts for, trusted once the cluster secret is verified.
+pub const INTRA_CLUSTER_TENANT_HEADER: &str = "intra-cluster-tenant";
 pub static CLUSTER_SECRET: OnceCell<(String, String)> = OnceCell::new();
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -719,7 +721,7 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let (err, id) = if let Some((secret, _)) = CLUSTER_SECRET.get() {
             if let Some(header) = req.headers().get(CLUSTER_SECRET_HEADER)
-                && let Some(tenant) = req.headers().get("intra-cluster-tenant")
+                && let Some(tenant) = req.headers().get(INTRA_CLUSTER_TENANT_HEADER)
                 && let Some(userid) = req.headers().get("intra-cluster-userid")
                 && let Ok(incoming_secret) = header.to_str()
                 && let Ok(tenant) = tenant.to_str()
