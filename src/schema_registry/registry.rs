@@ -65,6 +65,10 @@ impl StreamRegistry {
         // A rename target must not be a column the same files already carry, or renaming
         // would leave two columns with one name in a file (e.g. `a` and `a_utf8` together).
         let proposed_names: HashSet<&str> = proposals.iter().map(|f| f.name().as_str()).collect();
+        // Nor may two proposals be renamed to the same column: a file carrying `a` and
+        // `a_utf8` (both Utf8) next to registered `a_utf8: Boolean` would otherwise send
+        // both to an existing `a_utf8_utf8`.
+        let mut granted: HashSet<String> = HashSet::new();
 
         for proposal in proposals {
             let proposed = proposal.data_type();
@@ -80,7 +84,8 @@ impl StreamRegistry {
             let mut name = original.clone();
             let mut depth = 0;
             let resolution = loop {
-                let taken_by_request = depth > 0 && proposed_names.contains(name.as_str());
+                let taken_by_request = depth > 0
+                    && (proposed_names.contains(name.as_str()) || granted.contains(&name));
                 match lookup(&name, &overlay) {
                     None if !taken_by_request => {
                         overlay.insert(name.clone(), proposed.clone());
@@ -135,6 +140,9 @@ impl StreamRegistry {
                     }
                 }
             };
+            if resolution.resolved_name != resolution.original_name {
+                granted.insert(resolution.resolved_name.clone());
+            }
             out.resolutions.push(resolution);
         }
         out
@@ -249,24 +257,56 @@ mod tests {
 
     #[test]
     fn suffix_chain_continues_until_a_free_name() {
-        // Every list type shares the `list` suffix, so each new list type goes one level deeper.
+        // The typed name is taken by another type twice over: the chain goes on until free.
         let list = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
         let r = reg(&[
             ("a", list(DataType::Int64)),
-            ("a_list", list(DataType::Float64)),
-            ("a_list_list", list(DataType::Utf8)),
-            ("a_list_list_list", list(DataType::Boolean)),
+            ("a_list_date", DataType::Boolean),
+            ("a_list_date_list_date", DataType::Utf8),
         ]);
         let res = r.resolve(&[f("a", list(DataType::Date32))]);
-        assert_eq!(res.resolutions[0].resolved_name, "a_list_list_list_list");
+        assert_eq!(
+            res.resolutions[0].resolved_name,
+            "a_list_date_list_date_list_date"
+        );
         assert_eq!(res.resolutions[0].outcome, Outcome::Renamed);
         assert_eq!(
             res.registered,
-            vec![("a_list_list_list_list".to_string(), list(DataType::Date32))]
+            vec![(
+                "a_list_date_list_date_list_date".to_string(),
+                list(DataType::Date32)
+            )]
         );
-        // An already registered list type still resolves to its existing column.
-        let res = r.resolve(&[f("a", list(DataType::Utf8))]);
-        assert_eq!(res.resolutions[0].resolved_name, "a_list_list");
+    }
+
+    #[test]
+    fn each_list_type_gets_its_own_column() {
+        // The suffix names the element type, so list types of one field never share a
+        // column, however many there are, and an ingestor renaming locally lands on the
+        // same name. An old `a_list` column (named before suffixes carried the element
+        // type) is left as it is: new data of that type goes to the typed name.
+        let list = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
+        let r = reg(&[("a", DataType::Float64), ("a_list", list(DataType::Utf8))]);
+        let res = r.resolve(&[
+            f("a", list(DataType::Utf8)),
+            f("a", list(list(DataType::Int64))),
+        ]);
+        let names: Vec<&str> = res
+            .resolutions
+            .iter()
+            .map(|x| x.resolved_name.as_str())
+            .collect();
+        assert_eq!(names, ["a_list_utf8", "a_list_list_int64"]);
+        assert!(
+            res.resolutions
+                .iter()
+                .all(|x| x.outcome == Outcome::Renamed)
+        );
+        // Asked again, the same type resolves to its column.
+        let mut r = r;
+        r.apply(&res.registered);
+        let res = r.resolve(&[f("a", list(list(DataType::Int64)))]);
+        assert_eq!(res.resolutions[0].resolved_name, "a_list_list_int64");
         assert_eq!(res.resolutions[0].outcome, Outcome::AlreadyRenamed);
     }
 
@@ -347,6 +387,38 @@ mod tests {
             };
             assert_eq!(by_name("a"), "a_utf8_utf8");
             assert_eq!(by_name("a_utf8"), "a_utf8");
+        }
+    }
+
+    #[test]
+    fn two_proposals_never_share_an_existing_rename_target() {
+        // Registered: `a` and `a_utf8` hold other types, `a_utf8_utf8` already holds Utf8
+        // (an earlier rename). A file carrying `a: Utf8` and `a_utf8: Utf8` must get two
+        // different targets, whatever the order of the proposals.
+        for order in [
+            [f("a", DataType::Utf8), f("a_utf8", DataType::Utf8)],
+            [f("a_utf8", DataType::Utf8), f("a", DataType::Utf8)],
+        ] {
+            let r = reg(&[
+                ("a", DataType::Float64),
+                ("a_utf8", DataType::Boolean),
+                ("a_utf8_utf8", DataType::Utf8),
+            ]);
+            let res = r.resolve(&order);
+            let targets: Vec<&str> = res
+                .resolutions
+                .iter()
+                .map(|x| x.resolved_name.as_str())
+                .collect();
+            assert_eq!(targets.len(), 2);
+            assert_ne!(targets[0], targets[1], "{targets:?}");
+            assert!(
+                res.resolutions
+                    .iter()
+                    .all(|x| x.data_type == DataType::Utf8 && x.resolved_name != x.original_name),
+                "{:?}",
+                res.resolutions
+            );
         }
     }
 }

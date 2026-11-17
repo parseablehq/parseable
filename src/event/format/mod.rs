@@ -18,6 +18,7 @@
  */
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     fmt::Display,
     sync::Arc,
@@ -423,7 +424,20 @@ pub fn override_data_type(
 
 /// Returns a short suffix string for a given DataType to be used in field renaming
 /// when schema conflicts occur.
-pub fn get_datatype_suffix(data_type: &DataType) -> &'static str {
+///
+/// Lists carry their element type (`list_utf8`, `list_list_int64`), so two list types of
+/// one field get different columns. Ingestion and the schema authority both name renames
+/// with this function, so they pick the same column for the same type.
+pub fn get_datatype_suffix(data_type: &DataType) -> Cow<'static, str> {
+    match data_type {
+        DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _) => {
+            Cow::Owned(format!("list_{}", get_datatype_suffix(item.data_type())))
+        }
+        other => Cow::Borrowed(scalar_datatype_suffix(other)),
+    }
+}
+
+fn scalar_datatype_suffix(data_type: &DataType) -> &'static str {
     match data_type {
         DataType::Null => "null",
         DataType::Boolean => "bool",
@@ -446,7 +460,6 @@ pub fn get_datatype_suffix(data_type: &DataType) -> &'static str {
         DataType::Timestamp(TimeUnit::Microsecond, _) => "timestamp_us",
         DataType::Timestamp(TimeUnit::Nanosecond, _) => "timestamp_ns",
         DataType::Time32(_) | DataType::Time64(_) => "time",
-        DataType::List(_) | DataType::LargeList(_) => "list",
         DataType::Struct(_) => "struct",
         DataType::Map(_, _) => "map",
         _ => "unknown",
@@ -637,7 +650,7 @@ pub fn rename_conflicting_fields_in_json(
                         .strip_prefix(key.as_str())
                         .and_then(|rest| rest.strip_prefix('_'))
                         .unwrap_or(new_key);
-                    let target = (new_key.clone(), suffix);
+                    let target = (new_key.clone(), Cow::Borrowed(suffix));
                     (key, val, Some(target))
                 })
                 .collect();
@@ -652,7 +665,7 @@ pub fn rename_conflicting_fields_in_json(
 
 /// One key of a record, its value, and where the value moves: the target name
 /// `<key>_<suffix>` and the suffix, or `None` to keep the key.
-type RecordEntry<'a> = (String, Value, Option<(String, &'a str)>);
+type RecordEntry<'a> = (String, Value, Option<(String, Cow<'a, str>)>);
 
 /// Builds one record from its `(key, value, move)` entries, where `move` is the typed
 /// sibling name `<key>_<suffix>` a value moves to plus that suffix (`None` keeps the key).
@@ -678,11 +691,18 @@ fn place_record_values(
         }
     }
     for (mut name, suffix, val) in moved {
+        // A nested value's type is its suffix (`list_utf8`): a column of another nested
+        // type is taken even though arrays "fit" any list column. Scalars go by value.
+        let taken_by = |f: &Field| {
+            if val.is_array() || val.is_object() {
+                get_datatype_suffix(f.data_type()) != suffix
+            } else {
+                !value_fits_type(&val, f.data_type(), schema_version)
+            }
+        };
         // Terminates: each step makes a longer name, and the record and stream are finite.
         while record.get(&name).is_some_and(|v| !v.is_null())
-            || existing_schema
-                .get(&name)
-                .is_some_and(|f| !value_fits_type(&val, f.data_type(), schema_version))
+            || existing_schema.get(&name).is_some_and(|f| taken_by(f))
         {
             name = format!("{name}_{suffix}");
         }

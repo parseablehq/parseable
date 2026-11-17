@@ -821,10 +821,60 @@ mod tests {
                 "{label}"
             );
             assert!(
-                name.ends_with(super::super::get_datatype_suffix(&data_type)),
+                name.ends_with(&*super::super::get_datatype_suffix(&data_type)),
                 "{label}"
             );
         }
+    }
+
+    /// A conflicting list goes to a column named after its element type, so a field that
+    /// changes list type (`[1.5]`, then `["a"]`) gets a second column instead of the first
+    /// list column rejecting the batch.
+    #[test]
+    fn list_types_of_one_field_get_their_own_columns() {
+        let list = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
+        let existing = [
+            ("x", DataType::Float64),
+            ("x_list_float64", list(DataType::Float64)),
+        ];
+        assert_eq!(
+            new_columns(&existing, json!({"x": ["a"]}), SchemaVersion::V1, true),
+            vec![("x_list_utf8".to_string(), list(DataType::Utf8))]
+        );
+    }
+
+    /// After a resolution an ingestor holds another ingestor's list type in a typed column
+    /// (`f_list_utf8`). Its own list type still lands in a column of its type.
+    #[test]
+    fn nested_list_lands_next_to_another_ingestors_list_column() {
+        let list = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
+        let existing = [
+            ("f", DataType::Float64),
+            ("f_list_utf8", list(DataType::Utf8)),
+        ];
+        let added = new_columns(&existing, json!({"f": [[1]]}), SchemaVersion::V1, true);
+        assert_eq!(added.len(), 1, "{added:?}");
+        let (name, data_type) = &added[0];
+        assert!(matches!(data_type, DataType::List(item) if item.data_type().is_list()));
+        assert_eq!(
+            *name,
+            format!("f_{}", super::super::get_datatype_suffix(data_type))
+        );
+    }
+
+    /// A list whose typed name is taken by a list of another type (a literal column of
+    /// that name) chains, like a scalar, instead of being decoded into the wrong list.
+    #[test]
+    fn list_rename_chains_past_a_list_column_of_another_type() {
+        let list = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
+        let existing = [
+            ("f", DataType::Float64),
+            ("f_list_utf8", list(DataType::Float64)),
+        ];
+        assert_eq!(
+            new_columns(&existing, json!({"f": ["a"]}), SchemaVersion::V1, true),
+            vec![("f_list_utf8_list_utf8".to_string(), list(DataType::Utf8))]
+        );
     }
 
     /// An event carrying both a conflicting `f` and a literal `f_utf8` keeps both values

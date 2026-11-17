@@ -31,6 +31,7 @@ use actix_web::{
     HttpRequest, HttpResponse, ResponseError, error::ErrorUnauthorized, http::StatusCode, web,
 };
 use arrow_schema::{Field, Schema};
+use bytes::Bytes;
 use once_cell::sync::Lazy;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tracing::{info, warn};
@@ -43,6 +44,7 @@ use crate::{
     handlers::http::middleware::{CLUSTER_SECRET, INTRA_CLUSTER_TENANT_HEADER},
     parseable::{DEFAULT_TENANT, PARSEABLE, Stream},
     rbac::{self, Users, role::Action},
+    storage::ObjectStorageError,
     utils::{actix::extract_session_key_from_req, get_tenant_id_from_key},
 };
 
@@ -297,6 +299,31 @@ fn registry_schema(registry: &StreamRegistry) -> Schema {
     )
 }
 
+/// The saved registry, or `None` only when it does not exist yet.
+///
+/// Any other read failure, or a file that does not decode, is an error: seeding a new
+/// registry from the per-node schemas instead could change types already granted (the
+/// first type in listing order wins), and saving it would make that permanent while
+/// ingestors keep writing the old types.
+fn authoritative_schema(
+    stream: &str,
+    read: Result<Bytes, ObjectStorageError>,
+) -> Result<Option<Schema>, AuthorityError> {
+    match read {
+        Ok(bytes) => serde_json::from_slice::<Schema>(&bytes)
+            .map(Some)
+            .map_err(|e| {
+                AuthorityError::Unavailable(format!(
+                    "schema registry of stream {stream} is unreadable: {e}"
+                ))
+            }),
+        Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
+        Err(e) => Err(AuthorityError::Unavailable(format!(
+            "could not read schema registry of stream {stream}: {e}"
+        ))),
+    }
+}
+
 /// Seeds a registry from the authoritative `.schema` first, then from every per-node
 /// schema file (first type wins). Persists immediately when seeding added fields, so a
 /// restart re-seeds to the same answer regardless of listing order.
@@ -310,13 +337,12 @@ async fn load_registry(
         ..Default::default()
     };
     let storage = PARSEABLE.storage.get_object_store();
-    let authoritative = match storage
-        .get_object(&authoritative_schema_path(stream, tenant_id), tenant_id)
-        .await
-    {
-        Ok(bytes) => serde_json::from_slice::<Schema>(&bytes).ok(),
-        Err(_) => None,
-    };
+    let authoritative = authoritative_schema(
+        stream,
+        storage
+            .get_object(&authoritative_schema_path(stream, tenant_id), tenant_id)
+            .await,
+    )?;
     let mut persisted_fields = 0;
     if let Some(schema) = &authoritative {
         registry.version = schema
@@ -409,6 +435,31 @@ pub async fn resolve_handler(
 mod tests {
     use super::*;
     use arrow_schema::DataType;
+
+    #[test]
+    fn registry_is_seeded_only_when_the_saved_one_is_missing() {
+        let mut r = StreamRegistry::default();
+        r.fields.insert("a".into(), DataType::Int64);
+        let saved = Bytes::from(serde_json::to_vec(&registry_schema(&r)).unwrap());
+        let schema = authoritative_schema("s", Ok(saved)).unwrap().unwrap();
+        assert_eq!(schema.field(0).name(), "a");
+
+        assert!(
+            authoritative_schema("s", Err(ObjectStorageError::NoSuchKey("k".into())))
+                .unwrap()
+                .is_none()
+        );
+        // A failed read or a corrupt file must not look like a missing registry: the
+        // caller would re-seed and could change granted types.
+        assert!(matches!(
+            authoritative_schema("s", Err(ObjectStorageError::Custom("timeout".into()))),
+            Err(AuthorityError::Unavailable(_))
+        ));
+        assert!(matches!(
+            authoritative_schema("s", Ok(Bytes::from_static(b"{not json"))),
+            Err(AuthorityError::Unavailable(_))
+        ));
+    }
 
     #[test]
     fn registry_schema_carries_version_and_sorted_fields() {
