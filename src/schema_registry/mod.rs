@@ -72,6 +72,39 @@ pub fn authoritative_schema_path(stream: &str, tenant_id: &Option<String>) -> Re
     RelativePathBuf::from_iter([tenant, stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME])
 }
 
+/// Strictly merges schemas read from storage, ignoring the registry version.
+///
+/// The authority stamps its registry version into the stream-level schema's metadata, and a
+/// node that builds its schema from all stored schemas copies the stamp into its own file.
+/// Once the authority moves on, the copies disagree, and a strict merge would refuse them
+/// (a node then cannot start). Only the highest version is kept: the authority's.
+pub fn merge_stored_schemas(
+    schemas: impl IntoIterator<Item = Schema>,
+) -> Result<Schema, arrow_schema::ArrowError> {
+    let mut version: Option<u64> = None;
+    let schemas: Vec<Schema> = schemas
+        .into_iter()
+        .map(|schema| {
+            let mut metadata = schema.metadata().clone();
+            if let Some(v) = metadata
+                .remove(authority::REGISTRY_VERSION_KEY)
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                version = Some(version.map_or(v, |cur| cur.max(v)));
+            }
+            Schema::new_with_metadata(schema.fields().clone(), metadata)
+        })
+        .collect();
+    let mut merged = Schema::try_merge(schemas)?;
+    if let Some(version) = version {
+        merged.metadata.insert(
+            authority::REGISTRY_VERSION_KEY.to_owned(),
+            version.to_string(),
+        );
+    }
+    Ok(merged)
+}
+
 /// Unions schemas without ever failing: the first type seen for a field name wins and
 /// later conflicting types are skipped with a warning. Metadata of the first schema is kept.
 pub fn merge_schemas_tolerant(stream: &str, schemas: impl IntoIterator<Item = Schema>) -> Schema {
@@ -117,6 +150,46 @@ pub fn merge_schemas_tolerant(stream: &str, schemas: impl IntoIterator<Item = Sc
 mod tests {
     use super::*;
     use arrow_schema::DataType;
+
+    #[test]
+    fn stored_schemas_with_different_registry_versions_merge() {
+        // The authority's `.schema` at version 18, a node's file with a stale copy (17) and a
+        // node's file without one: a node restarting now must still build its schema.
+        let with_version = |fields: Vec<Field>, v: Option<&str>| {
+            let metadata = v
+                .map(|v| {
+                    HashMap::from([(authority::REGISTRY_VERSION_KEY.to_owned(), v.to_owned())])
+                })
+                .unwrap_or_default();
+            Schema::new_with_metadata(fields, metadata)
+        };
+        let merged = merge_stored_schemas([
+            with_version(vec![Field::new("a", DataType::Utf8, true)], Some("18")),
+            with_version(vec![Field::new("b", DataType::Int64, true)], Some("17")),
+            with_version(vec![Field::new("a", DataType::Utf8, true)], None),
+        ])
+        .unwrap();
+        assert_eq!(merged.fields().len(), 2);
+        assert_eq!(merged.metadata()[authority::REGISTRY_VERSION_KEY], "18");
+
+        // Without any stamp nothing is added, and a real type conflict still fails.
+        assert!(
+            merge_stored_schemas([with_version(
+                vec![Field::new("a", DataType::Utf8, true)],
+                None
+            )])
+            .unwrap()
+            .metadata()
+            .is_empty()
+        );
+        assert!(
+            merge_stored_schemas([
+                with_version(vec![Field::new("a", DataType::Utf8, true)], Some("1")),
+                with_version(vec![Field::new("a", DataType::Int64, true)], Some("2")),
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn tolerant_merge_keeps_first_type() {

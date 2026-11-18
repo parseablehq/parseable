@@ -27,6 +27,12 @@ pub const PROTOCOL_HEADER: &str = "x-p-schema-proto";
 /// Path (relative to the API base path) of the resolve endpoint on the authority.
 pub const RESOLVE_PATH: &str = "internal/schema/resolve";
 
+/// Largest resolve request the authority accepts. A request carries every unresolved field
+/// of the files being converted (all columns of a file whose renames collide), so its size
+/// is bounded by the stream's width. A nested list field serializes to ~320 bytes: a file
+/// at the default field limit fits several times over.
+pub const RESOLVE_REQUEST_LIMIT: usize = 1 << 20;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ResolveRequest {
     pub protocol_version: u32,
@@ -109,6 +115,34 @@ pub struct ResolveErrorBody {
 mod tests {
     use super::*;
     use arrow_schema::TimeUnit;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_request_for_a_full_width_stream_fits_the_authority_limit() {
+        // Every column of a stream at the default field limit, each a nested list named
+        // like a conflict rename: the largest request a default stream can send.
+        let item = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
+        let fields = (0..crate::cli::DATASET_FIELD_COUNT_LIMIT)
+            .map(|i| {
+                Field::new(
+                    format!("field_{i}_list_list_utf8"),
+                    item(item(DataType::Utf8)),
+                    true,
+                )
+            })
+            .collect();
+        let req = ResolveRequest {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: Ulid::new(),
+            node_id: "ingestor-0123456789".into(),
+            tenant_id: Some("tenant".into()),
+            stream: "stream".into(),
+            known_version: 1,
+            fields,
+        };
+        let size = serde_json::to_vec(&req).unwrap().len();
+        assert!(size < RESOLVE_REQUEST_LIMIT, "{size}");
+    }
 
     #[test]
     fn request_round_trips_arrow_types() {

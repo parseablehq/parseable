@@ -446,6 +446,72 @@ mod tests {
         );
     }
 
+    fn write_arrow_columns(dir: &Path, name: &str, columns: &[(&str, &str)]) -> PathBuf {
+        let path = dir.join(name);
+        let schema = Arc::new(Schema::new(
+            columns
+                .iter()
+                .map(|(n, _)| Field::new(*n, DataType::Utf8, true))
+                .collect::<Vec<_>>(),
+        ));
+        let arrays: Vec<ArrayRef> = columns
+            .iter()
+            .map(|(_, v)| Arc::new(StringArray::from(vec![*v])) as ArrayRef)
+            .collect();
+        let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+        let mut w = StreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+        w.write(&batch).unwrap();
+        w.finish().unwrap();
+        path
+    }
+
+    /// A file carrying a literal `f_utf8` next to `f_utf8_utf8` (ingest's chained rename of
+    /// `f`), both Utf8, while `f_utf8` is registered Boolean and the cached rename of
+    /// `(f_utf8, Utf8)` is that same `f_utf8_utf8`: the file needs a second target, and must
+    /// get it in the same cycle instead of being deferred first.
+    #[test]
+    fn cached_rename_onto_a_column_of_the_file_resolves_in_one_cycle() {
+        let registry = RefCell::new(StreamRegistry::default());
+        registry.borrow_mut().apply(&[
+            ("f".to_string(), DataType::Boolean),
+            ("f_utf8".to_string(), DataType::Boolean),
+            ("f_utf8_utf8".to_string(), DataType::Utf8),
+        ]);
+        let resolver = registry_resolver(&registry);
+        let tenant = None;
+        let dir = tempfile::tempdir().unwrap();
+        let state = ResolutionState::default();
+
+        // Earlier file: only the literal, which learns (f_utf8, Utf8) -> f_utf8_utf8.
+        let first = write_arrow_columns(dir.path(), "1.arrows", &[("f_utf8", "lit")]);
+        let out = state.ensure_resolved(&ctx(dir.path(), &resolver, &tenant), vec![first], |_| {});
+        assert_eq!(out.deferred, Vec::<PathBuf>::new());
+
+        let both = write_arrow_columns(
+            dir.path(),
+            "2.arrows",
+            &[("f_utf8", "lit"), ("f_utf8_utf8", "moved")],
+        );
+        let out = state.ensure_resolved(
+            &ctx(dir.path(), &resolver, &tenant),
+            vec![both.clone()],
+            |_| {},
+        );
+        assert_eq!(
+            out.ready,
+            vec![both.clone()],
+            "deferred: {:?}",
+            out.deferred
+        );
+        let renamed = state
+            .view()
+            .rename_schema(&read_file_schema(&both).unwrap())
+            .unwrap()
+            .unwrap();
+        let names: Vec<&str> = renamed.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["f_utf8_utf8_utf8", "f_utf8_utf8"]);
+    }
+
     /// `on_apply` moves the in-memory schema to the resolved types, so the view carrying
     /// the matching renames must already be visible to other threads when it runs.
     #[test]

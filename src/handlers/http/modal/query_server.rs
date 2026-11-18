@@ -267,7 +267,10 @@ impl QueryServer {
                         .to(schema_registry::authority::resolve_handler)
                         .wrap(IntraClusterRequest),
                 )
-                .app_data(web::JsonConfig::default().limit(1 << 20)),
+                .app_data(
+                    web::JsonConfig::default()
+                        .limit(schema_registry::protocol::RESOLVE_REQUEST_LIMIT),
+                ),
         )
     }
 

@@ -1869,7 +1869,7 @@ pub async fn commit_schema_to_storage(
             // this node uploaded before the resolution.
             crate::schema_registry::merge_schemas_tolerant(stream_name, [schema, stored])
         } else {
-            Schema::try_merge(vec![schema, stored])
+            crate::schema_registry::merge_stored_schemas([schema, stored])
                 .map_err(|e| ObjectStorageError::Custom(e.to_string()))?
         };
 
