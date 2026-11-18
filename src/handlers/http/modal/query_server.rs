@@ -111,6 +111,13 @@ impl ParseableServer for QueryServer {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
+        // Ingestors send schema resolution requests to the address the querier advertises.
+        // The listen address (`P_ADDR`, usually 0.0.0.0) is not reachable from other nodes.
+        anyhow::ensure!(
+            !PARSEABLE.options.querier_endpoint.is_empty(),
+            "P_QUERIER_ENDPOINT is required in query mode: set it to the `<ip address / DNS>:<port>` other nodes use to reach this querier"
+        );
+
         // write the ingestor metadata to storage
         QUERIER_META
             .get_or_init(|| async {

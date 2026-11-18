@@ -554,7 +554,7 @@ pub struct Options {
         long,
         env = "P_QUERIER_ENDPOINT",
         default_value = "",
-        help = "URL to connect to this specific querier. Default is the address of the server"
+        help = "Address (`<ip address / DNS>:<port>`) other nodes use to reach this querier. Required in query mode"
     )]
     pub querier_endpoint: String,
 
@@ -587,7 +587,7 @@ pub struct Options {
         long,
         env = "P_PRISM_ENDPOINT",
         default_value = "",
-        help = "URL to connect to the prism node. Default is the address of the server"
+        help = "Address (`<ip address / DNS>:<port>`) other nodes use to reach this prism node. Required in prism mode"
     )]
     pub prism_endpoint: String,
 
