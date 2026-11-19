@@ -35,6 +35,7 @@ use tokio::{
     io::AsyncReadExt,
 };
 use tokio_stream::wrappers::ReadDirStream;
+use ulid::Ulid;
 
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
@@ -48,9 +49,9 @@ use crate::{
 };
 
 use super::{
-    ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
-    PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
-    TOMBSTONE_ROOT_DIRECTORY,
+    ALERTS_ROOT_DIRECTORY, KEYSTONE_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError,
+    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME,
+    STREAM_ROOT_DIRECTORY, TARGETS_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -384,7 +385,23 @@ impl ObjectStorage for LocalFS {
             fs::create_dir_all(parent).await?;
         }
 
-        let res = fs::write(path, resource).await;
+        // Readers must never observe a partially-written metadata object.
+        // Write a uniquely-named sibling, then atomically replace the target.
+        let temporary_path =
+            path.with_file_name(format!(".parseable-write-{}.partial", Ulid::new()));
+        let res = match fs::write(&temporary_path, resource).await {
+            Ok(()) => {
+                #[cfg(windows)]
+                if path.exists() {
+                    fs::remove_file(&path).await?;
+                }
+                fs::rename(&temporary_path, &path).await
+            }
+            Err(error) => Err(error),
+        };
+        if res.is_err() {
+            let _ = fs::remove_file(&temporary_path).await;
+        }
         if res.is_ok() {
             // Record single file written successfully
             increment_files_scanned_in_object_store_calls_by_date(
@@ -532,6 +549,8 @@ impl ObjectStorage for LocalFS {
             USERS_ROOT_DIR,
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,
+            TARGETS_ROOT_DIRECTORY,
+            KEYSTONE_ROOT_DIRECTORY,
             TOMBSTONE_ROOT_DIRECTORY,
         ];
 
@@ -546,6 +565,8 @@ impl ObjectStorage for LocalFS {
             PARSEABLE_ROOT_DIRECTORY,
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,
+            TARGETS_ROOT_DIRECTORY,
+            KEYSTONE_ROOT_DIRECTORY,
             TOMBSTONE_ROOT_DIRECTORY,
         ];
 
@@ -909,7 +930,10 @@ mod list_streams_tombstone_tests {
 
     use super::{LocalFS, ObjectStorage};
     use crate::storage::object_storage::{to_bytes, tombstone_path};
-    use crate::storage::{STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY};
+    use crate::storage::{
+        KEYSTONE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        TARGETS_ROOT_DIRECTORY,
+    };
     use relative_path::RelativePathBuf;
 
     // Deliberately not using `object_storage::stream_json_path` here: it
@@ -937,6 +961,39 @@ mod list_streams_tombstone_tests {
 
         let listed = storage.list_streams().await.unwrap();
         assert!(listed.contains("mystream"));
+    }
+
+    #[tokio::test]
+    async fn metadata_directories_are_not_treated_as_streams() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+        std::fs::create_dir_all(dir.path().join(KEYSTONE_ROOT_DIRECTORY)).unwrap();
+        std::fs::create_dir_all(dir.path().join(TARGETS_ROOT_DIRECTORY)).unwrap();
+
+        let listed = storage.list_streams().await.unwrap();
+        assert!(listed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_object_atomically_replaces_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+        let path = RelativePathBuf::from("metadata.json");
+
+        storage
+            .put_object(&path, to_bytes(&"old"), &None)
+            .await
+            .unwrap();
+        storage
+            .put_object(&path, to_bytes(&"new"), &None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage.get_object(&path, &None).await.unwrap().as_ref(),
+            b"\"new\""
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[tokio::test]

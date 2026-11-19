@@ -64,6 +64,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use std::time::Instant;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{Instrument, error, info, info_span, warn};
 use ulid::Ulid;
@@ -72,6 +73,29 @@ use ulid::Ulid;
 /// removed locally. These paths remain excluded from upload selection until a
 /// later cleanup attempt removes the local file.
 static UPLOADED_STAGED_FILES_PENDING_CLEANUP: Lazy<DashSet<PathBuf>> = Lazy::new(DashSet::new);
+
+/// Global limits keep standalone ingest + query workloads inside process FD budget.
+/// A per-stream upload limit multiplied concurrency by number of streams.
+static OBJECT_STORE_UPLOAD_SLOTS: Lazy<Arc<Semaphore>> = Lazy::new(|| {
+    Arc::new(Semaphore::new(concurrency_limit(
+        "P_MAX_CONCURRENT_OBJECT_STORE_UPLOADS",
+        100,
+    )))
+});
+static OBJECT_STORE_STREAM_SYNC_SLOTS: Lazy<Arc<Semaphore>> = Lazy::new(|| {
+    Arc::new(Semaphore::new(concurrency_limit(
+        "P_MAX_CONCURRENT_STREAM_SYNCS",
+        16,
+    )))
+});
+
+fn concurrency_limit(variable: &str, default: usize) -> usize {
+    std::env::var(variable)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
 
 /// Claims a staged Parquet for upload unless its remote upload has already
 /// succeeded and only local deletion remains pending.
@@ -1121,7 +1145,6 @@ async fn process_parquet_files(
 ) -> Result<Vec<UploadedParquetFile>, ObjectStorageError> {
     retry_pending_staged_file_cleanup();
 
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
     let mut join_set = JoinSet::new();
     let object_store = PARSEABLE.storage().get_object_store();
 
@@ -1158,7 +1181,7 @@ async fn process_parquet_files(
     for path in parquet_paths {
         spawn_parquet_upload_task(
             &mut join_set,
-            semaphore.clone(),
+            OBJECT_STORE_UPLOAD_SLOTS.clone(),
             object_store.clone(),
             upload_context,
             stream_name,
@@ -1774,6 +1797,11 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
             let span = info_span!("stream_upload", stream_name = %stream_name);
             joinset.spawn_on(
                 async move {
+                    let _stream_sync_permit = OBJECT_STORE_STREAM_SYNC_SLOTS
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .expect("object store stream sync semaphore should remain open");
                     let start = Instant::now();
                     let result = object_store
                         .upload_files_from_staging(&stream_name, id)

@@ -35,6 +35,7 @@ use crate::{
         query::{QueryError, update_schema_when_distributed},
     },
     hottier::HotTierError,
+    option::Mode,
     parseable::{PARSEABLE, StreamNotFound},
     query::{CountsRequest, CountsResponse, error::ExecuteError},
     rbac::{Users, map::SessionKey, role::Action},
@@ -107,9 +108,10 @@ async fn get_stats(
     let stats = stats::get_current_stats(stream_name, "json", tenant_id)
         .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?;
 
-    let ingestor_stats = if PARSEABLE
-        .get_stream(stream_name, tenant_id)
-        .is_ok_and(|stream| stream.get_stream_type() == StreamType::UserDefined)
+    let ingestor_stats = if PARSEABLE.options.mode != Mode::All
+        && PARSEABLE
+            .get_stream(stream_name, tenant_id)
+            .is_ok_and(|stream| stream.get_stream_type() == StreamType::UserDefined)
     {
         Some(fetch_stats_from_ingestors(stream_name, tenant_id).await?)
     } else {

@@ -36,6 +36,7 @@ use crate::handlers::http::modal::{NodeMetadata, NodeType};
 use crate::handlers::http::query::into_query;
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
+use crate::option::Mode;
 use crate::parseable::PARSEABLE;
 use crate::query::{QUERY_SESSION, execute, resolve_stream_names};
 use crate::utils::arrow::flight::{
@@ -152,10 +153,11 @@ impl FlightService for AirServiceImpl {
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
-        let event = if send_to_ingester(
-            query.time_range.start.timestamp_millis(),
-            query.time_range.end.timestamp_millis(),
-        ) {
+        let event = if PARSEABLE.options.mode != Mode::All
+            && send_to_ingester(
+                query.time_range.start.timestamp_millis(),
+                query.time_range.end.timestamp_millis(),
+            ) {
             let sql = format!("select * from \"{}\"", stream_name);
             let start_time = ticket.start_time.clone();
             let end_time = ticket.end_time.clone();
