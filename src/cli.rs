@@ -653,6 +653,16 @@ pub struct Options {
     )]
     pub scope: String,
 
+    // replace OIDC users' roles with the roles their provider groups grant, on every login
+    #[arg(
+        long = "oidc-sync-roles",
+        env = "P_OIDC_SYNC_ROLES",
+        default_value = "false",
+        required = false,
+        help = "Make the OIDC provider's groups authoritative for OIDC users' roles: on each login the user's roles are replaced by the roles their groups name (or the default role), so removing a user from a group revokes the role. When off (default), group roles are added and roles assigned in Parseable are kept."
+    )]
+    pub oidc_sync_roles: bool,
+
     // additional query params for oidc auth url
     #[arg(
         long,

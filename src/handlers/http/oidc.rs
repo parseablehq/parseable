@@ -338,15 +338,11 @@ fn resolve_roles(
         .map(|r| HashSet::from([r]))
         .unwrap_or_default();
 
-    let mut roles = match existing_user {
-        Some(user) => {
-            let mut roles = user.roles.clone();
-            roles.extend(valid_oidc_roles);
-            roles
-        }
-        None if !valid_oidc_roles.is_empty() => valid_oidc_roles,
-        None => default_role.clone(),
-    };
+    let mut roles = merge_oidc_roles(
+        existing_user.map(|user| &user.roles),
+        valid_oidc_roles,
+        PARSEABLE.options.oidc_sync_roles,
+    );
 
     if roles.is_empty() {
         roles.clone_from(&default_role);
@@ -365,6 +361,27 @@ fn resolve_roles(
     }
 
     roles
+}
+
+/// Combines the roles a returning user already has with the roles their provider groups grant.
+///
+/// By default roles accumulate: group roles are added and roles assigned inside Parseable are kept, which also
+/// means removing a user from a group in the provider does not take the role away. With `P_OIDC_SYNC_ROLES` the
+/// provider is authoritative and the user's roles become exactly the group roles at every login. An empty result
+/// falls back to the default role in the caller.
+fn merge_oidc_roles(
+    existing: Option<&HashSet<String>>,
+    group_roles: HashSet<String>,
+    sync_with_provider: bool,
+) -> HashSet<String> {
+    match existing {
+        Some(current) if !sync_with_provider => {
+            let mut roles = current.clone();
+            roles.extend(group_roles);
+            roles
+        }
+        _ => group_roles,
+    }
 }
 
 /// Compute session expiry from the bearer token.
@@ -664,4 +681,51 @@ fn is_valid_redirect_url(base_url: &str, redirect_url: &str) -> bool {
     Url::parse(base_url)
         .map(|url| url.origin() == redirect_origin)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod merge_oidc_roles_tests {
+    use std::collections::HashSet;
+
+    use super::merge_oidc_roles;
+
+    fn set(roles: &[&str]) -> HashSet<String> {
+        roles.iter().map(|r| r.to_string()).collect()
+    }
+
+    #[test]
+    fn new_user_gets_exactly_the_group_roles() {
+        assert_eq!(
+            merge_oidc_roles(None, set(&["reader"]), false),
+            set(&["reader"])
+        );
+        assert_eq!(
+            merge_oidc_roles(None, set(&["reader"]), true),
+            set(&["reader"])
+        );
+    }
+
+    #[test]
+    fn by_default_existing_roles_are_kept_and_group_roles_added() {
+        let current = set(&["admin-assigned", "old-group"]);
+        assert_eq!(
+            merge_oidc_roles(Some(&current), set(&["new-group"]), false),
+            set(&["admin-assigned", "old-group", "new-group"])
+        );
+    }
+
+    #[test]
+    fn with_sync_a_role_from_a_removed_group_is_revoked() {
+        let current = set(&["old-group", "kept-group"]);
+        assert_eq!(
+            merge_oidc_roles(Some(&current), set(&["kept-group"]), true),
+            set(&["kept-group"])
+        );
+    }
+
+    #[test]
+    fn with_sync_no_matching_groups_leaves_no_roles_for_the_default_fallback() {
+        let current = set(&["old-group"]);
+        assert!(merge_oidc_roles(Some(&current), HashSet::new(), true).is_empty());
+    }
 }
