@@ -44,7 +44,10 @@ use crate::handlers::http::modal::utils::rbac_utils::{get_metadata, put_metadata
 use crate::{
     handlers::{
         COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME,
-        http::{cluster::sync_user_creation, modal::OIDC_CLIENT},
+        http::{
+            cluster::sync_user_creation,
+            modal::{OIDC_CLIENT, OIDC_PENDING},
+        },
     },
     oauth::OAuthSession,
     parseable::{DEFAULT_TENANT, PARSEABLE},
@@ -90,6 +93,9 @@ pub async fn login(
 
     let session_key = extract_session_key_from_req(&req).ok();
     let (session_key, oidc_client) = match (session_key, oidc_client) {
+        (None, None) if OIDC_PENDING.load(Ordering::Acquire) => {
+            return Err(OIDCError::ProviderUnavailable);
+        }
         (None, None) => return Ok(redirect_no_oauth_setup(query.redirect.clone())),
         (None, Some(client)) => {
             let redirect = query.into_inner().redirect.to_string();
@@ -626,6 +632,8 @@ pub enum OIDCError {
     BadRequest(String),
     #[error("Unauthorized")]
     Unauthorized,
+    #[error("The OIDC provider is not reachable yet; try again shortly")]
+    ProviderUnavailable,
 }
 
 impl actix_web::ResponseError for OIDCError {
@@ -635,6 +643,7 @@ impl actix_web::ResponseError for OIDCError {
             Self::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::ProviderUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 
