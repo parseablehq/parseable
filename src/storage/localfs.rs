@@ -35,7 +35,6 @@ use tokio::{
     io::AsyncReadExt,
 };
 use tokio_stream::wrappers::ReadDirStream;
-use ulid::Ulid;
 
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
@@ -385,23 +384,7 @@ impl ObjectStorage for LocalFS {
             fs::create_dir_all(parent).await?;
         }
 
-        // Readers must never observe a partially-written metadata object.
-        // Write a uniquely-named sibling, then atomically replace the target.
-        let temporary_path =
-            path.with_file_name(format!(".parseable-write-{}.partial", Ulid::new()));
-        let res = match fs::write(&temporary_path, resource).await {
-            Ok(()) => {
-                #[cfg(windows)]
-                if path.exists() {
-                    fs::remove_file(&path).await?;
-                }
-                fs::rename(&temporary_path, &path).await
-            }
-            Err(error) => Err(error),
-        };
-        if res.is_err() {
-            let _ = fs::remove_file(&temporary_path).await;
-        }
+        let res = fs::write(path, resource).await;
         if res.is_ok() {
             // Record single file written successfully
             increment_files_scanned_in_object_store_calls_by_date(
@@ -972,28 +955,6 @@ mod list_streams_tombstone_tests {
 
         let listed = storage.list_streams().await.unwrap();
         assert!(listed.is_empty());
-    }
-
-    #[tokio::test]
-    async fn put_object_atomically_replaces_existing_file() {
-        let dir = TempDir::new().unwrap();
-        let storage = LocalFS::new(dir.path().to_path_buf());
-        let path = RelativePathBuf::from("metadata.json");
-
-        storage
-            .put_object(&path, to_bytes(&"old"), &None)
-            .await
-            .unwrap();
-        storage
-            .put_object(&path, to_bytes(&"new"), &None)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            storage.get_object(&path, &None).await.unwrap().as_ref(),
-            b"\"new\""
-        );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[tokio::test]
