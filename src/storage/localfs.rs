@@ -266,13 +266,13 @@ impl ObjectStorage for LocalFS {
 
         while let Some(entry) = entries.next_entry().await? {
             files_scanned += 1;
-            let flag = entry
-                .path()
+            let entry_path = entry.path();
+            let name = entry_path
                 .file_name()
                 .unwrap_or_default()
                 .to_str()
-                .unwrap_or_default()
-                .contains("ingestor");
+                .unwrap_or_default();
+            let flag = name.contains("ingestor") && !is_partial(name);
 
             if flag {
                 path_arr.push(
@@ -327,6 +327,11 @@ impl ObjectStorage for LocalFS {
                 .to_owned();
 
             files_scanned += 1;
+            // An interrupted atomic write leaves `<name>.<id>.partial` behind; its name still matches
+            // `contains`-style filters such as ".schema", so it must never be read as an object.
+            if is_partial(&path) {
+                continue;
+            }
             let ingestor_file = filter_func(path);
 
             if !ingestor_file {
@@ -379,9 +384,6 @@ impl ObjectStorage for LocalFS {
     ) -> Result<(), ObjectStorageError> {
         let path = self.path_in_root(path);
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
 
         let res = write_atomically(path, resource).await;
         if res.is_ok() {
@@ -670,9 +672,6 @@ impl ObjectStorage for LocalFS {
         let to_path = self.root.join(key);
 
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(path) = to_path.parent() {
-            fs::create_dir_all(path).await?;
-        }
 
         let result = copy_atomically(path.to_path_buf(), to_path).await;
         match result {
@@ -843,10 +842,11 @@ async fn dir_name(entry: DirEntry) -> Result<Option<String>, ObjectStorageError>
 /// A plain write to the final path does not: a crash, a full disk or a concurrent reader can observe a truncated
 /// file there, and LocalFS readers then treat that truncated metadata or parquet file as a valid object.
 ///
-/// The writers below give LocalFS the same guarantee. Bytes go to a uniquely named `.partial` sibling (so concurrent
-/// writers to the same key never share a temporary file, and the `.partial` suffix keeps it out of every listing
-/// filter), the file is fsynced, renamed over the destination (atomic within one filesystem), and on Unix the
-/// parent directory is fsynced so the rename itself survives a power loss. On failure the temporary file is removed.
+/// The writers below give LocalFS the same guarantee. Missing parent directories are created and made durable, bytes
+/// go to a uniquely named `.partial` sibling (so concurrent writers to the same key never share a temporary file),
+/// the file is fsynced, renamed over the destination (atomic within one filesystem), and on Unix the parent directory
+/// is fsynced so the rename itself survives a power loss. On failure the temporary file is removed; one left behind
+/// by a crash is skipped by every LocalFS listing (see [`is_partial`]).
 async fn write_atomically(dest: PathBuf, contents: Bytes) -> std::io::Result<()> {
     tokio::task::spawn_blocking(move || {
         commit_via_partial(&dest, |partial| {
@@ -864,7 +864,11 @@ async fn copy_atomically(src: PathBuf, dest: PathBuf) -> std::io::Result<()> {
     tokio::task::spawn_blocking(move || {
         commit_via_partial(&dest, |partial| {
             std::fs::copy(&src, partial)?;
-            std::fs::File::open(partial)?.sync_all()
+            // Windows' FlushFileBuffers (behind sync_all) needs a handle with write access.
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(partial)?
+                .sync_all()
         })
     })
     .await
@@ -879,8 +883,11 @@ fn commit_via_partial(
         .file_name()
         .ok_or_else(|| std::io::Error::other(format!("{} has no file name", dest.display())))?
         .to_os_string();
-    name.push(format!(".{}.partial", ulid::Ulid::new()));
+    name.push(format!(".{}{PARTIAL_SUFFIX}", ulid::Ulid::new()));
     let partial = dest.with_file_name(name);
+    if let Some(parent) = dest.parent() {
+        create_dirs_durably(parent)?;
+    }
 
     let result = fill(&partial)
         .and_then(|()| std::fs::rename(&partial, dest))
@@ -889,6 +896,35 @@ fn commit_via_partial(
         let _ = std::fs::remove_file(&partial);
     }
     result
+}
+
+const PARTIAL_SUFFIX: &str = ".partial";
+
+/// Temporary file of an atomic write that has not been renamed into place (possibly left by a crash).
+fn is_partial(file_name: &str) -> bool {
+    file_name.ends_with(PARTIAL_SUFFIX)
+}
+
+/// Creates `dir` and any missing ancestors, then fsyncs the parent of each directory it created, so that after a
+/// power loss a file written below them is still reachable. fsyncing only the file's own directory would persist
+/// the file's entry but not the entries linking the new directories to their parents.
+fn create_dirs_durably(dir: &Path) -> std::io::Result<()> {
+    let mut missing = Vec::new();
+    let mut current = Some(dir);
+    while let Some(path) = current
+        && !path.exists()
+    {
+        missing.push(path.to_path_buf());
+        current = path.parent();
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    for created in &missing {
+        sync_parent_dir(created)?;
+    }
+    Ok(())
 }
 
 /// Persists the directory entry created by a rename. Windows has no equivalent call for directories.
@@ -960,6 +996,55 @@ mod tests {
             "the caller removes the staged file after a successful upload"
         );
         assert!(partial_files(uploaded.parent().unwrap()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn listings_skip_partial_files_left_by_a_crash() {
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalFS::new(root.path().to_path_buf());
+        let dir = root.path().join("stream").join(STREAM_ROOT_DIRECTORY);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("host.schema"), b"{}").unwrap();
+        std::fs::write(
+            dir.join("host.schema.01J0000000000000000000000.partial"),
+            b"{trunc",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path()
+                .join("ingestor.abc.json.01J0000000000000000000000.partial"),
+            b"{trunc",
+        )
+        .unwrap();
+
+        let schemas = store
+            .get_objects(
+                Some(&RelativePathBuf::from(format!(
+                    "stream/{STREAM_ROOT_DIRECTORY}"
+                ))),
+                Box::new(|name: String| name.contains(".schema")),
+                &None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(schemas, vec![Bytes::from_static(b"{}")]);
+        assert!(
+            store
+                .get_ingestor_meta_file_paths(&None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn atomic_write_creates_missing_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let dest = root.path().join("a/b/c/object.json");
+
+        commit_via_partial(&dest, |partial| std::fs::write(partial, b"ok")).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"ok");
     }
 
     #[tokio::test]
