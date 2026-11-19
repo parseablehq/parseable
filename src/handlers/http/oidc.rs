@@ -89,11 +89,15 @@ pub async fn login(
         ));
     }
 
+    // Read the pending flag before the client. `set_oidc_client` installs the client before clearing the flag
+    // (release/acquire), so a request that sees "not pending" and no client really has no OIDC configured, and one
+    // racing with recovery sees either the installed client or "pending", never a false "not configured".
+    let oidc_pending = OIDC_PENDING.load(Ordering::Acquire);
     let oidc_client = OIDC_CLIENT.get();
 
     let session_key = extract_session_key_from_req(&req).ok();
     let (session_key, oidc_client) = match (session_key, oidc_client) {
-        (None, None) if OIDC_PENDING.load(Ordering::Acquire) => {
+        (None, None) if oidc_pending => {
             return Err(OIDCError::ProviderUnavailable);
         }
         (None, None) => return Ok(redirect_no_oauth_setup(query.redirect.clone())),
