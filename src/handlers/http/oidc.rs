@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use actix_web::http::StatusCode;
@@ -51,9 +51,10 @@ use crate::{
     rbac::{
         self, EXPIRY_DURATION, Users,
         map::{DEFAULT_ROLE, SessionKey},
+        role::model::Role,
         user::{self, GroupUser, User, UserType},
     },
-    storage::{ObjectStorageError, StorageMetadata},
+    storage::ObjectStorageError,
     utils::{
         actix::extract_session_key_from_req, get_tenant_id_from_key, get_tenant_id_from_request,
     },
@@ -236,12 +237,20 @@ pub async fn reply_login(
     let (username, user_id, user_info) = extract_identity(&session)?;
     let metadata = get_metadata(&tenant_id).await?;
     let existing_user = find_existing_user(&user_info, tenant_id.clone());
+    let default_role = DEFAULT_ROLE
+        .read()
+        .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+        .and_then(|r| r.clone())
+        .map(|r| HashSet::from([r]))
+        .unwrap_or_default();
     let final_roles = resolve_roles(
         &session.claims.groups,
-        &metadata,
+        &metadata.roles,
+        &metadata.users,
         &user_info,
-        &tenant_id,
         existing_user.as_ref(),
+        default_role,
+        PARSEABLE.options.oidc_sync_roles,
     );
 
     let expires_in = bearer_expiry(&session.bearer);
@@ -317,41 +326,43 @@ fn extract_identity(session: &OAuthSession) -> Result<(String, String, user::Use
 }
 
 /// Determine the final set of roles for the user.
+///
+/// With `sync_with_provider` (`P_OIDC_SYNC_ROLES`) the provider's groups are the only source of roles besides the
+/// default role, so the native-account fallback below is skipped: otherwise removing a user's last group would
+/// hand the removed role straight back through a native account with the same email.
+///
+/// It reads no global state (the caller passes the defined roles, the users and the tenant's default role), so it
+/// can be unit-tested.
 fn resolve_roles(
     groups: &HashSet<String>,
-    metadata: &StorageMetadata,
+    defined_roles: &HashMap<String, Role>,
+    users: &[User],
     user_info: &user::UserInfo,
-    tenant_id: &Option<String>,
     existing_user: Option<&User>,
+    default_role: HashSet<String>,
+    sync_with_provider: bool,
 ) -> HashSet<String> {
-    let valid_oidc_roles: HashSet<String> = metadata
-        .roles
+    let valid_oidc_roles: HashSet<String> = defined_roles
         .keys()
         .filter(|role_name| groups.contains(*role_name))
         .cloned()
         .collect();
 
-    let default_role = DEFAULT_ROLE
-        .read()
-        .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-        .and_then(|r| r.clone())
-        .map(|r| HashSet::from([r]))
-        .unwrap_or_default();
-
     let mut roles = merge_oidc_roles(
         existing_user.map(|user| &user.roles),
         valid_oidc_roles,
-        PARSEABLE.options.oidc_sync_roles,
+        sync_with_provider,
     );
 
     if roles.is_empty() {
-        roles.clone_from(&default_role);
+        roles = default_role;
     }
 
     // Inherit roles from a native user with the same email (e.g. tenant owner via OAuth)
     if roles.is_empty()
+        && !sync_with_provider
         && let Some(email) = &user_info.email
-        && let Some(native) = metadata.users.iter().find(|u| {
+        && let Some(native) = users.iter().find(|u| {
             matches!(u.ty, UserType::Native(_))
                 && u.userid() == email.as_str()
                 && !u.roles.is_empty()
@@ -685,9 +696,110 @@ fn is_valid_redirect_url(base_url: &str, redirect_url: &str) -> bool {
 
 #[cfg(test)]
 mod merge_oidc_roles_tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
-    use super::merge_oidc_roles;
+    use super::{merge_oidc_roles, resolve_roles};
+    use crate::rbac::{
+        role::model::{DefaultPrivilege, Role},
+        user::{self, User},
+    };
+
+    /// Roles `group-role` and `native-role`, and a native user `alice@example.com` holding `native-role`.
+    fn roles_and_native_alice() -> (HashMap<String, Role>, Vec<User>) {
+        let roles = ["group-role", "native-role"]
+            .into_iter()
+            .map(|role| {
+                (
+                    role.to_string(),
+                    Role::create_user_role(vec![DefaultPrivilege::Reader { resource: None }]),
+                )
+            })
+            .collect();
+        let (mut native, _password) = User::new_basic("alice@example.com".to_string(), None, false);
+        native.roles = set(&["native-role"]);
+        (roles, vec![native])
+    }
+
+    fn alice() -> user::UserInfo {
+        user::UserInfo {
+            email: Some("alice@example.com".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn with_sync_removing_the_last_group_does_not_restore_roles_from_a_native_account() {
+        let (defined_roles, users) = roles_and_native_alice();
+        let (mut returning, _password) = User::new_basic("alice-oauth".to_string(), None, false);
+        returning.roles = set(&["group-role"]);
+
+        let roles = resolve_roles(
+            &HashSet::new(),
+            &defined_roles,
+            &users,
+            &alice(),
+            Some(&returning),
+            HashSet::new(),
+            true,
+        );
+
+        assert!(roles.is_empty(), "got {roles:?}");
+    }
+
+    #[test]
+    fn without_sync_a_user_with_no_roles_still_inherits_from_the_native_account() {
+        let (defined_roles, users) = roles_and_native_alice();
+
+        let roles = resolve_roles(
+            &HashSet::new(),
+            &defined_roles,
+            &users,
+            &alice(),
+            None,
+            HashSet::new(),
+            false,
+        );
+
+        assert_eq!(roles, set(&["native-role"]));
+    }
+
+    #[test]
+    fn with_sync_group_roles_replace_existing_roles_end_to_end() {
+        let (defined_roles, users) = roles_and_native_alice();
+        let (mut returning, _password) = User::new_basic("alice-oauth".to_string(), None, false);
+        returning.roles = set(&["native-role", "group-role"]);
+
+        let roles = resolve_roles(
+            &set(&["group-role", "unknown-group"]),
+            &defined_roles,
+            &users,
+            &alice(),
+            Some(&returning),
+            HashSet::new(),
+            true,
+        );
+
+        assert_eq!(roles, set(&["group-role"]));
+    }
+
+    #[test]
+    fn with_sync_and_no_groups_the_default_role_still_applies() {
+        let (defined_roles, users) = roles_and_native_alice();
+        let (mut returning, _password) = User::new_basic("alice-oauth".to_string(), None, false);
+        returning.roles = set(&["group-role"]);
+
+        let roles = resolve_roles(
+            &HashSet::new(),
+            &defined_roles,
+            &users,
+            &alice(),
+            Some(&returning),
+            set(&["default-role"]),
+            true,
+        );
+
+        assert_eq!(roles, set(&["default-role"]));
+    }
 
     fn set(roles: &[&str]) -> HashSet<String> {
         roles.iter().map(|r| r.to_string()).collect()
