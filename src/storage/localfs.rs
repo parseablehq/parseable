@@ -26,7 +26,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
-use fs_extra::file::CopyOptions;
 use futures::{TryStreamExt, stream::FuturesUnordered};
 use object_store::{ListResult, ObjectMeta, buffered::BufReader};
 use relative_path::{RelativePath, RelativePathBuf};
@@ -384,7 +383,7 @@ impl ObjectStorage for LocalFS {
             fs::create_dir_all(parent).await?;
         }
 
-        let res = fs::write(path, resource).await;
+        let res = write_atomically(path, resource).await;
         if res.is_ok() {
             // Record single file written successfully
             increment_files_scanned_in_object_store_calls_by_date(
@@ -668,11 +667,6 @@ impl ObjectStorage for LocalFS {
         path: &Path,
         tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
-        let op = CopyOptions {
-            overwrite: true,
-            skip_exist: true,
-            ..CopyOptions::default()
-        };
         let to_path = self.root.join(key);
 
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
@@ -680,7 +674,7 @@ impl ObjectStorage for LocalFS {
             fs::create_dir_all(path).await?;
         }
 
-        let result = fs_extra::file::copy(path, to_path, &op);
+        let result = copy_atomically(path.to_path_buf(), to_path).await;
         match result {
             Ok(_) => {
                 increment_object_store_calls_by_date(
@@ -845,6 +839,69 @@ async fn dir_name(entry: DirEntry) -> Result<Option<String>, ObjectStorageError>
     }
 }
 
+/// Object stores give a PUT all-or-nothing semantics: readers see the previous object or the complete new one.
+/// A plain write to the final path does not: a crash, a full disk or a concurrent reader can observe a truncated
+/// file there, and LocalFS readers then treat that truncated metadata or parquet file as a valid object.
+///
+/// The writers below give LocalFS the same guarantee. Bytes go to a uniquely named `.partial` sibling (so concurrent
+/// writers to the same key never share a temporary file, and the `.partial` suffix keeps it out of every listing
+/// filter), the file is fsynced, renamed over the destination (atomic within one filesystem), and on Unix the
+/// parent directory is fsynced so the rename itself survives a power loss. On failure the temporary file is removed.
+async fn write_atomically(dest: PathBuf, contents: Bytes) -> std::io::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        commit_via_partial(&dest, |partial| {
+            let mut file = std::fs::File::create(partial)?;
+            std::io::Write::write_all(&mut file, &contents)?;
+            file.sync_all()
+        })
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+/// Copies `src` to `dest` with the same all-or-nothing guarantee as [`write_atomically`]. `src` is left in place.
+async fn copy_atomically(src: PathBuf, dest: PathBuf) -> std::io::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        commit_via_partial(&dest, |partial| {
+            std::fs::copy(&src, partial)?;
+            std::fs::File::open(partial)?.sync_all()
+        })
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+fn commit_via_partial(
+    dest: &Path,
+    fill: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut name = dest
+        .file_name()
+        .ok_or_else(|| std::io::Error::other(format!("{} has no file name", dest.display())))?
+        .to_os_string();
+    name.push(format!(".{}.partial", ulid::Ulid::new()));
+    let partial = dest.with_file_name(name);
+
+    let result = fill(&partial)
+        .and_then(|()| std::fs::rename(&partial, dest))
+        .and_then(|()| sync_parent_dir(dest));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    result
+}
+
+/// Persists the directory entry created by a rename. Windows has no equivalent call for directories.
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 impl From<fs_extra::error::Error> for ObjectStorageError {
     fn from(e: fs_extra::error::Error) -> Self {
         ObjectStorageError::UnhandledError(Box::new(e))
@@ -854,6 +911,73 @@ impl From<fs_extra::error::Error> for ObjectStorageError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn partial_files(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".partial"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn put_object_replaces_content_and_leaves_no_partial_file() {
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalFS::new(root.path().to_path_buf());
+        let key = RelativePath::new("stream/.stream/.stream.json");
+
+        store
+            .put_object(key, Bytes::from_static(b"first version"), &None)
+            .await
+            .unwrap();
+        store
+            .put_object(key, Bytes::from_static(b"second"), &None)
+            .await
+            .unwrap();
+
+        let written = store.path_in_root(key);
+        assert_eq!(std::fs::read(&written).unwrap(), b"second");
+        assert!(partial_files(written.parent().unwrap()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_file_copies_atomically_and_keeps_the_source() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let store = LocalFS::new(root.path().to_path_buf());
+        let staged = staging.path().join("data.parquet");
+        std::fs::write(&staged, b"parquet bytes").unwrap();
+
+        store
+            .upload_file("stream/date=2026-01-01/data.parquet", &staged, &None)
+            .await
+            .unwrap();
+
+        let uploaded = root.path().join("stream/date=2026-01-01/data.parquet");
+        assert_eq!(std::fs::read(&uploaded).unwrap(), b"parquet bytes");
+        assert!(
+            staged.exists(),
+            "the caller removes the staged file after a successful upload"
+        );
+        assert!(partial_files(uploaded.parent().unwrap()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_atomic_write_keeps_the_old_object_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("object.json");
+        std::fs::write(&dest, b"old").unwrap();
+
+        let err = commit_via_partial(&dest, |partial| {
+            std::fs::write(partial, b"half writ")?;
+            Err(std::io::Error::other("disk full"))
+        })
+        .unwrap_err();
+
+        assert_eq!(err.to_string(), "disk full");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+        assert!(partial_files(dir.path()).is_empty());
+    }
 
     #[tokio::test]
     async fn directory_listing_keeps_metadata_layouts_and_missing_path_rules() {
