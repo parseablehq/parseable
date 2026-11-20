@@ -141,7 +141,7 @@ impl EventFormat for Event {
             );
 
             // If there are conflicts, rename the fields in JSON values
-            let value_arr = if !conflicts.is_empty() {
+            if !conflicts.is_empty() {
                 rename_conflicting_fields_in_json(
                     value_arr,
                     &conflicts,
@@ -150,8 +150,7 @@ impl EventFormat for Event {
                 )
             } else {
                 value_arr
-            };
-            value_arr
+            }
         };
 
         // collect all the keys from all the json objects in the request body
@@ -914,6 +913,22 @@ mod tests {
                 true,
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn rename_target_avoids_incompatible_column_from_another_record() {
+        assert_eq!(
+            new_columns(
+                &[("k", DataType::Float64)],
+                json!([{"k": "moved"}, {"k_utf8": true}]),
+                SchemaVersion::V1,
+                true,
+            ),
+            vec![
+                ("k_utf8".to_string(), DataType::Boolean),
+                ("k_utf8_utf8".to_string(), DataType::Utf8),
+            ]
         );
     }
 

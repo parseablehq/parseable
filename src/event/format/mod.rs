@@ -763,6 +763,15 @@ pub fn rename_per_record_type_mismatches(
         .iter()
         .map(|f| (f.name().as_str(), f.data_type()))
         .collect();
+    // Rename targets must also respect columns carried by other records in this batch.
+    // Otherwise `k: Utf8` can move to `k_utf8` while another record already defines
+    // `k_utf8: Boolean`, leaving one inferred column with incompatible values.
+    let mut occupied_schema = existing_schema.clone();
+    for field in inferred_schema.fields() {
+        occupied_schema
+            .entry(field.name().clone())
+            .or_insert_with(|| field.clone());
+    }
 
     values
         .into_iter()
@@ -801,7 +810,7 @@ pub fn rename_per_record_type_mismatches(
                 .collect();
             Value::Object(place_record_values(
                 entries,
-                existing_schema,
+                &occupied_schema,
                 schema_version,
             ))
         })
