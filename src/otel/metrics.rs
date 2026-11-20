@@ -491,6 +491,7 @@ fn flatten_exp_histogram(
             flatten_exemplars,
         );
 
+        insert_data_point_flags(&mut data_point_json, data_point.flags);
         insert_aggregation_temporality(&mut data_point_json, exp_histogram.aggregation_temporality);
         data_points_json.push(data_point_json);
     }
@@ -549,6 +550,7 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
             ),
         ]);
 
+        insert_data_point_flags(&mut data_point_json, data_point.flags);
         data_points_json.push(data_point_json);
     }
     data_points_json
@@ -886,6 +888,39 @@ mod tests {
             "test-tenant",
             false,
         )
+    }
+
+    #[test]
+    fn summary_and_exponential_histogram_preserve_data_point_flags() {
+        use opentelemetry_proto::tonic::metrics::v1::{
+            ExponentialHistogramDataPoint, SummaryDataPoint,
+        };
+
+        let summary = flatten_summary(&Summary {
+            data_points: vec![SummaryDataPoint {
+                flags: 1,
+                ..Default::default()
+            }],
+        });
+        let exponential = flatten_exp_histogram(
+            &ExponentialHistogram {
+                data_points: vec![ExponentialHistogramDataPoint {
+                    flags: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            false,
+        );
+
+        for row in [&summary[0], &exponential[0]] {
+            assert_eq!(row.get("data_point_flags").and_then(Value::as_u64), Some(1));
+            assert_eq!(
+                row.get("data_point_flags_description")
+                    .and_then(Value::as_str),
+                Some("NO_RECORDED_VALUE_MASK"),
+            );
+        }
     }
 
     #[test]
