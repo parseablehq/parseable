@@ -330,6 +330,7 @@ pub const SCHEMA_FILE_NAME: &str = ".schema";
 pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
 pub const SETTINGS_ROOT_DIRECTORY: &str = ".settings";
 pub const TARGETS_ROOT_DIRECTORY: &str = ".targets";
+pub const KEYSTONE_ROOT_DIRECTORY: &str = ".keystone";
 pub const MANIFEST_FILE: &str = "manifest.json";
 // top-level registry of streams currently being deleted; kept outside every
 // stream's own prefix so a bulk prefix-delete can never sweep up a marker

@@ -245,11 +245,7 @@ const MODE_ENV: &str = "P_MODE";
 /// Detects the server mode from the `P_MODE` env var or the `--mode` CLI arg.
 fn detect_mode() -> Option<String> {
     if let Ok(mode) = std::env::var(MODE_ENV) {
-        let mode = mode.to_lowercase();
-        if mode != "all" {
-            return Some(mode);
-        }
-        return None;
+        return Some(mode.to_lowercase());
     }
 
     let args: Vec<String> = std::env::args().collect();
@@ -260,11 +256,16 @@ fn detect_mode() -> Option<String> {
             arg.strip_prefix("--mode=").map(|v| v.to_lowercase())
         };
         if let Some(mode) = value {
-            return (mode != "all").then_some(mode);
+            return Some(mode);
         }
     }
 
     None
+}
+
+/// Whether startup will use standalone mode, including the CLI default.
+pub fn enterprise_all_mode_selected() -> bool {
+    detect_mode().as_deref().unwrap_or("all") == "all"
 }
 
 /// Returns storage-specific env var prompts for the given subcommand.
@@ -596,7 +597,7 @@ pub fn prompt_enterprise_envs() -> Vec<(String, String)> {
     let is_interactive = io::stdin().is_terminal();
     let mut collected: Vec<(String, String)> = Vec::new();
 
-    // Phase 1: base enterprise vars (cluster secret and mode)
+    // Phase 1: distributed-mode cluster secret.
     let base_prompts = get_enterprise_base_prompts();
     collect_prompts(
         &base_prompts,
@@ -605,8 +606,7 @@ pub fn prompt_enterprise_envs() -> Vec<(String, String)> {
         &mut collected,
     );
 
-    // Phase 2: now P_MODE is in the environment (from env, CLI, .parseable.env,
-    // or the interactive prompt above), so mode-specific prompts resolve correctly.
+    // Phase 2: mode-specific settings.
     let mode_prompts = get_enterprise_mode_prompts();
     if !mode_prompts.is_empty() {
         let mode = detect_mode().unwrap_or_else(|| "unknown".to_string());
@@ -695,26 +695,18 @@ fn collect_prompts(
     println!();
 }
 
-/// Returns base enterprise env var prompts (cluster secret and mode).
+/// Returns base enterprise prompts. Standalone mode needs no cluster secret.
 fn get_enterprise_base_prompts() -> Vec<EnvPrompt> {
-    let mut prompts = vec![EnvPrompt {
-        env_var: "P_CLUSTER_SECRET",
-        display_name: "Cluster Secret",
-        required: true,
-        is_secret: true,
-    }];
-
-    // Enterprise rejects "all" mode, so prompt if not explicitly set
-    if detect_mode().is_none() {
-        prompts.push(EnvPrompt {
-            env_var: "P_MODE",
-            display_name: "Server Mode (query, ingest, index, prism)",
+    if enterprise_all_mode_selected() {
+        Vec::new()
+    } else {
+        vec![EnvPrompt {
+            env_var: "P_CLUSTER_SECRET",
+            display_name: "Cluster Secret",
             required: true,
-            is_secret: false,
-        });
+            is_secret: true,
+        }]
     }
-
-    prompts
 }
 
 /// Returns mode-specific enterprise env var prompts.
