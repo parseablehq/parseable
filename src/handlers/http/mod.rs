@@ -144,7 +144,9 @@ pub async fn fetch_schema(
         .get_all_schemas(stream_name, tenant_id)
         .await?;
 
-    let new_schema = Schema::try_merge(res)?;
+    // Strict on purpose: a type conflict must surface as an error, never be papered over
+    // by picking one type, which would make the query engine cast data at read time.
+    let new_schema = crate::schema_registry::merge_stored_schemas(res)?;
     Ok(new_schema)
 }
 

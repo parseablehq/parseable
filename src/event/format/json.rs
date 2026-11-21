@@ -106,6 +106,30 @@ impl EventFormat for Event {
         let value_arr = if static_schema_flag {
             value_arr
         } else {
+            // Arrow's raw inference sees both valid timestamps and ordinary strings as
+            // Utf8. V1 later promotes a time-named field to Timestamp when any record
+            // contains a valid timestamp. Apply that promotion before the per-record
+            // pass so each incompatible value goes directly to its own typed sibling.
+            let effective_inferred_schema = super::update_field_type_in_schema(
+                Arc::new(raw_inferred_schema.clone()),
+                Some(stream_schema),
+                time_partition,
+                Some(&value_arr),
+                schema_version,
+                infer_timestamp,
+            );
+
+            // Do this before the batch-level rename. A batch can contain more than two
+            // types for one field; choosing one aggregate sibling first would route every
+            // incompatible value through that sibling and create incorrect chained names.
+            let value_arr = super::rename_per_record_type_mismatches(
+                value_arr,
+                effective_inferred_schema.as_ref(),
+                stream_schema,
+                schema_version,
+                infer_timestamp,
+            );
+
             // Detect schema conflicts using raw inferred schema vs existing stream schema
             // Pass the actual values and schema_version to check if values can be coerced to existing types
             let conflicts = detect_schema_conflicts(
@@ -113,10 +137,11 @@ impl EventFormat for Event {
                 stream_schema,
                 &value_arr,
                 schema_version,
+                infer_timestamp,
             );
 
             // If there are conflicts, rename the fields in JSON values
-            let value_arr = if !conflicts.is_empty() {
+            if !conflicts.is_empty() {
                 rename_conflicting_fields_in_json(
                     value_arr,
                     &conflicts,
@@ -125,19 +150,7 @@ impl EventFormat for Event {
                 )
             } else {
                 value_arr
-            };
-
-            // Per-record fallback: catches batches with mixed JSON types for the
-            // same field, which the batch-level detect_schema_conflicts misses
-            // because arrow's inference picks one winning type (string over bool).
-            // Internally short-circuits when this can't apply (single-record
-            // batches, or no field-name collision at the same type).
-            super::rename_per_record_type_mismatches(
-                value_arr,
-                &raw_inferred_schema,
-                stream_schema,
-                schema_version,
-            )
+            }
         };
 
         // collect all the keys from all the json objects in the request body
@@ -587,6 +600,7 @@ mod tests {
     use std::str::FromStr;
 
     use arrow_array::UInt64Array;
+    use arrow_schema::TimeUnit;
     use serde_json::json;
 
     use super::*;
@@ -689,5 +703,299 @@ mod tests {
         let parsed = extract_and_parse_time(&json, "timestamp");
 
         assert!(parsed.is_err());
+    }
+
+    /// Runs `to_data` on `body` against a stream that already has `existing`, decodes the
+    /// result, and returns the columns the event adds to the stream.
+    fn new_columns(
+        existing: &[(&str, DataType)],
+        body: Value,
+        schema_version: SchemaVersion,
+        infer_timestamp: bool,
+    ) -> Vec<(String, DataType)> {
+        let schema: HashMap<String, Arc<Field>> = existing
+            .iter()
+            .map(|(n, t)| (n.to_string(), Arc::new(Field::new(*n, t.clone(), true))))
+            .collect();
+        let (data, fields, _) = Event::new(body, Utc::now())
+            .to_data(&schema, None, schema_version, false, infer_timestamp)
+            .unwrap();
+        Event::decode(data, Arc::new(Schema::new(fields.clone()))).unwrap();
+        fields
+            .iter()
+            .filter(|f| !schema.contains_key(f.name()))
+            .map(|f| (f.name().clone(), f.data_type().clone()))
+            .collect()
+    }
+
+    /// A conflict rename names the new column after the type it is stored as, so the
+    /// suffix always matches the column's type (and the schema authority's naming).
+    #[test]
+    fn conflict_rename_suffix_matches_stored_type() {
+        let ts = DataType::Timestamp(TimeUnit::Millisecond, None);
+        let v1 = SchemaVersion::V1;
+        // (existing columns, event, schema version, infer_timestamp, expected new column)
+        type Case = (
+            Vec<(&'static str, DataType)>,
+            Value,
+            SchemaVersion,
+            bool,
+            (&'static str, DataType),
+        );
+        let cases: Vec<Case> = vec![
+            // V1 stores every number as Float64, integers included.
+            (
+                vec![("g", DataType::Utf8)],
+                json!({"g": 1000}),
+                v1,
+                true,
+                ("g_float64", DataType::Float64),
+            ),
+            (
+                vec![("g", DataType::Utf8)],
+                json!({"g": 1.5}),
+                v1,
+                true,
+                ("g_float64", DataType::Float64),
+            ),
+            // Per-record path: mixed types in one batch.
+            (
+                vec![("g", DataType::Utf8)],
+                json!([{"g": "a"}, {"g": 1000}]),
+                v1,
+                true,
+                ("g_float64", DataType::Float64),
+            ),
+            // A date string in a time-named field is stored as Timestamp.
+            (
+                vec![("event_time", DataType::Float64)],
+                json!({"event_time": "2025-01-01T00:00:00Z"}),
+                v1,
+                true,
+                ("event_time_timestamp_ms", ts.clone()),
+            ),
+            (
+                vec![("event_time", DataType::Float64)],
+                json!([{"event_time": 5}, {"event_time": "2025-01-01T00:00:00Z"}]),
+                v1,
+                true,
+                ("event_time_timestamp_ms", ts.clone()),
+            ),
+            // ... but not with timestamp inference off,
+            (
+                vec![("event_time", DataType::Float64)],
+                json!({"event_time": "2025-01-01T00:00:00Z"}),
+                v1,
+                false,
+                ("event_time_utf8", DataType::Utf8),
+            ),
+            // nor when the string is not a date,
+            (
+                vec![("event_time", DataType::Float64)],
+                json!({"event_time": "abc"}),
+                v1,
+                true,
+                ("event_time_utf8", DataType::Utf8),
+            ),
+            // nor in a field whose name is not time-like.
+            (
+                vec![("g", DataType::Float64)],
+                json!({"g": "2025-01-01T00:00:00Z"}),
+                v1,
+                true,
+                ("g_utf8", DataType::Utf8),
+            ),
+            // Numbers into a Timestamp field.
+            (
+                vec![("event_time", ts.clone())],
+                json!({"event_time": 5}),
+                v1,
+                true,
+                ("event_time_float64", DataType::Float64),
+            ),
+            // V0 keeps integers as Int64.
+            (
+                vec![("g", DataType::Utf8)],
+                json!({"g": 1000}),
+                SchemaVersion::V0,
+                true,
+                ("g_int64", DataType::Int64),
+            ),
+        ];
+        for (existing, body, version, infer_timestamp, (name, data_type)) in cases {
+            let label =
+                format!("{existing:?} + {body} ({version:?}, infer_timestamp={infer_timestamp})");
+            let added = new_columns(&existing, body, version, infer_timestamp);
+            assert_eq!(
+                added,
+                vec![(name.to_string(), data_type.clone())],
+                "{label}"
+            );
+            assert!(
+                name.ends_with(&*super::super::get_datatype_suffix(&data_type)),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_timestamp_and_text_in_first_batch_renames_text() {
+        let expected = vec![
+            (
+                "event_time".to_string(),
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+            ),
+            ("event_time_utf8".to_string(), DataType::Utf8),
+        ];
+        for body in [
+            json!([
+                {"event_time": "2025-01-01T00:00:00Z"},
+                {"event_time": "not a timestamp"}
+            ]),
+            json!([
+                {"event_time": "not a timestamp"},
+                {"event_time": "2025-01-01T00:00:00Z"}
+            ]),
+        ] {
+            assert_eq!(new_columns(&[], body, SchemaVersion::V1, true), expected);
+        }
+    }
+
+    #[test]
+    fn mixed_primitive_types_in_first_batch_get_typed_columns() {
+        assert_eq!(
+            new_columns(
+                &[],
+                json!([
+                    {"event_time": "not a timestamp"},
+                    {"event_time": 10},
+                    {"event_time": 10.5},
+                    {"event_time": "2025-01-01T00:00:00Z"},
+                    {"event_time": true}
+                ]),
+                SchemaVersion::V1,
+                true,
+            ),
+            vec![
+                (
+                    "event_time".to_string(),
+                    DataType::Timestamp(TimeUnit::Millisecond, None),
+                ),
+                ("event_time_bool".to_string(), DataType::Boolean),
+                ("event_time_float64".to_string(), DataType::Float64),
+                ("event_time_utf8".to_string(), DataType::Utf8),
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_primitive_types_reuse_existing_typed_columns() {
+        let existing = vec![
+            (
+                "event_time",
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+            ),
+            ("event_time_bool", DataType::Boolean),
+            ("event_time_float64", DataType::Float64),
+            ("event_time_utf8", DataType::Utf8),
+        ];
+        assert!(
+            new_columns(
+                &existing,
+                json!([
+                    {"event_time": "not a timestamp"},
+                    {"event_time": 10},
+                    {"event_time": 10.5},
+                    {"event_time": "2025-01-01T00:00:00Z"},
+                    {"event_time": true}
+                ]),
+                SchemaVersion::V1,
+                true,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn rename_target_avoids_incompatible_column_from_another_record() {
+        assert_eq!(
+            new_columns(
+                &[("k", DataType::Float64)],
+                json!([{"k": "moved"}, {"k_utf8": true}]),
+                SchemaVersion::V1,
+                true,
+            ),
+            vec![
+                ("k_utf8".to_string(), DataType::Boolean),
+                ("k_utf8_utf8".to_string(), DataType::Utf8),
+            ]
+        );
+    }
+
+    /// A conflicting list goes to a column named after its element type, so a field that
+    /// changes list type (`[1.5]`, then `["a"]`) gets a second column instead of the first
+    /// list column rejecting the batch.
+    #[test]
+    fn list_types_of_one_field_get_their_own_columns() {
+        let list = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
+        let existing = [
+            ("x", DataType::Float64),
+            ("x_list_float64", list(DataType::Float64)),
+        ];
+        assert_eq!(
+            new_columns(&existing, json!({"x": ["a"]}), SchemaVersion::V1, true),
+            vec![("x_list_utf8".to_string(), list(DataType::Utf8))]
+        );
+    }
+
+    /// After a resolution an ingestor holds another ingestor's list type in a typed column
+    /// (`f_list_utf8`). Its own list type still lands in a column of its type.
+    #[test]
+    fn nested_list_lands_next_to_another_ingestors_list_column() {
+        let list = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
+        let existing = [
+            ("f", DataType::Float64),
+            ("f_list_utf8", list(DataType::Utf8)),
+        ];
+        let added = new_columns(&existing, json!({"f": [[1]]}), SchemaVersion::V1, true);
+        assert_eq!(added.len(), 1, "{added:?}");
+        let (name, data_type) = &added[0];
+        assert!(matches!(data_type, DataType::List(item) if item.data_type().is_list()));
+        assert_eq!(
+            *name,
+            format!("f_{}", super::super::get_datatype_suffix(data_type))
+        );
+    }
+
+    /// A list whose typed name is taken by a list of another type (a literal column of
+    /// that name) chains, like a scalar, instead of being decoded into the wrong list.
+    #[test]
+    fn list_rename_chains_past_a_list_column_of_another_type() {
+        let list = |t: DataType| DataType::List(Arc::new(Field::new_list_field(t, true)));
+        let existing = [
+            ("f", DataType::Float64),
+            ("f_list_utf8", list(DataType::Float64)),
+        ];
+        assert_eq!(
+            new_columns(&existing, json!({"f": ["a"]}), SchemaVersion::V1, true),
+            vec![("f_list_utf8_list_utf8".to_string(), list(DataType::Utf8))]
+        );
+    }
+
+    /// An event carrying both a conflicting `f` and a literal `f_utf8` keeps both values
+    /// end to end: the moved value lands in `f_utf8_utf8`, the literal one in `f_utf8`.
+    #[test]
+    fn conflict_rename_keeps_literal_key_of_the_same_name() {
+        let existing = [("f", DataType::Float64), ("f_utf8", DataType::Utf8)];
+        for body in [
+            json!({"f": "moved", "f_utf8": "literal"}),
+            json!([{"f": 1.5}, {"f": "moved", "f_utf8": "literal"}]),
+        ] {
+            assert_eq!(
+                new_columns(&existing, body.clone(), SchemaVersion::V1, true),
+                vec![("f_utf8_utf8".to_string(), DataType::Utf8)],
+                "{body}"
+            );
+        }
     }
 }
