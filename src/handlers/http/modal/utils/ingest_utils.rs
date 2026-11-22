@@ -19,14 +19,19 @@
 use actix_web::http::header::USER_AGENT;
 use actix_web::{HttpRequest, web};
 use chrono::Utc;
+use opentelemetry_proto::tonic::collector::{
+    logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+    trace::v1::ExportTraceServiceRequest,
+};
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
+use prost::Message as OtelProstMessage;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
-use tracing::{error, instrument, warn};
+use tracing::{error, info_span, instrument, warn};
 
 use crate::event::error::EventError;
 use crate::{
@@ -41,11 +46,14 @@ use crate::{
         http::{
             ingest::PostError,
             kinesis::{Message, flatten_kinesis_logs},
+            max_event_payload_size,
         },
     },
     otel::{
-        logs::flatten_otel_logs, metrics::flatten_otel_metrics, otel_utils::deserialize_otel_json,
-        traces::flatten_otel_traces,
+        logs::{flatten_otel_logs, flatten_otel_protobuf as flatten_otel_logs_protobuf},
+        metrics::{flatten_otel_metrics, flatten_otel_metrics_protobuf},
+        otel_utils::deserialize_otel_json,
+        traces::{flatten_otel_traces, flatten_otel_traces_protobuf},
     },
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::StreamType,
@@ -68,20 +76,56 @@ pub fn ingest_helper(
     json: Value,
     time_partition: Option<String>,
 ) -> Result<(), PostError> {
-    if let Err(e) = flatten_and_push_logs(
-        json,
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
-        time_partition,
-        telemetry_type,
-        &tenant_id,
-    ) {
+    let result = match &log_source {
+        LogSource::Kinesis => decode_flatten_and_push_kinesis(
+            json,
+            &stream_name,
+            &p_custom_fields,
+            time_partition,
+            telemetry_type,
+            &tenant_id,
+        ),
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
+            Err(PostError::OtelNotSupported(stream_name.clone()))
+        }
+        _ => push_logs(
+            &stream_name,
+            json,
+            &log_source,
+            &p_custom_fields,
+            time_partition,
+            telemetry_type,
+            &tenant_id,
+        ),
+    };
+
+    if let Err(e) = result {
         error!("Ingestion failed for stream {stream_name}: {e}");
         return Err(e);
     }
 
     Ok(())
+}
+
+fn decode_flatten_and_push_kinesis(
+    json: Value,
+    stream_name: &str,
+    p_custom_fields: &HashMap<String, String>,
+    time_partition: Option<String>,
+    telemetry_type: TelemetryType,
+    tenant_id: &Option<String>,
+) -> Result<(), PostError> {
+    let message: Message = serde_json::from_value(json)?;
+    let records = convert_to_array(flatten_kinesis_logs(message)?)?;
+    push_logs(
+        stream_name,
+        records,
+        &LogSource::Kinesis,
+        p_custom_fields,
+        time_partition,
+        telemetry_type,
+        tenant_id,
+    )
 }
 
 // Common content processing for OTEL ingestion
@@ -133,160 +177,133 @@ fn handle_otel_ingestion(
     content_type: Option<String>,
     tenant_id: Option<String>,
 ) -> Result<(), PostError> {
-    match content_type {
-        Some(content_type) => {
-            if content_type == CONTENT_TYPE_JSON {
-                let json: serde_json::Value = match serde_json::from_slice(&body) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        error!(
-                            "Ingestion failed for stream {stream_name}: malformed JSON in request body"
-                        );
-                        return Err(PostError::SerdeError(e));
-                    }
-                };
-                if let Err(e) = flatten_and_push_logs(
+    let Some(content_type) = content_type else {
+        let message = format!(
+            "Ingestion failed for stream {stream_name}: Missing Content-Type header. Expected application/json or application/x-protobuf"
+        );
+        error!("{message}");
+        return Err(PostError::Invalid(anyhow::anyhow!(message)));
+    };
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    let records = {
+        let span = info_span!(
+            "flatten_otel_payload",
+            stream_name,
+            content_type,
+            record_count = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+        let records = match content_type.as_str() {
+            CONTENT_TYPE_JSON => {
+                let json = serde_json::from_slice(&body).map_err(|error| {
+                    error!(
+                        "Ingestion failed for stream {stream_name}: malformed JSON in request body"
+                    );
+                    PostError::SerdeError(error)
+                })?;
+                decode_and_flatten_otel_json(
                     json,
-                    &stream_name,
                     &log_source,
-                    &p_custom_fields,
-                    None,
-                    telemetry_type,
-                    &tenant_id,
-                ) {
-                    error!("Ingestion failed for stream {stream_name}: {e}");
-                    return Err(e);
-                }
-            } else if content_type == CONTENT_TYPE_PROTOBUF {
-                error!(
-                    "Ingestion failed for stream {stream_name}: Protobuf ingestion is not supported in Parseable OSS"
-                );
-                return Err(PostError::Invalid(anyhow::anyhow!(
-                    "Ingestion failed for stream {stream_name}: Protobuf ingestion is not supported in Parseable OSS"
-                )));
-            } else {
-                error!(
-                    "Ingestion failed for stream {stream_name}: Unsupported Content-Type: {content_type}. Expected application/json or application/x-protobuf"
-                );
-                return Err(PostError::Invalid(anyhow::anyhow!(
-                    "Ingestion failed for stream {stream_name}: Unsupported Content-Type: {content_type}. Expected application/json or application/x-protobuf"
-                )));
+                    tenant,
+                    PARSEABLE.options.normalise_otel_payload,
+                )
+                .map_err(|error| {
+                    error!("Ingestion failed for stream {stream_name}: {error}");
+                    error
+                })?
             }
-        }
-        None => {
-            error!(
-                "Ingestion failed for stream {stream_name}: Missing Content-Type header. Expected application/json or application/x-protobuf"
-            );
-            return Err(PostError::Invalid(anyhow::anyhow!(
-                "Ingestion failed for stream {stream_name}: Missing Content-Type header. Expected application/json or application/x-protobuf"
-            )));
-        }
+            CONTENT_TYPE_PROTOBUF => {
+                if body.len() > max_event_payload_size() {
+                    let message = format!(
+                        "Ingestion failed for stream {stream_name}: Protobuf message size {} exceeds maximum allowed size of {} bytes",
+                        body.len(),
+                        max_event_payload_size(),
+                    );
+                    error!("{message}");
+                    return Err(PostError::Invalid(anyhow::anyhow!(message)));
+                }
+                decode_and_flatten_otel_protobuf(body.as_ref(), &log_source, tenant).map_err(
+                    |error| {
+                        let message = format!(
+                            "Ingestion failed for stream {stream_name}: Failed to decode protobuf message: {error}"
+                        );
+                        error!("{message}");
+                        PostError::Invalid(anyhow::anyhow!(message))
+                    },
+                )?
+            }
+            _ => {
+                let message = format!(
+                    "Ingestion failed for stream {stream_name}: Unsupported Content-Type: {content_type}. Expected application/json or application/x-protobuf"
+                );
+                error!("{message}");
+                return Err(PostError::Invalid(anyhow::anyhow!(message)));
+            }
+        };
+        span.record("record_count", records.len());
+        records
+    };
+
+    if !records.is_empty() {
+        push_logs(
+            &stream_name,
+            Value::Array(records),
+            &log_source,
+            &p_custom_fields,
+            None,
+            telemetry_type,
+            &tenant_id,
+        )?;
     }
+
     Ok(())
 }
 
-#[instrument(
-    name = "flatten_and_push_logs",
-    level = "info",
-    skip(
-        json,
-        log_source,
-        p_custom_fields,
-        time_partition,
-        telemetry_type,
-        tenant_id
-    ),
-    fields(stream_name)
-)]
-pub fn flatten_and_push_logs(
+fn decode_and_flatten_otel_json(
     json: Value,
-    stream_name: &str,
     log_source: &LogSource,
-    p_custom_fields: &HashMap<String, String>,
-    time_partition: Option<String>,
-    telemetry_type: TelemetryType,
-    tenant_id: &Option<String>,
-) -> Result<(), PostError> {
-    let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    // Verify the dataset fields count
-    verify_dataset_fields_count(stream_name, tenant_id)?;
-
+    tenant_id: &str,
+    normalise: bool,
+) -> Result<Vec<Value>, PostError> {
     match log_source {
-        LogSource::Kinesis => {
-            //custom flattening required for Amazon Kinesis
-            let message: Message = serde_json::from_value(json)?;
-            let flattened_kinesis_data = flatten_kinesis_logs(message)?;
-            let record = convert_to_array(flattened_kinesis_data)?;
-            push_logs(
-                stream_name,
-                record,
-                log_source,
-                p_custom_fields,
-                time_partition,
-                telemetry_type,
-                tenant_id,
-            )?;
-        }
         LogSource::OtelLogs => {
-            let logs: LogsData =
-                deserialize_otel_json(json, PARSEABLE.options.normalise_otel_payload)?;
-            let records = flatten_otel_logs(&logs, tenant_str);
-            if !records.is_empty() {
-                push_logs(
-                    stream_name,
-                    Value::Array(records),
-                    log_source,
-                    p_custom_fields,
-                    None,
-                    telemetry_type,
-                    tenant_id,
-                )?;
-            }
-        }
-        LogSource::OtelTraces => {
-            let traces: TracesData =
-                deserialize_otel_json(json, PARSEABLE.options.normalise_otel_payload)?;
-            let records = flatten_otel_traces(&traces, tenant_str);
-            if !records.is_empty() {
-                push_logs(
-                    stream_name,
-                    Value::Array(records),
-                    log_source,
-                    p_custom_fields,
-                    None,
-                    telemetry_type,
-                    tenant_id,
-                )?;
-            }
+            let message: LogsData = deserialize_otel_json(json, normalise)?;
+            Ok(flatten_otel_logs(&message, tenant_id))
         }
         LogSource::OtelMetrics => {
-            let metrics: MetricsData =
-                deserialize_otel_json(json, PARSEABLE.options.normalise_otel_payload)?;
-            let records = flatten_otel_metrics(metrics, tenant_str);
-            if !records.is_empty() {
-                push_logs(
-                    stream_name,
-                    Value::Array(records),
-                    log_source,
-                    p_custom_fields,
-                    None,
-                    telemetry_type,
-                    tenant_id,
-                )?;
-            }
+            let message: MetricsData = deserialize_otel_json(json, normalise)?;
+            Ok(flatten_otel_metrics(message, tenant_id))
         }
-        _ => push_logs(
-            stream_name,
-            json,
-            log_source,
-            p_custom_fields,
-            time_partition,
-            telemetry_type,
-            tenant_id,
-        )?,
+        LogSource::OtelTraces => {
+            let message: TracesData = deserialize_otel_json(json, normalise)?;
+            Ok(flatten_otel_traces(&message, tenant_id))
+        }
+        _ => Err(PostError::Invalid(anyhow::anyhow!(
+            "JSON OTLP ingestion requires an OTLP log source"
+        ))),
     }
+}
 
-    Ok(())
+fn decode_and_flatten_otel_protobuf(
+    body: &[u8],
+    log_source: &LogSource,
+    tenant_id: &str,
+) -> anyhow::Result<Vec<Value>> {
+    match log_source {
+        LogSource::OtelLogs => {
+            let message = ExportLogsServiceRequest::decode(body)?;
+            Ok(flatten_otel_logs_protobuf(&message, tenant_id))
+        }
+        LogSource::OtelMetrics => {
+            let message = ExportMetricsServiceRequest::decode(body)?;
+            Ok(flatten_otel_metrics_protobuf(&message, tenant_id))
+        }
+        LogSource::OtelTraces => {
+            let message = ExportTraceServiceRequest::decode(body)?;
+            Ok(flatten_otel_traces_protobuf(&message, tenant_id))
+        }
+        _ => anyhow::bail!("protobuf OTLP ingestion requires an OTLP log source"),
+    }
 }
 
 #[instrument(
@@ -317,6 +334,13 @@ pub fn push_logs(
     let schema = &metadata.schema;
     let infer_timestamp = metadata.infer_timestamp;
     let p_timestamp = Utc::now();
+
+    // Keep this in the common write path so pre-flattened inputs cannot bypass the limit.
+    verify_dataset_fields_count(
+        stream_name,
+        metadata.schema.len(),
+        PARSEABLE.options.dataset_fields_allowed_limit,
+    )?;
 
     let data = convert_array_to_object(
         json,
@@ -497,14 +521,10 @@ pub fn get_otel_custom_fields_from_header(
 
 fn verify_dataset_fields_count(
     stream_name: &str,
-    tenant_id: &Option<String>,
+    fields_count: usize,
+    allowed_limit: usize,
 ) -> Result<(), PostError> {
-    let fields_count = PARSEABLE
-        .get_stream(stream_name, tenant_id)?
-        .get_schema()
-        .fields()
-        .len();
-    let dataset_fields_warn_threshold = 0.8 * PARSEABLE.options.dataset_fields_allowed_limit as f64;
+    let dataset_fields_warn_threshold = 0.8 * allowed_limit as f64;
     // Check if the fields count exceeds the warn threshold
     if fields_count > dataset_fields_warn_threshold as usize {
         tracing::trace!(
@@ -512,16 +532,16 @@ fn verify_dataset_fields_count(
             stream_name,
             fields_count,
             dataset_fields_warn_threshold as usize,
-            PARSEABLE.options.dataset_fields_allowed_limit
+            allowed_limit
         );
     }
     // Check if the fields count exceeds the limit
     // Return an error if the fields count exceeds the limit
-    if fields_count > PARSEABLE.options.dataset_fields_allowed_limit {
+    if fields_count > allowed_limit {
         let error = PostError::FieldsCountLimitExceeded(
             stream_name.to_string(),
             fields_count,
-            PARSEABLE.options.dataset_fields_allowed_limit,
+            allowed_limit,
         );
         tracing::error!("{}", error);
         // Return an error if the fields count exceeds the limit
@@ -583,6 +603,70 @@ pub fn validate_stream_for_ingestion(
 mod tests {
     use super::*;
     use actix_web::test::TestRequest;
+
+    #[test]
+    fn dataset_field_limit_accepts_configured_limit() {
+        assert!(verify_dataset_fields_count("test-stream", 100, 100).is_ok());
+    }
+
+    #[test]
+    fn dataset_field_limit_rejects_count_above_configured_limit() {
+        let error = verify_dataset_fields_count("test-stream", 101, 100).unwrap_err();
+
+        assert!(matches!(
+            error,
+            PostError::FieldsCountLimitExceeded(stream, fields, allowed)
+                if stream == "test-stream" && fields == 101 && allowed == 100
+        ));
+    }
+
+    #[test]
+    fn json_logs_decode_to_flattened_records() {
+        let payload = serde_json::json!({
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{}]
+                }]
+            }]
+        });
+
+        let records =
+            decode_and_flatten_otel_json(payload, &LogSource::OtelLogs, "test-tenant", false)
+                .unwrap();
+
+        assert_eq!(records.len(), 1);
+    }
+
+    #[test]
+    fn protobuf_logs_decode_to_flattened_records() {
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord::default()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let records = decode_and_flatten_otel_protobuf(
+            &request.encode_to_vec(),
+            &LogSource::OtelLogs,
+            "test-tenant",
+        )
+        .unwrap();
+
+        assert_eq!(records.len(), 1);
+    }
+
+    #[test]
+    fn protobuf_decode_rejects_non_otel_log_source() {
+        let error =
+            decode_and_flatten_otel_protobuf(&[], &LogSource::Json, "test-tenant").unwrap_err();
+        assert!(error.to_string().contains("requires an OTLP log source"));
+    }
 
     #[test]
     fn test_get_custom_fields_from_header_with_custom_fields() {
