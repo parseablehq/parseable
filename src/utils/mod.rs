@@ -211,6 +211,7 @@ pub async fn user_auth_for_datasets(
                         Action::CreateUserGroup,
                         Action::DeleteUserGroup,
                         Action::DeleteNode,
+                        Action::ResolveSchema,
                     ]
                     .contains(action) =>
                 {

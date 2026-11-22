@@ -1,21 +1,21 @@
 /*
-* Parseable Server (C) 2022 - 2025 Parseable, Inc.
-*
-* This program is free software: you can redistribute it and/or modify
-* it under the terms of the GNU Affero General Public License as
-* published by the Free Software Foundation, either version 3 of the
-* License, or (at your option) any later version.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-* GNU Affero General Public License for more details.
-*
-* You should have received a copy of the GNU Affero General Public License
-* along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*
-*/
+ * Parseable Server (C) 2022 - 2025 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *
+ */
 
 use std::future::{Ready, ready};
 
@@ -57,6 +57,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 pub const CLUSTER_SECRET_HEADER: &str = "x-p-cluster-secret";
+/// Tenant an intra-cluster request acts for, trusted once the cluster secret is verified.
+pub const INTRA_CLUSTER_TENANT_HEADER: &str = "intra-cluster-tenant";
 pub static CLUSTER_SECRET: OnceCell<(String, String)> = OnceCell::new();
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -719,7 +721,7 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let (err, id) = if let Some((secret, _)) = CLUSTER_SECRET.get() {
             if let Some(header) = req.headers().get(CLUSTER_SECRET_HEADER)
-                && let Some(tenant) = req.headers().get("intra-cluster-tenant")
+                && let Some(tenant) = req.headers().get(INTRA_CLUSTER_TENANT_HEADER)
                 && let Some(userid) = req.headers().get("intra-cluster-userid")
                 && let Ok(incoming_secret) = header.to_str()
                 && let Ok(tenant) = tenant.to_str()

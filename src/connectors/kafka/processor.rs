@@ -20,6 +20,7 @@ use crate::{
     connectors::common::processor::Processor,
     event::{
         USER_AGENT_KEY,
+        error::EventError,
         format::{EventFormat, LogSourceEntry, json},
     },
     handlers::TelemetryType,
@@ -33,10 +34,11 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error};
+use tracing::{debug, error, info, warn};
 
 use super::{ConsumerRecord, StreamConsumer, TopicPartition, config::BufferConfig};
 
@@ -93,7 +95,7 @@ struct StreamMeta {
 /// poll/commit/recv), same reasoning as the rayon offload used for otel and
 /// prometheus remote-write ingestion.
 fn build_and_process_event(
-    records: Vec<ConsumerRecord>,
+    records: &[ConsumerRecord],
     stream_name: String,
     tenant_id: Option<String>,
     meta: StreamMeta,
@@ -131,8 +133,31 @@ fn build_and_process_event(
     Ok(())
 }
 
+/// Matches the ingest-side `Retry-After` for a stream blocked by schema resolution.
+const SCHEMA_BLOCKED_RETRY: Duration = Duration::from_secs(60);
+
+/// A chunk whose stream rejects writes until its schema is reconciled with the cluster.
+/// Carries the records back, so the chunk can be held (and its offsets left uncommitted)
+/// and retried instead of dropped.
+#[derive(thiserror::Error)]
+#[error("ingestion blocked by schema resolution: {reason}")]
+pub struct SchemaBlocked {
+    pub records: Vec<ConsumerRecord>,
+    reason: String,
+}
+
+impl std::fmt::Debug for SchemaBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SchemaBlocked")
+            .field("records", &self.records.len())
+            .field("reason", &self.reason)
+            .finish()
+    }
+}
+
 #[async_trait]
 impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
+    /// Fails with [`SchemaBlocked`] while the stream rejects writes.
     async fn process(&self, records: Vec<ConsumerRecord>) -> anyhow::Result<()> {
         let len = records.len();
         debug!("Processing {len} records");
@@ -141,16 +166,194 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
         let tenant_id = records.first().and_then(|r| r.tenant_id.clone());
 
         let meta = self.prepare_stream(&stream_name, &tenant_id).await?;
-
         let (tx, rx) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
-            let res = build_and_process_event(records, stream_name, tenant_id, meta);
-            let _ = tx.send(res);
+            let res = build_and_process_event(&records, stream_name, tenant_id, meta);
+            let _ = tx.send((records, res));
         });
-        rx.await??;
+        let (records, res) = rx.await?;
+        if let Err(err) = res {
+            return Err(match err.downcast::<EventError>() {
+                Ok(EventError::SchemaResolutionBlocked(_, reason)) => {
+                    SchemaBlocked { records, reason }.into()
+                }
+                Ok(other) => other.into(),
+                Err(other) => other,
+            });
+        }
 
         debug!("Processed {len} records");
         Ok(())
+    }
+}
+
+/// Pauses fetching for one partition while any of its chunks is blocked by schema
+/// resolution, and resumes it when the last one goes through.
+///
+/// All partitions share one consumer loop, which waits whenever a partition's queue is
+/// full. Pausing keeps a blocked partition from filling its queue, so the loop keeps
+/// serving the other partitions; the blocked chunks hold at most what was already fetched.
+/// A resumed partition fetches again from the last record handed to the application, so
+/// nothing is skipped or read twice.
+///
+/// The pause belongs to the partition, not to one worker: it outlives a revoke, and a
+/// revoked worker can still be shutting down when a reassignment starts a new one. The
+/// count of blocked chunks is therefore shared by every worker of the partition, and the
+/// partition is paused exactly while it is above zero.
+struct PartitionPause<'a> {
+    consumer: &'a StreamConsumer,
+    tp: &'a TopicPartition,
+    blocked: &'a BlockedChunks,
+    /// This worker's share of the partition's blocked chunks.
+    held: std::sync::atomic::AtomicUsize,
+}
+
+impl<'a> PartitionPause<'a> {
+    fn new(
+        consumer: &'a StreamConsumer,
+        tp: &'a TopicPartition,
+        blocked: &'a BlockedChunks,
+    ) -> Self {
+        Self {
+            consumer,
+            tp,
+            blocked,
+            held: std::sync::atomic::AtomicUsize::default(),
+        }
+    }
+
+    fn tpl(&self) -> rdkafka::TopicPartitionList {
+        let mut tpl = rdkafka::TopicPartitionList::new();
+        tpl.add_partition(&self.tp.topic, self.tp.partition);
+        tpl
+    }
+
+    fn hold(&self) {
+        // A worker pauses on its first blocked chunk even if an older worker's pause should
+        // still be in effect: pausing again is harmless, and the new worker does not have
+        // to rely on that pause having survived the reassignment.
+        let first = self.held.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
+        self.blocked
+            .add(self.tp, first, || match self.consumer.pause(&self.tpl()) {
+                Ok(()) => warn!("Paused {:?}: its stream rejects writes", self.tp),
+                Err(e) => error!(error = %e, "Failed to pause {:?}", self.tp),
+            });
+    }
+
+    fn release(&self) {
+        self.held.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.blocked.remove(self.tp, 1, || self.resume());
+    }
+
+    fn resume(&self) {
+        match self.consumer.resume(&self.tpl()) {
+            Ok(()) => info!("Resumed {:?}", self.tp),
+            Err(e) => error!(error = %e, "Failed to resume {:?}", self.tp),
+        }
+    }
+}
+
+impl Drop for PartitionPause<'_> {
+    /// A revoked partition drops its worker with chunks still held. Give them back, so a
+    /// later assignment of the partition does not stay paused with nothing to resume it,
+    /// while a newer worker's blocked chunks keep it paused.
+    fn drop(&mut self) {
+        let held = *self.held.get_mut();
+        if held > 0 {
+            self.blocked.remove(self.tp, held, || self.resume());
+        }
+    }
+}
+
+/// Blocked chunks per partition, across every worker of one consumer.
+#[derive(Default)]
+struct BlockedChunks<K = TopicPartition> {
+    counts: std::sync::Mutex<HashMap<K, usize>>,
+}
+
+impl<K: Eq + std::hash::Hash + Clone> BlockedChunks<K> {
+    /// Adds one blocked chunk of `tp`, calling `pause` if it is the first or `force` is
+    /// set. Runs `pause` under the lock, so pauses and resumes reach the consumer in count
+    /// order.
+    fn add(&self, tp: &K, force: bool, pause: impl FnOnce()) {
+        let mut counts = self.lock();
+        let count = counts.entry(tp.clone()).or_default();
+        if *count == 0 || force {
+            pause();
+        }
+        *count += 1;
+    }
+
+    /// Removes `n` blocked chunks of `tp`, calling `resume` (under the lock) if none is
+    /// left.
+    fn remove(&self, tp: &K, n: usize, resume: impl FnOnce()) {
+        let mut counts = self.lock();
+        let Some(count) = counts.get_mut(tp) else {
+            return;
+        };
+        *count = count.saturating_sub(n);
+        if *count == 0 {
+            counts.remove(tp);
+            resume();
+        }
+    }
+
+    /// Also used from `Drop`, which must not panic: the counts stay consistent even if a
+    /// holder panicked, since every update is a single step.
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<K, usize>> {
+        self.counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Commits one partition's chunks in order.
+///
+/// Chunks finish out of order: one can wait out a schema block while later ones go
+/// through. Committing each chunk's own offset would then move the committed offset past
+/// records not written yet, and a restart or rebalance would skip them. A chunk's offset
+/// is committed only once every earlier chunk is done, so the committed offset never
+/// passes an unwritten record. Records written after it may be read again after a restart.
+#[derive(Default)]
+struct OrderedCommits<T = rdkafka::TopicPartitionList> {
+    state: std::sync::Mutex<CommitState<T>>,
+}
+
+struct CommitState<T> {
+    /// Sequence number of the earliest chunk not done yet.
+    next: usize,
+    /// Done chunks after `next`, with the offsets each would commit.
+    done: BTreeMap<usize, Option<T>>,
+}
+
+impl<T> Default for CommitState<T> {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            done: BTreeMap::new(),
+        }
+    }
+}
+
+impl<T> OrderedCommits<T> {
+    /// Marks chunk `seq` (numbered from 0 in stream order) done and calls `commit` with the
+    /// offsets of the latest chunk that every earlier chunk is done before. Runs `commit`
+    /// under the lock, so commits never go backwards.
+    fn complete(&self, seq: usize, offsets: Option<T>, commit: impl FnOnce(T)) {
+        let mut state = self.state.lock().expect("commit lock poisoned");
+        state.done.insert(seq, offsets);
+        let mut latest = None;
+        loop {
+            let next = state.next;
+            let Some(offsets) = state.done.remove(&next) else {
+                break;
+            };
+            state.next += 1;
+            latest = offsets.or(latest);
+        }
+        if let Some(offsets) = latest {
+            commit(offsets);
+        }
     }
 }
 
@@ -162,6 +365,7 @@ where
     processor: Arc<P>,
     consumer: Arc<StreamConsumer>,
     buffer_config: BufferConfig,
+    blocked: Arc<BlockedChunks>,
 }
 
 impl<P> StreamWorker<P>
@@ -180,7 +384,47 @@ where
             processor,
             consumer,
             buffer_config,
+            blocked: Arc::default(),
         }
+    }
+
+    /// Processes one chunk, holding it while its stream is blocked by schema resolution:
+    /// committing then would drop its records. Returns once the chunk went through or
+    /// failed for another reason.
+    async fn process_chunk(
+        &self,
+        tp: &TopicPartition,
+        pause: &PartitionPause<'_>,
+        mut records: Vec<ConsumerRecord>,
+    ) -> anyhow::Result<()> {
+        let mut held = false;
+        let result = loop {
+            match self.processor.process(records).await {
+                Err(err) => match err.downcast::<SchemaBlocked>() {
+                    Ok(blocked) => {
+                        if !held {
+                            pause.hold();
+                            held = true;
+                        }
+                        warn!(
+                            "{:?}: {}; retrying {} records in {}s",
+                            tp,
+                            blocked.reason,
+                            blocked.records.len(),
+                            SCHEMA_BLOCKED_RETRY.as_secs()
+                        );
+                        records = blocked.records;
+                        tokio::time::sleep(SCHEMA_BLOCKED_RETRY).await;
+                    }
+                    Err(err) => break Err(err),
+                },
+                Ok(()) => break Ok(()),
+            }
+        };
+        if held {
+            pause.release();
+        }
+        result
     }
 
     pub async fn process_partition(
@@ -193,24 +437,37 @@ where
             self.buffer_config.buffer_size,
             self.buffer_config.buffer_timeout,
         );
+        let pause = PartitionPause::new(&self.consumer, &tp, &self.blocked);
+        let commits = OrderedCommits::default();
 
+        // Unbounded on purpose: blocked chunks must keep draining the partition's queue, or
+        // a full queue would stall the consumer loop shared by every partition. The pause
+        // bounds what a blocked partition holds.
         chunked_stream
-            .for_each_concurrent(None, |records| async {
-                if let Some(last_record) = records.iter().max_by_key(|r| r.offset) {
-                    let tpl = last_record.offset_to_commit().unwrap();
-
-                    if let Err(e) = self.processor.process(records).await {
+            .enumerate()
+            .for_each_concurrent(None, |(seq, records)| {
+                let (tp, pause, commits) = (&tp, &pause, &commits);
+                async move {
+                    let tpl = records
+                        .iter()
+                        .max_by_key(|r| r.offset)
+                        .map(|last| last.offset_to_commit().unwrap());
+                    if !records.is_empty()
+                        && let Err(e) = self.process_chunk(tp, pause, records).await
+                    {
                         error!("Failed to process records for {:?}: {:?}", tp, e);
                     }
 
-                    //CommitMode::Async race condition.
-                    //@see https://github.com/confluentinc/librdkafka/issues/4534
-                    //@see https://github.com/confluentinc/librdkafka/issues/4059
-                    if let Err(e) = self.consumer.commit(&tpl, CommitMode::Sync) {
-                        error!(error = %e, "Failed to commit offsets for {:?}", tpl);
-                    } else {
-                        debug!("Committed offsets for {:?}", tpl);
-                    }
+                    commits.complete(seq, tpl, |tpl| {
+                        //CommitMode::Async race condition.
+                        //@see https://github.com/confluentinc/librdkafka/issues/4534
+                        //@see https://github.com/confluentinc/librdkafka/issues/4059
+                        if let Err(e) = self.consumer.commit(&tpl, CommitMode::Sync) {
+                            error!(error = %e, "Failed to commit offsets for {:?}", tpl);
+                        } else {
+                            debug!("Committed offsets for {:?}", tpl);
+                        }
+                    });
                 }
             })
             .await;
@@ -218,5 +475,74 @@ where
         self.processor.post_stream().await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn complete(commits: &OrderedCommits<i64>, seq: usize, offset: Option<i64>) -> Option<i64> {
+        let mut committed = None;
+        commits.complete(seq, offset, |o| committed = Some(o));
+        committed
+    }
+
+    #[test]
+    fn later_chunk_waits_for_earlier_ones() {
+        let commits = OrderedCommits::<i64>::default();
+        // Chunk 0 is held (schema block) while 1 and 2 go through: nothing committed.
+        assert_eq!(complete(&commits, 1, Some(20)), None);
+        assert_eq!(complete(&commits, 2, Some(30)), None);
+        // Chunk 0 done: commits through the furthest consecutive chunk.
+        assert_eq!(complete(&commits, 0, Some(10)), Some(30));
+        assert_eq!(complete(&commits, 3, Some(40)), Some(40));
+    }
+
+    /// Applies one change to the counts and reports the pause or resume it made, if any.
+    fn hold(blocked: &BlockedChunks<u8>, first_of_worker: bool) -> Option<&'static str> {
+        let mut call = None;
+        blocked.add(&0, first_of_worker, || call = Some("pause"));
+        call
+    }
+
+    fn release(blocked: &BlockedChunks<u8>, n: usize) -> Option<&'static str> {
+        let mut call = None;
+        blocked.remove(&0, n, || call = Some("resume"));
+        call
+    }
+
+    #[test]
+    fn partition_paused_while_any_chunk_is_blocked() {
+        let blocked = BlockedChunks::<u8>::default();
+        assert_eq!(hold(&blocked, true), Some("pause"));
+        assert_eq!(hold(&blocked, false), None);
+        assert_eq!(release(&blocked, 1), None);
+        assert_eq!(release(&blocked, 1), Some("resume"));
+        // Nothing left to resume.
+        assert_eq!(release(&blocked, 1), None);
+    }
+
+    #[test]
+    fn revoked_worker_keeps_newer_workers_pause() {
+        let blocked = BlockedChunks::<u8>::default();
+        // The old worker pauses the partition with two blocked chunks, then is revoked.
+        assert_eq!(hold(&blocked, true), Some("pause"));
+        assert_eq!(hold(&blocked, false), None);
+        // The partition is reassigned and a new worker blocks before the old one is dropped.
+        assert_eq!(hold(&blocked, true), Some("pause"));
+        // Dropping the old worker gives back its two chunks without resuming.
+        assert_eq!(release(&blocked, 2), None);
+        // The new worker's chunk goes through and resumes the partition.
+        assert_eq!(release(&blocked, 1), Some("resume"));
+    }
+
+    #[test]
+    fn chunk_without_offsets_still_advances() {
+        let commits = OrderedCommits::<i64>::default();
+        assert_eq!(complete(&commits, 1, Some(20)), None);
+        assert_eq!(complete(&commits, 0, None), Some(20));
+        assert_eq!(complete(&commits, 2, None), None);
+        assert_eq!(complete(&commits, 3, Some(40)), Some(40));
     }
 }

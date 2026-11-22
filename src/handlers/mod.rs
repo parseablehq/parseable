@@ -22,6 +22,8 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::event::format::LogSource;
+
 pub mod airplane;
 pub mod http;
 pub mod livetail;
@@ -127,6 +129,15 @@ impl Display for DatasetTag {
             DatasetTag::ServiceMap => "service-map",
         })
     }
+}
+
+pub fn validate_agent_observability_constraints(log_sources: &[LogSource]) -> Result<(), String> {
+    if !log_sources.contains(&LogSource::OtelTraces) {
+        return Err(
+            "Dataset with tag 'agent-observability' must have log source 'otel-traces'".to_string(),
+        );
+    }
+    Ok(())
 }
 
 pub fn parse_dataset_tags(header_value: &str) -> Vec<DatasetTag> {

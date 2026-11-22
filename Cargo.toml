@@ -193,7 +193,7 @@ rustc-hash = "2.1.2"
 futures-core = "0.3.31"
 tempfile = "3.20.0"
 lazy_static = "1.4.0"
-prost = "0.13.1"
+prost = "0.14.1"
 dashmap = "6.2.1"
 parking_lot = "0.12.5"
 indexmap = { version = "2.14.0", features = ["serde"] }
