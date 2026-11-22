@@ -19,14 +19,19 @@
 use actix_web::http::header::USER_AGENT;
 use actix_web::{HttpRequest, web};
 use chrono::Utc;
+use opentelemetry_proto::tonic::collector::{
+    logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+    trace::v1::ExportTraceServiceRequest,
+};
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
+use prost::Message as OtelProstMessage;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
-use tracing::{error, instrument, warn};
+use tracing::{error, info_span, instrument, warn};
 
 use crate::event::error::EventError;
 use crate::{
@@ -41,11 +46,14 @@ use crate::{
         http::{
             ingest::PostError,
             kinesis::{Message, flatten_kinesis_logs},
+            max_event_payload_size,
         },
     },
     otel::{
-        logs::flatten_otel_logs, metrics::flatten_otel_metrics, otel_utils::deserialize_otel_json,
-        traces::flatten_otel_traces,
+        logs::{flatten_otel_logs, flatten_otel_protobuf as flatten_otel_logs_protobuf},
+        metrics::{flatten_otel_metrics, flatten_otel_metrics_protobuf},
+        otel_utils::deserialize_otel_json,
+        traces::{flatten_otel_traces, flatten_otel_traces_protobuf},
     },
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::StreamType,
@@ -158,12 +166,51 @@ fn handle_otel_ingestion(
                     return Err(e);
                 }
             } else if content_type == CONTENT_TYPE_PROTOBUF {
-                error!(
-                    "Ingestion failed for stream {stream_name}: Protobuf ingestion is not supported in Parseable OSS"
-                );
-                return Err(PostError::Invalid(anyhow::anyhow!(
-                    "Ingestion failed for stream {stream_name}: Protobuf ingestion is not supported in Parseable OSS"
-                )));
+                if body.len() > max_event_payload_size() {
+                    let message = format!(
+                        "Ingestion failed for stream {stream_name}: Protobuf message size {} exceeds maximum allowed size of {} bytes",
+                        body.len(),
+                        max_event_payload_size(),
+                    );
+                    error!("{message}");
+                    return Err(PostError::Invalid(anyhow::anyhow!(message)));
+                }
+
+                let records = {
+                    let span = info_span!(
+                        "flatten_otel_protobuf",
+                        stream_name,
+                        record_count = tracing::field::Empty,
+                    );
+                    let _guard = span.enter();
+                    let records = decode_and_flatten_otel_protobuf(
+                        body.as_ref(),
+                        &log_source,
+                        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+                    )
+                    .map_err(|error| {
+                        error!(
+                            "Ingestion failed for stream {stream_name}: Failed to decode protobuf message: {error}"
+                        );
+                        PostError::Invalid(anyhow::anyhow!(
+                            "Ingestion failed for stream {stream_name}: Failed to decode protobuf message: {error}"
+                        ))
+                    })?;
+                    span.record("record_count", records.len());
+                    records
+                };
+
+                if !records.is_empty() {
+                    push_logs(
+                        &stream_name,
+                        Value::Array(records),
+                        &log_source,
+                        &p_custom_fields,
+                        None,
+                        telemetry_type,
+                        &tenant_id,
+                    )?;
+                }
             } else {
                 error!(
                     "Ingestion failed for stream {stream_name}: Unsupported Content-Type: {content_type}. Expected application/json or application/x-protobuf"
@@ -183,6 +230,28 @@ fn handle_otel_ingestion(
         }
     }
     Ok(())
+}
+
+fn decode_and_flatten_otel_protobuf(
+    body: &[u8],
+    log_source: &LogSource,
+    tenant_id: &str,
+) -> anyhow::Result<Vec<Value>> {
+    match log_source {
+        LogSource::OtelLogs => {
+            let message = ExportLogsServiceRequest::decode(body)?;
+            Ok(flatten_otel_logs_protobuf(&message, tenant_id))
+        }
+        LogSource::OtelMetrics => {
+            let message = ExportMetricsServiceRequest::decode(body)?;
+            Ok(flatten_otel_metrics_protobuf(&message, tenant_id))
+        }
+        LogSource::OtelTraces => {
+            let message = ExportTraceServiceRequest::decode(body)?;
+            Ok(flatten_otel_traces_protobuf(&message, tenant_id))
+        }
+        _ => anyhow::bail!("protobuf OTLP ingestion requires an OTLP log source"),
+    }
 }
 
 #[instrument(
@@ -583,6 +652,37 @@ pub fn validate_stream_for_ingestion(
 mod tests {
     use super::*;
     use actix_web::test::TestRequest;
+
+    #[test]
+    fn protobuf_logs_decode_uses_shared_otel_path() {
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord::default()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let records = decode_and_flatten_otel_protobuf(
+            &request.encode_to_vec(),
+            &LogSource::OtelLogs,
+            "test-tenant",
+        )
+        .unwrap();
+
+        assert_eq!(records.len(), 1);
+    }
+
+    #[test]
+    fn protobuf_decode_rejects_non_otel_log_source() {
+        let error =
+            decode_and_flatten_otel_protobuf(&[], &LogSource::Json, "test-tenant").unwrap_err();
+        assert!(error.to_string().contains("requires an OTLP log source"));
+    }
 
     #[test]
     fn test_get_custom_fields_from_header_with_custom_fields() {
