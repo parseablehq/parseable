@@ -57,7 +57,7 @@ use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::{flatten::JsonFlattenError, strict::StrictValue};
 
 use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields_from_header};
+use super::modal::utils::ingest_utils::get_custom_fields_from_header;
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 
@@ -514,18 +514,15 @@ pub async fn post_event(
         return Err(e);
     }
 
-    if let Err(e) = flatten_and_push_logs(
-        json,
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
-        None,
+    ingest_helper(
+        stream_name,
+        tenant_id,
+        log_source,
         TelemetryType::Logs,
-        &tenant_id,
-    ) {
-        error!("Ingestion failed for stream {stream_name}: {e}");
-        return Err(e);
-    }
+        p_custom_fields,
+        json,
+        None,
+    )?;
 
     Ok(HttpResponse::Ok().finish())
 }
