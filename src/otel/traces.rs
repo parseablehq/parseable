@@ -68,8 +68,13 @@ pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 32] = [
 /// this function flattens the `ScopeSpans` object
 /// and returns a `Vec` of `Map` of the flattened json
 fn flatten_scope_span(scope_span: &ScopeSpans, tenant_id: &str) -> Vec<Map<String, Value>> {
-    let mut vec_scope_span_json = Vec::new();
-    let mut scope_span_json = Map::new();
+    let mut vec_scope_span_json = Vec::with_capacity(scope_span.spans.len());
+    let mut scope_span_json = Map::with_capacity(
+        5 + scope_span
+            .scope
+            .as_ref()
+            .map_or(0, |scope| scope.attributes.len()),
+    );
     for span in &scope_span.spans {
         let span_record_json = flatten_span_record(span);
         vec_scope_span_json.extend(span_record_json);
@@ -121,10 +126,12 @@ where
     let mut vec_otel_json = Vec::new();
 
     for resource_span in resource_spans {
-        let mut resource_span_json = Map::new();
+        let resource = get_resource(resource_span);
+        let mut resource_span_json =
+            Map::with_capacity(4 + resource.map_or(0, |resource| resource.attributes.len()));
 
         // Process resource attributes if present
-        if let Some(resource) = get_resource(resource_span) {
+        if let Some(resource) = resource {
             insert_attributes(&mut resource_span_json, &resource.attributes);
             resource_span_json.insert(
                 "resource_dropped_attributes_count".to_string(),
@@ -133,8 +140,14 @@ where
         }
 
         // Process scope spans
-        let mut vec_resource_spans_json = Vec::new();
-        for scope_span in get_scope_spans(resource_span) {
+        let scope_spans = get_scope_spans(resource_span);
+        let mut vec_resource_spans_json = Vec::with_capacity(
+            scope_spans
+                .iter()
+                .map(|scope_span| scope_span.spans.len())
+                .sum(),
+        );
+        for scope_span in scope_spans {
             let scope_span_json = flatten_scope_span(scope_span, tenant_id);
             vec_resource_spans_json.extend(scope_span_json);
         }
@@ -188,7 +201,7 @@ fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<S
     events
         .iter()
         .map(|event| {
-            let mut event_json = Map::new();
+            let mut event_json = Map::with_capacity(6 + event.attributes.len());
             event_json.insert(
                 "event_time_unix_nano".to_string(),
                 Value::String(
@@ -228,7 +241,7 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
     links
         .iter()
         .map(|link| {
-            let mut link_json = Map::new();
+            let mut link_json = Map::with_capacity(5 + link.attributes.len());
             link_json.insert(
                 "link_span_id".to_string(),
                 Value::String(hex::encode(&link.span_id)),
@@ -327,7 +340,7 @@ fn flatten_kind(kind: i32) -> Map<String, Value> {
 /// this function is called recursively for each span record object in the otel traces event
 fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     let mut span_records_json = Vec::new();
-    let mut span_record_json = Map::new();
+    let mut span_record_json = Map::with_capacity(40 + span_record.attributes.len());
     span_record_json.insert(
         "span_trace_id".to_string(),
         Value::String(hex::encode(&span_record.trace_id)),

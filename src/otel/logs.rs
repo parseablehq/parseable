@@ -178,7 +178,10 @@ pub fn flatten_log_record(
     log_record: &LogRecord,
     budget: &mut FlattenBudget,
 ) -> Result<Map<String, Value>, JsonFlattenError> {
-    let mut log_record_json: Map<String, Value> = Map::new();
+    // Fixed fields plus the record attributes; body fields can add more, but
+    // one growth is cheaper than the four an empty map needs for these
+    let mut log_record_json: Map<String, Value> =
+        Map::with_capacity(16 + log_record.attributes.len());
     log_record_json.insert(
         "time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -313,8 +316,13 @@ fn flatten_scope_log(
     scope_log: &ScopeLogs,
     budget: &mut FlattenBudget,
 ) -> Result<Vec<Map<String, Value>>, JsonFlattenError> {
-    let mut vec_scope_log_json = Vec::new();
-    let mut scope_log_json = Map::new();
+    let mut vec_scope_log_json = Vec::with_capacity(scope_log.log_records.len());
+    let mut scope_log_json = Map::with_capacity(
+        5 + scope_log
+            .scope
+            .as_ref()
+            .map_or(0, |scope| scope.attributes.len()),
+    );
     if let Some(scope) = &scope_log.scope {
         scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
         scope_log_json.insert(
@@ -358,10 +366,12 @@ where
     let mut logs_collected: u64 = 0;
 
     for resource_log in resource_logs {
-        let mut resource_log_json = Map::new();
+        let resource = get_resource(resource_log);
+        let mut resource_log_json =
+            Map::with_capacity(4 + resource.map_or(0, |resource| resource.attributes.len()));
 
         // Process resource attributes if present
-        if let Some(resource) = get_resource(resource_log) {
+        if let Some(resource) = resource {
             insert_attributes(&mut resource_log_json, &resource.attributes);
             resource_log_json.insert(
                 "resource_dropped_attributes_count".to_string(),
@@ -369,8 +379,13 @@ where
             );
         }
 
-        let mut vec_resource_logs_json = Vec::new();
         let scope_logs = get_scope_logs(resource_log);
+        let mut vec_resource_logs_json = Vec::with_capacity(
+            scope_logs
+                .iter()
+                .map(|scope_log| scope_log.log_records.len())
+                .sum(),
+        );
 
         for scope_log in scope_logs {
             vec_resource_logs_json.extend(flatten_scope_log(scope_log, budget)?);
