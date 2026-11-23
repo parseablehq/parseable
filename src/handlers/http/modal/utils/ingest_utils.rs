@@ -1340,3 +1340,6 @@ mod tests {
         assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "192.0.2.1");
     }
 }
+
+#[cfg(test)]
+mod otel_protobuf_props;
