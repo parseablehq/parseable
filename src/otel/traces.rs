@@ -1159,4 +1159,178 @@ mod tests {
             "Link records must be enriched with span fields"
         );
     }
+
+    // Release-profile micro-benchmarks. Run with a filter, for example:
+    //   cargo test --release --lib -- --ignored --exact otel::traces::tests::benches::bench_flatten_otel_traces_protobuf --nocapture
+    // They never touch PARSEABLE: every timestamp is set, so the rows are deterministic.
+    mod benches {
+        use crate::otel::bench;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{
+            AnyValue, InstrumentationScope, KeyValue, any_value,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::span::{Event, Link};
+        use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span, Status};
+
+        use super::super::flatten_otel_traces_protobuf;
+
+        const SPANS_PER_SCOPE: usize = 250;
+        const ITERS: usize = 20;
+
+        fn string_kv(key: &str, value: impl Into<String>) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(value.into())),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn int_kv(key: &str, value: i64) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::IntValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn bool_kv(key: &str, value: bool) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::BoolValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn span(i: usize) -> Span {
+            Span {
+                trace_id: vec![0xab; 16],
+                span_id: vec![0xcd; 8],
+                trace_state: "congo=t61rcWkgMzE".to_string(),
+                parent_span_id: vec![0xef; 8],
+                flags: 256,
+                name: format!("POST /api/v1/items/{i}"),
+                kind: 2,
+                start_time_unix_nano: 1_700_000_000_000_000_000 + i as u64 * 1_000_000,
+                end_time_unix_nano: 1_700_000_000_005_000_000 + i as u64 * 1_000_000,
+                attributes: vec![
+                    string_kv("http.method", "POST"),
+                    int_kv("http.status_code", (i % 500) as i64),
+                    string_kv("http.route", format!("/api/v1/items/{i}")),
+                    string_kv("net.peer.name", "checkout.internal"),
+                    string_kv("user_agent.original", "bench/1.0"),
+                    bool_kv("sampled", true),
+                    string_kv("messaging.system", "kafka"),
+                    int_kv("messaging.batch_size", (i % 32) as i64),
+                ],
+                dropped_attributes_count: 0,
+                events: vec![Event {
+                    time_unix_nano: 1_700_000_000_001_000_000 + i as u64 * 1_000_000,
+                    name: "request.headers".to_string(),
+                    attributes: vec![
+                        string_kv("event.kind", "request"),
+                        string_kv("event.target", format!("/api/v1/items/{i}")),
+                        bool_kv("event.ok", i % 2 == 0),
+                    ],
+                    dropped_attributes_count: 0,
+                }],
+                dropped_events_count: 0,
+                links: vec![Link {
+                    trace_id: vec![0x12; 16],
+                    span_id: vec![0x34; 8],
+                    trace_state: String::new(),
+                    attributes: vec![
+                        string_kv("link.kind", "follows-from"),
+                        int_kv("link.count", 1),
+                    ],
+                    dropped_attributes_count: 0,
+                    flags: 0,
+                }],
+                dropped_links_count: 0,
+                status: Some(Status {
+                    message: String::new(),
+                    code: 1,
+                }),
+            }
+        }
+
+        fn request() -> ExportTraceServiceRequest {
+            let resource_spans = (0..2)
+                .map(|resource_index| ResourceSpans {
+                    resource: Some(Resource {
+                        attributes: vec![
+                            string_kv("service.name", "checkout"),
+                            string_kv("service.version", "1.42.0"),
+                            string_kv("deployment.environment", "production"),
+                            string_kv("host.name", format!("checkout-{resource_index}")),
+                            int_kv("process.pid", 4242 + resource_index as i64),
+                        ],
+                        dropped_attributes_count: 0,
+                        entity_refs: vec![],
+                    }),
+                    scope_spans: (0..2)
+                        .map(|scope_index| ScopeSpans {
+                            scope: Some(InstrumentationScope {
+                                name: "io.opentelemetry.contrib.bench".to_string(),
+                                version: "0.31.0".to_string(),
+                                attributes: vec![
+                                    string_kv("scope.kind", "client"),
+                                    string_kv("scope.extra", format!("{resource_index}-{scope_index}")),
+                                    int_kv("scope.ordinal", scope_index),
+                                ],
+                                dropped_attributes_count: 0,
+                            }),
+                            spans: (0..SPANS_PER_SCOPE)
+                                .map(|span_index| {
+                                    span(resource_index as usize * 1000 + scope_index as usize * 100 + span_index)
+                                })
+                                .collect(),
+                            schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                        })
+                        .collect(),
+                    schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                })
+                .collect();
+            ExportTraceServiceRequest { resource_spans }
+        }
+
+        fn flatten(request: &ExportTraceServiceRequest) -> Vec<serde_json::Value> {
+            flatten_otel_traces_protobuf(request, "perfbench")
+        }
+
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_flatten_otel_traces_protobuf() {
+            let request = request();
+            bench::run("bench_flatten_otel_traces_protobuf", ITERS, || {
+                flatten(&request)
+            });
+        }
+
+        /// The rows of the benchmark request, pinned so that a refactor changing
+        /// them fails a normal `cargo test --lib` run. The digest is of
+        /// `serde_json::to_vec` of the rows; it was first recorded from the
+        /// unoptimised flatteners.
+        #[test]
+        fn benchmark_request_rows_are_stable() {
+            let rows = flatten(&request());
+            let bytes = serde_json::to_vec(&rows).unwrap();
+            use std::hash::Hasher;
+            let mut hasher = rustc_hash::FxHasher::default();
+            hasher.write(&bytes);
+            // One row per event and one per link of every span
+            assert_eq!(rows.len(), 2000);
+            assert_eq!(
+                (bytes.len(), hasher.finish()),
+                (3_329_399, 0xa2c6_61df_e91e_9cde),
+                "flattened rows of the benchmark request changed"
+            );
+        }
+    }
 }

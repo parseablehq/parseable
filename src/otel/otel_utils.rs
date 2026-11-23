@@ -349,4 +349,74 @@ mod tests {
             Some(OtelValue::ArrayValue(ArrayValue { values })) if values.is_empty()
         ));
     }
+
+    // Release-profile micro-benchmarks, see `crate::otel::bench`. Run with a filter:
+    //   cargo test --release --lib -- --ignored --exact otel::otel_utils::tests::benches::bench_convert_epoch_nano_to_timestamp --nocapture
+    mod benches {
+        use super::super::{convert_epoch_nano_to_timestamp, insert_attributes};
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
+        use crate::otel::bench;
+
+        fn string_kv(key: &str, value: &str) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(value.to_string())),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn bench_attributes() -> Vec<KeyValue> {
+            vec![
+                string_kv("http.method", "GET"),
+                KeyValue {
+                    key: "http.status_code".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(any_value::Value::IntValue(200)),
+                    }),
+                    ..Default::default()
+                },
+                string_kv("http.target", "/api/v1/items/42"),
+                string_kv("net.host.name", "checkout.example.com"),
+                string_kv("user_agent.original", "Mozilla/5.0 (compatible; bench)"),
+                KeyValue {
+                    key: "cache.hit".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(any_value::Value::BoolValue(true)),
+                    }),
+                    ..Default::default()
+                },
+                string_kv("http.request.header.x-request-id", "req-00000000deadbeef"),
+                string_kv("messaging.system", "kafka"),
+            ]
+        }
+
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_convert_epoch_nano_to_timestamp() {
+            let mut len = 0usize;
+            // Every call formats a distinct nanosecond, as a real batch does
+            bench::time_calls("bench_convert_epoch_nano_to_timestamp", 200_000, |i| {
+                len += convert_epoch_nano_to_timestamp(
+                    1_700_000_000_000_000_000 + i as i64 * 1_000_000,
+                )
+                .len();
+            });
+            assert_eq!(len, 200_000 * 30);
+        }
+
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_insert_attributes() {
+            let attributes = bench_attributes();
+            let mut sum = 0usize;
+            bench::time_calls("bench_insert_attributes", 200_000, |_| {
+                let mut map = serde_json::Map::with_capacity(attributes.len());
+                insert_attributes(&mut map, &attributes);
+                sum += map.len();
+            });
+            assert_eq!(sum, 200_000 * attributes.len());
+        }
+    }
 }
