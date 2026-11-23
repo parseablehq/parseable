@@ -1515,7 +1515,7 @@ mod tests {
         }
 
         fn data_point(i: usize) -> NumberDataPoint {
-            let exemplars = if i % 5 == 0 {
+            let exemplars = if i.is_multiple_of(5) {
                 vec![Exemplar {
                     filtered_attributes: vec![
                         string_kv("exemplar.trace_id", format!("{i:032x}")),
@@ -1538,7 +1538,7 @@ mod tests {
                     string_kv("http.status_code", format!("{}", 200 + i % 5)),
                     string_kv("net.peer.name", "checkout.internal"),
                     int_kv("retry.count", (i % 3) as i64),
-                    bool_kv("cache.hit", i % 2 == 0),
+                    bool_kv("cache.hit", i.is_multiple_of(2)),
                 ],
                 start_time_unix_nano: 1_700_000_000_000_000_000,
                 time_unix_nano: 1_700_000_000_000_000_000 + i as u64 * 1_000_000,

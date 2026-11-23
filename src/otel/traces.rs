@@ -1249,7 +1249,7 @@ mod tests {
                     attributes: vec![
                         string_kv("event.kind", "request"),
                         string_kv("event.target", format!("/api/v1/items/{i}")),
-                        bool_kv("event.ok", i % 2 == 0),
+                        bool_kv("event.ok", i.is_multiple_of(2)),
                     ],
                     dropped_attributes_count: 0,
                 }],

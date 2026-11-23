@@ -1001,7 +1001,7 @@ mod tests {
 
         fn record(i: usize) -> LogRecord {
             // Every tenth body is a JSON object, which the log flattener parses and expands
-            let body = if i % 10 == 0 {
+            let body = if i.is_multiple_of(10) {
                 format!(
                     r#"{{"event":"checkout","user":{{"id":{i}}},"items":[{{"sku":"a","qty":1}},{{"sku":"b","qty":2}}],"ok":true}}"#
                 )
@@ -1022,7 +1022,7 @@ mod tests {
                     string_kv("http.target", format!("/api/v1/items/{i}")),
                     string_kv("net.host.name", "checkout.example.com"),
                     string_kv("user_agent.original", "Mozilla/5.0 (compatible; bench)"),
-                    bool_kv("cache.hit", i % 3 == 0),
+                    bool_kv("cache.hit", i.is_multiple_of(3)),
                     string_kv("http.request.header.x-request-id", format!("req-{i:016x}")),
                     array_kv("http.request.header.accept-encoding"),
                 ],
