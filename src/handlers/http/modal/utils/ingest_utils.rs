@@ -31,7 +31,7 @@ use tracing::{error, instrument, warn};
 
 use crate::{
     event::{
-        FORMAT_KEY, SOURCE_IP_KEY, USER_AGENT_KEY, commit_ingested_schemas,
+        DEFAULT_TIMESTAMP_KEY, FORMAT_KEY, SOURCE_IP_KEY, USER_AGENT_KEY, commit_ingested_schemas,
         error::EventError,
         format::{EventFormat, LogSource, json},
     },
@@ -59,6 +59,15 @@ use crate::{
 };
 
 const IGNORE_HEADERS: [&str; 3] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY, EXTRACT_LOG_KEY];
+// Fields the server fills in for every record. `x-p-` headers must not set them:
+// `x-p-p_timestamp` would inject a second `p_timestamp` column next to the
+// server's, and `x-p-p_src_ip` would replace the recorded source address.
+const RESERVED_CUSTOM_FIELD_KEYS: [&str; 4] = [
+    DEFAULT_TIMESTAMP_KEY,
+    USER_AGENT_KEY,
+    SOURCE_IP_KEY,
+    FORMAT_KEY,
+];
 const MAX_CUSTOM_FIELDS: usize = 10;
 const MAX_FIELD_VALUE_LENGTH: usize = 100;
 
@@ -583,7 +592,14 @@ pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, Strin
             && let Ok(value) = header_value.to_str()
         {
             let key = header_name.trim_start_matches("x-p-");
-            if !key.is_empty() {
+            if key.is_empty() {
+                warn!(
+                    "Ignoring header with empty key after prefix: {}",
+                    header_name
+                );
+            } else if RESERVED_CUSTOM_FIELD_KEYS.contains(&key) {
+                warn!("Ignoring header for reserved field: {}", header_name);
+            } else {
                 // Truncate value if it exceeds the maximum length
                 let truncated_value = if value.len() > MAX_FIELD_VALUE_LENGTH {
                     warn!(
@@ -595,11 +611,6 @@ pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, Strin
                     value
                 };
                 p_custom_fields.insert(key.to_string(), truncated_value.to_string());
-            } else {
-                warn!(
-                    "Ignoring header with empty key after prefix: {}",
-                    header_name
-                );
             }
         }
 
@@ -1043,5 +1054,29 @@ mod tests {
         let custom_fields = get_custom_fields_from_header(&req);
 
         assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "192.0.2.1");
+    }
+
+    // `x-p-<key>` headers become custom fields. The fields the server records
+    // itself must not be settable that way: a client could otherwise forge the
+    // source address or add a second `p_timestamp` column.
+    #[test]
+    fn reserved_headers_cannot_replace_server_fields() {
+        let req = TestRequest::default()
+            .peer_addr("192.0.2.1:8080".parse().unwrap())
+            .insert_header((USER_AGENT, "real-agent"))
+            .insert_header(("x-p-p_src_ip", "10.0.0.1"))
+            .insert_header(("x-p-p_user_agent", "fake-agent"))
+            .insert_header(("x-p-p_format", "fake-format"))
+            .insert_header(("x-p-p_timestamp", "1700000000000"))
+            .insert_header(("x-p-team", "payments"))
+            .to_http_request();
+
+        let custom_fields = get_custom_fields_from_header(&req);
+
+        assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "192.0.2.1");
+        assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "real-agent");
+        assert!(!custom_fields.contains_key(FORMAT_KEY));
+        assert!(!custom_fields.contains_key(DEFAULT_TIMESTAMP_KEY));
+        assert_eq!(custom_fields.get("team").unwrap(), "payments");
     }
 }
