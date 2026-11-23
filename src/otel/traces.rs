@@ -146,9 +146,9 @@ where
         );
 
         // Merge resource-level fields into each span record
-        for resource_spans_json in &mut vec_resource_spans_json {
+        for mut resource_spans_json in vec_resource_spans_json {
             resource_spans_json.extend(resource_span_json.clone());
-            vec_otel_json.push(Value::Object(resource_spans_json.clone()));
+            vec_otel_json.push(Value::Object(resource_spans_json));
         }
     }
 

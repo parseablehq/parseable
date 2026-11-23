@@ -382,9 +382,9 @@ where
             Value::String(get_schema_url(resource_log).to_string()),
         );
 
-        for resource_logs_json in &mut vec_resource_logs_json {
+        for mut resource_logs_json in vec_resource_logs_json {
             resource_logs_json.extend(resource_log_json.clone());
-            vec_otel_json.push(Value::Object(resource_logs_json.clone()));
+            vec_otel_json.push(Value::Object(resource_logs_json));
         }
     }
 
