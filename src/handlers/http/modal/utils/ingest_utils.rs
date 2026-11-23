@@ -16,9 +16,9 @@
  *
  */
 
-use actix_web::http::header::USER_AGENT;
+use actix_web::http::header::{CONTENT_TYPE, USER_AGENT};
 use actix_web::mime::Mime;
-use actix_web::{HttpRequest, web};
+use actix_web::{HttpRequest, HttpResponse, web};
 use chrono::Utc;
 use opentelemetry_proto::tonic::collector::{
     logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
@@ -46,7 +46,6 @@ use crate::{
         http::{
             ingest::PostError,
             kinesis::{Message, flatten_kinesis_logs},
-            max_event_payload_size,
         },
     },
     otel::{
@@ -134,6 +133,24 @@ pub async fn process_otel_content(
     }
 }
 
+/// Response for an OTEL export request that was ingested in full. OTLP/HTTP
+/// answers in the encoding of the request: for protobuf that is an
+/// `Export*ServiceResponse`, whose full-success form encodes to zero bytes.
+/// JSON requests keep the empty response they always had.
+pub fn otel_success_response(req: &HttpRequest) -> HttpResponse {
+    let protobuf = req
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|h| h.to_str().ok())
+        .and_then(classify_otel_content_type)
+        == Some(OtelContentType::Protobuf);
+    let mut response = HttpResponse::Ok();
+    if protobuf {
+        response.content_type(CONTENT_TYPE_PROTOBUF);
+    }
+    response.finish()
+}
+
 /// Payload encodings accepted by the OTEL HTTP endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OtelContentType {
@@ -199,7 +216,6 @@ fn handle_otel_ingestion(
             Some(OtelContentType::Protobuf) => {
                 if let Err(e) = flatten_and_push_otel_protobuf(
                     &body,
-                    max_event_payload_size(),
                     &stream_name,
                     &log_source,
                     &p_custom_fields,
@@ -242,7 +258,8 @@ enum OtelProtobufRequest {
 /// Why an OTLP protobuf body could not be decoded.
 #[derive(Debug, thiserror::Error)]
 enum OtelProtobufError {
-    #[error("Failed to decode protobuf message: {0}")]
+    // prost's message already starts with "failed to decode Protobuf message"
+    #[error(transparent)]
     Decode(#[from] prost::DecodeError),
     #[error("Protobuf OTLP ingestion requires an OTLP log source, got {0}")]
     NotOtel(LogSource),
@@ -250,7 +267,9 @@ enum OtelProtobufError {
 
 impl OtelProtobufRequest {
     /// Decodes the export request that `log_source` selects. The whole body is
-    /// decoded before any row is built, so a malformed body yields no rows.
+    /// decoded before any row is built, so a body that fails to decode yields
+    /// no rows. A body cut between two top-level entries is still a valid, shorter
+    /// request: the HTTP layer, not this decoder, detects a truncated transfer.
     fn decode(body: &[u8], log_source: &LogSource) -> Result<Self, OtelProtobufError> {
         match log_source {
             LogSource::OtelLogs => Ok(Self::Logs(ExportLogsServiceRequest::decode(body)?)),
@@ -277,23 +296,15 @@ impl OtelProtobufRequest {
 /// Protobuf counterpart of the OTEL arms of `flatten_and_push_logs`: the typed
 /// request is decoded straight from the body instead of going through a JSON
 /// value tree, then shares flattening limits and the staging path with JSON.
+/// The body size is capped by the `PayloadConfig` of the OTEL routes.
 fn flatten_and_push_otel_protobuf(
     body: &[u8],
-    max_payload_size: usize,
     stream_name: &str,
     log_source: &LogSource,
     p_custom_fields: &HashMap<String, String>,
     telemetry_type: TelemetryType,
     tenant_id: &Option<String>,
 ) -> Result<(), PostError> {
-    // The OTEL routes already cap the payload; checked again so that no other
-    // caller can hand an unbounded body to the decoder.
-    if body.len() > max_payload_size {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Ingestion failed for stream {stream_name}: Protobuf message size {} exceeds maximum allowed size of {max_payload_size} bytes",
-            body.len(),
-        )));
-    }
     let request = OtelProtobufRequest::decode(body, log_source).map_err(|e| {
         PostError::Invalid(anyhow::anyhow!(
             "Ingestion failed for stream {stream_name}: {e}"
@@ -1114,56 +1125,62 @@ mod tests {
         }
     }
 
-    // Called below the handler: it reads the payload limit from the server
-    // configuration, which the content-type tests above deliberately never load.
     #[tokio::test]
-    async fn otel_protobuf_malformed_body_is_a_bad_request_for_every_signal() {
+    async fn test_process_otel_content_protobuf_variants_reach_protobuf_decoding() {
+        let protobuf = [
+            "application/x-protobuf",
+            "application/x-protobuf; charset=utf-8",
+            "Application/X-Protobuf",
+            " APPLICATION/X-PROTOBUF\t;proto=foo",
+        ];
         for (telemetry_type, log_source) in OTEL_SIGNALS {
-            // The malformed JSON body of the tests above is not a protobuf message either
-            let err = flatten_and_push_otel_protobuf(
-                b"{not valid json",
-                usize::MAX,
-                OTEL_TEST_STREAM,
-                &log_source,
-                &HashMap::new(),
-                telemetry_type,
-                &None,
-            )
-            .unwrap_err();
-            assert!(matches!(err, PostError::Invalid(_)), "{err:?}");
-            let expected = err.to_string();
-            assert!(
-                expected.starts_with(&format!(
-                    "Invalid Request: Ingestion failed for stream {OTEL_TEST_STREAM}: Failed to decode protobuf message: "
-                )),
-                "{log_source}: {expected}"
-            );
-            assert_bad_request_body(&err, &expected).await;
+            for value in protobuf {
+                // The shared malformed body is not a protobuf message either, so this
+                // fails in the decoder before any PARSEABLE/storage access
+                let err = run_otel_content(header(value), telemetry_type, &log_source).await;
+                assert!(matches!(err, PostError::Invalid(_)), "{err:?}");
+                let expected = err.to_string();
+                assert!(
+                    expected.starts_with(&format!(
+                        "Invalid Request: Ingestion failed for stream {OTEL_TEST_STREAM}: failed to decode Protobuf message: "
+                    )),
+                    "{log_source} with {value:?}: {expected}"
+                );
+                assert_bad_request_body(&err, &expected).await;
+            }
         }
     }
 
     #[test]
-    fn otel_protobuf_body_over_the_payload_limit_is_rejected_before_decoding() {
-        // Not a protobuf message: reaching the decoder would report a decode error
-        let body = b"{not valid json";
-        let err = flatten_and_push_otel_protobuf(
-            body,
-            body.len() - 1,
-            OTEL_TEST_STREAM,
-            &LogSource::OtelLogs,
-            &HashMap::new(),
-            TelemetryType::Logs,
-            &None,
-        )
-        .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            format!(
-                "Invalid Request: Ingestion failed for stream {OTEL_TEST_STREAM}: Protobuf message size {} exceeds maximum allowed size of {} bytes",
-                body.len(),
-                body.len() - 1
-            )
-        );
+    fn otel_success_response_answers_in_the_request_encoding() {
+        use actix_web::http::header::CONTENT_TYPE;
+
+        for (request_type, response_type) in [
+            (
+                Some("application/x-protobuf"),
+                Some("application/x-protobuf"),
+            ),
+            (
+                Some("Application/X-Protobuf; charset=utf-8"),
+                Some("application/x-protobuf"),
+            ),
+            (Some("application/json"), None),
+            (None, None),
+        ] {
+            let mut req = TestRequest::default();
+            if let Some(value) = request_type {
+                req = req.insert_header((CONTENT_TYPE, value));
+            }
+            let resp = otel_success_response(&req.to_http_request());
+            assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+            assert_eq!(
+                resp.headers()
+                    .get(CONTENT_TYPE)
+                    .map(|v| v.to_str().unwrap()),
+                response_type,
+                "request content type {request_type:?}"
+            );
+        }
     }
 
     #[test]
@@ -1173,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn otel_protobuf_truncated_body_decodes_no_rows() {
+    fn otel_protobuf_body_cut_inside_a_record_fails_to_decode() {
         use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 
         let encoded = ExportLogsServiceRequest {
@@ -1194,6 +1211,7 @@ mod tests {
             OtelProtobufRequest::decode(&encoded, &LogSource::OtelLogs),
             Ok(OtelProtobufRequest::Logs(_))
         ));
+        // One top-level entry, so every proper prefix ends inside it
         for len in 1..encoded.len() {
             assert!(
                 matches!(
