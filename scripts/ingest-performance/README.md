@@ -36,3 +36,46 @@ python scripts/ingest-performance/plot.py --burst /abs/results/burst --sustained
 The local-store results do not establish S3 ingestion capacity. Multipart memory and failure behavior require separate storage probes. Keep exact build provenance and limitations with any reported figures.
 
 For fixed-work 1/10/100/1000-row request comparisons and timestamp-adjusted compatibility probes, see [small-batch-staging](small-batch-staging/README.md).
+
+## OTLP protobuf and JSON
+
+This comparison uses one release server binary and varies the request encoding.
+Build the server and stage example with the same toolchain and features. Install
+the generated OTLP protobuf bindings in an isolated Python environment. They
+serialize a single typed fixture to both formats, with OTLP JSON hex IDs, and
+require no client build. The timed modes require Linux, passwordless sudo to
+launch and signal perf, working `instructions:u` and `task-clock` counters,
+and perf FIFO control.
+
+```sh
+NEXT_ASSETS_PATH=/abs/frontend/dist cargo build --locked --release --bin parseable --example otlp_stage
+python3 -m venv /abs/otlp-venv
+/abs/otlp-venv/bin/pip install opentelemetry-proto==1.38.0 protobuf==6.32.1
+/abs/otlp-venv/bin/python -B -m unittest discover -s scripts/ingest-performance -p 'test_*.py' -v
+/abs/otlp-venv/bin/python scripts/ingest-performance/otlp.py stage --example target/release/examples/otlp_stage --output /abs/results/otlp-stage --cpus 2
+/abs/otlp-venv/bin/python scripts/ingest-performance/otlp.py http --binary target/release/parseable --output /abs/results/otlp-http --cpus 2,4,6,8
+/abs/otlp-venv/bin/python scripts/ingest-performance/otlp.py verify --binary target/release/parseable --output /abs/results/otlp-verify
+```
+
+Choose CPU IDs available on the host. Both timed modes default to four pairs in
+JSON/protobuf/protobuf/JSON order, repeated twice. The stage run checks exact
+flattened rows before comparing 1, 100 and 5000 records with 4 or 32 attributes
+per record. Its default is 50,000 records per arm per shape. Counters cover the
+in-memory decode, flatten and row destruction; fixture loading and the equality
+check occur before measurement. The HTTP run defaults to 256 timed requests of
+100 records with 4 attributes per arm per signal over one keep-alive connection.
+Change the shape with `--rows`, `--attributes` or `--requests`. After each signal's
+ACK window, the runner checks query counts and every request/row ID, then hashes
+all canonicalized SQL results with `p_timestamp` removed for comparison.
+
+The fixtures use explicit timestamps, two resource attributes, one scope,
+four base record attributes including the two identity fields, and an optional
+set of mixed scalar attributes. They contain string-bodied INFO logs, gauge
+points without implicit `target_info` rows, and server spans without events or
+links. The `verify` mode checks accepted content types and gzip, success
+responses, malformed/truncated requests and the default payload limit with
+chunked bodies for each signal. Each mode writes `summary.json` with paired ratios and min/max, or the
+recorded protocol responses for `verify`. The HTTP CPU measurements include
+server work that overlaps the ACK window and exclude subsequent query and drain
+work. Record the source commit, release profile, features and binary hashes
+alongside your summaries.

@@ -265,3 +265,7 @@ codegen-units = 1
 [profile.release-thin-lto]
 inherits = "release"
 lto = "thin"
+
+[[example]]
+name = "otlp_stage"
+path = "scripts/ingest-performance/otlp_stage.rs"
