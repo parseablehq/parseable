@@ -75,8 +75,13 @@ pub async fn ingest(
     };
     let stream_name = stream_name.to_owned();
     let tenant_id = get_tenant_id_from_request(&req)?;
-    let internal_stream_names = PARSEABLE.streams.list_internal_streams(&tenant_id);
-    if internal_stream_names.contains(&stream_name) {
+    // One stream lookup answers the internal-stream question directly; building
+    // the tenant's list of internal stream names would lock every stream's
+    // metadata on every request.
+    if PARSEABLE
+        .get_stream(&stream_name, &tenant_id)
+        .is_ok_and(|stream| stream.get_stream_type() == StreamType::Internal)
+    {
         return Err(PostError::InternalStream(stream_name));
     }
 
@@ -386,8 +391,12 @@ pub async fn post_event(
 ) -> Result<HttpResponse, PostError> {
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req)?;
-    let internal_stream_names = PARSEABLE.streams.list_internal_streams(&tenant_id);
-    if internal_stream_names.contains(&stream_name) {
+    // One stream lookup instead of locking every stream of the tenant to list
+    // the internal stream names.
+    if PARSEABLE
+        .get_stream(&stream_name, &tenant_id)
+        .is_ok_and(|stream| stream.get_stream_type() == StreamType::Internal)
+    {
         return Err(PostError::InternalStream(stream_name));
     }
     if !PARSEABLE.streams.contains(&stream_name, &tenant_id) {
