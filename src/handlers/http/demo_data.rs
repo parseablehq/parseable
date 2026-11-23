@@ -168,3 +168,45 @@ fn execute_demo_script(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod auth_tests {
+    use actix_web::{App, http::StatusCode, test as actix_test, web};
+
+    use crate::handlers::http::base_path;
+    use crate::handlers::http::modal::server::Server;
+
+    /// `GET /api/v1/demodata` is registered by the main and query servers
+    /// without any authentication layer, yet it runs server-side actions with
+    /// the deployment's own root credentials. An unauthenticated caller must
+    /// be rejected before the handler runs.
+    ///
+    /// The query string deliberately uses an unsupported action, so a request
+    /// that reaches the handler answers 400 without spawning the demo script.
+    #[actix_web::test]
+    async fn demodata_requires_authentication() {
+        // The handler reads PARSEABLE.options before matching the action.
+        crate::parseable::install_default_test_parseable();
+
+        let app = actix_test::init_service(
+            App::new().service(web::scope(&base_path()).service(Server::get_demo_data_webscope())),
+        )
+        .await;
+
+        let request = actix_test::TestRequest::get()
+            .uri("/api/v1/demodata?action=unsupported")
+            .to_request();
+        // A rejection arrives as an Err from the test service, not as a
+        // response, so read the status from either form.
+        let status = match actix_test::try_call_service(&app, request).await {
+            Ok(response) => response.status(),
+            Err(error) => error.as_response_error().status_code(),
+        };
+
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "an unauthenticated demodata request must not reach the handler"
+        );
+    }
+}
