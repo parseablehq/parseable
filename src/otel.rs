@@ -38,10 +38,19 @@ pub(crate) mod bench {
 
     /// Runs `body` `iters` times, requiring identical output every time, and
     /// prints the rows, their digest and the nanoseconds spent per row.
+    ///
+    /// `OTEL_BENCH_ITERS=<n>` overrides `iters`. Running a benchmark at two
+    /// iteration counts under `perf stat` and dividing the difference in
+    /// instructions by the difference in rows flattened removes the fixed cost
+    /// of building the request and taking the digests.
     pub fn run<F>(name: &str, iters: usize, mut body: F)
     where
         F: FnMut() -> Vec<serde_json::Value>,
     {
+        let iters = std::env::var("OTEL_BENCH_ITERS")
+            .ok()
+            .and_then(|iters| iters.parse().ok())
+            .unwrap_or(iters);
         // Serialising the rows costs more than flattening them, so the digest is
         // taken before and after the timed loop, never inside it.
         let first = body();
@@ -69,7 +78,7 @@ pub(crate) mod bench {
         );
         println!(
             "{name}: rows={rows} iters={iters} ns_per_row={:.1} bytes={} digest={:016x}",
-            elapsed.as_secs_f64() * 1e9 / (rows * iters) as f64,
+            elapsed.as_secs_f64() * 1e9 / (rows * iters.max(1)) as f64,
             expected.0,
             expected.1
         );
