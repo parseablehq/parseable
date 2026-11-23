@@ -20,9 +20,14 @@ use actix_web::http::header::USER_AGENT;
 use actix_web::mime::Mime;
 use actix_web::{HttpRequest, web};
 use chrono::Utc;
+use opentelemetry_proto::tonic::collector::{
+    logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+    trace::v1::ExportTraceServiceRequest,
+};
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
+use prost::Message as _;
 use rayon::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -41,11 +46,14 @@ use crate::{
         http::{
             ingest::PostError,
             kinesis::{Message, flatten_kinesis_logs},
+            max_event_payload_size,
         },
     },
     otel::{
-        logs::flatten_otel_logs, metrics::flatten_otel_metrics, otel_utils::deserialize_otel_json,
-        traces::flatten_otel_traces,
+        logs::{flatten_otel_logs, flatten_otel_protobuf as flatten_otel_logs_protobuf},
+        metrics::{flatten_otel_metrics, flatten_otel_metrics_protobuf},
+        otel_utils::deserialize_otel_json,
+        traces::{flatten_otel_traces, flatten_otel_traces_protobuf},
     },
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::StreamType,
@@ -53,7 +61,7 @@ use crate::{
         get_tenant_id_from_request,
         json::{
             convert_array_to_object,
-            flatten::{FlattenBudget, FlattenLimits, convert_to_array},
+            flatten::{FlattenBudget, FlattenLimits, JsonFlattenError, convert_to_array},
         },
     },
 };
@@ -189,12 +197,18 @@ fn handle_otel_ingestion(
                 }
             }
             Some(OtelContentType::Protobuf) => {
-                error!(
-                    "Ingestion failed for stream {stream_name}: Protobuf ingestion is not supported in Parseable OSS"
-                );
-                return Err(PostError::Invalid(anyhow::anyhow!(
-                    "Ingestion failed for stream {stream_name}: Protobuf ingestion is not supported in Parseable OSS"
-                )));
+                if let Err(e) = flatten_and_push_otel_protobuf(
+                    &body,
+                    max_event_payload_size(),
+                    &stream_name,
+                    &log_source,
+                    &p_custom_fields,
+                    telemetry_type,
+                    &tenant_id,
+                ) {
+                    error!("Ingestion failed for stream {stream_name}: {e}");
+                    return Err(e);
+                }
             }
             None => {
                 error!(
@@ -213,6 +227,95 @@ fn handle_otel_ingestion(
                 "Ingestion failed for stream {stream_name}: Missing Content-Type header. Expected application/json or application/x-protobuf"
             )));
         }
+    }
+    Ok(())
+}
+
+/// An OTLP/HTTP export request decoded from its protobuf encoding.
+#[derive(Debug)]
+enum OtelProtobufRequest {
+    Logs(ExportLogsServiceRequest),
+    Metrics(ExportMetricsServiceRequest),
+    Traces(ExportTraceServiceRequest),
+}
+
+/// Why an OTLP protobuf body could not be decoded.
+#[derive(Debug, thiserror::Error)]
+enum OtelProtobufError {
+    #[error("Failed to decode protobuf message: {0}")]
+    Decode(#[from] prost::DecodeError),
+    #[error("Protobuf OTLP ingestion requires an OTLP log source, got {0}")]
+    NotOtel(LogSource),
+}
+
+impl OtelProtobufRequest {
+    /// Decodes the export request that `log_source` selects. The whole body is
+    /// decoded before any row is built, so a malformed body yields no rows.
+    fn decode(body: &[u8], log_source: &LogSource) -> Result<Self, OtelProtobufError> {
+        match log_source {
+            LogSource::OtelLogs => Ok(Self::Logs(ExportLogsServiceRequest::decode(body)?)),
+            LogSource::OtelMetrics => Ok(Self::Metrics(ExportMetricsServiceRequest::decode(body)?)),
+            LogSource::OtelTraces => Ok(Self::Traces(ExportTraceServiceRequest::decode(body)?)),
+            other => Err(OtelProtobufError::NotOtel(other.clone())),
+        }
+    }
+
+    /// Flattens into the same rows the JSON encoding of this request produces.
+    fn flatten(
+        &self,
+        tenant_id: &str,
+        budget: &mut FlattenBudget,
+    ) -> Result<Vec<Value>, JsonFlattenError> {
+        match self {
+            Self::Logs(message) => flatten_otel_logs_protobuf(message, tenant_id, budget),
+            Self::Metrics(message) => Ok(flatten_otel_metrics_protobuf(message, tenant_id)),
+            Self::Traces(message) => Ok(flatten_otel_traces_protobuf(message, tenant_id)),
+        }
+    }
+}
+
+/// Protobuf counterpart of the OTEL arms of `flatten_and_push_logs`: the typed
+/// request is decoded straight from the body instead of going through a JSON
+/// value tree, then shares flattening limits and the staging path with JSON.
+fn flatten_and_push_otel_protobuf(
+    body: &[u8],
+    max_payload_size: usize,
+    stream_name: &str,
+    log_source: &LogSource,
+    p_custom_fields: &HashMap<String, String>,
+    telemetry_type: TelemetryType,
+    tenant_id: &Option<String>,
+) -> Result<(), PostError> {
+    // The OTEL routes already cap the payload; checked again so that no other
+    // caller can hand an unbounded body to the decoder.
+    if body.len() > max_payload_size {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Ingestion failed for stream {stream_name}: Protobuf message size {} exceeds maximum allowed size of {max_payload_size} bytes",
+            body.len(),
+        )));
+    }
+    let request = OtelProtobufRequest::decode(body, log_source).map_err(|e| {
+        PostError::Invalid(anyhow::anyhow!(
+            "Ingestion failed for stream {stream_name}: {e}"
+        ))
+    })?;
+    let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    // Verify the dataset fields count
+    verify_dataset_fields_count(stream_name, tenant_id)?;
+    // Shared by every record of this request
+    let mut budget = FlattenBudget::new(FlattenLimits::from_config());
+    let records = request.flatten(tenant_str, &mut budget)?;
+    if !records.is_empty() {
+        push_logs(
+            stream_name,
+            Value::Array(records),
+            log_source,
+            p_custom_fields,
+            None,
+            telemetry_type,
+            tenant_id,
+            &mut budget,
+        )?;
     }
     Ok(())
 }
@@ -1011,27 +1114,201 @@ mod tests {
         }
     }
 
+    // Called below the handler: it reads the payload limit from the server
+    // configuration, which the content-type tests above deliberately never load.
     #[tokio::test]
-    async fn test_process_otel_content_protobuf_variants_still_unsupported() {
-        let protobuf = [
-            "application/x-protobuf",
-            "application/x-protobuf; charset=utf-8",
-            "Application/X-Protobuf",
-            " APPLICATION/X-PROTOBUF\t;proto=foo",
-        ];
+    async fn otel_protobuf_malformed_body_is_a_bad_request_for_every_signal() {
         for (telemetry_type, log_source) in OTEL_SIGNALS {
-            for value in protobuf {
-                let err = run_otel_content(header(value), telemetry_type, &log_source).await;
-                assert!(matches!(err, PostError::Invalid(_)), "{err:?}");
-                assert_bad_request_body(
-                    &err,
-                    &format!(
-                        "Invalid Request: Ingestion failed for stream {OTEL_TEST_STREAM}: Protobuf ingestion is not supported in Parseable OSS"
-                    ),
-                )
-                .await;
+            // The malformed JSON body of the tests above is not a protobuf message either
+            let err = flatten_and_push_otel_protobuf(
+                b"{not valid json",
+                usize::MAX,
+                OTEL_TEST_STREAM,
+                &log_source,
+                &HashMap::new(),
+                telemetry_type,
+                &None,
+            )
+            .unwrap_err();
+            assert!(matches!(err, PostError::Invalid(_)), "{err:?}");
+            let expected = err.to_string();
+            assert!(
+                expected.starts_with(&format!(
+                    "Invalid Request: Ingestion failed for stream {OTEL_TEST_STREAM}: Failed to decode protobuf message: "
+                )),
+                "{log_source}: {expected}"
+            );
+            assert_bad_request_body(&err, &expected).await;
+        }
+    }
+
+    #[test]
+    fn otel_protobuf_body_over_the_payload_limit_is_rejected_before_decoding() {
+        // Not a protobuf message: reaching the decoder would report a decode error
+        let body = b"{not valid json";
+        let err = flatten_and_push_otel_protobuf(
+            body,
+            body.len() - 1,
+            OTEL_TEST_STREAM,
+            &LogSource::OtelLogs,
+            &HashMap::new(),
+            TelemetryType::Logs,
+            &None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Invalid Request: Ingestion failed for stream {OTEL_TEST_STREAM}: Protobuf message size {} exceeds maximum allowed size of {} bytes",
+                body.len(),
+                body.len() - 1
+            )
+        );
+    }
+
+    #[test]
+    fn otel_protobuf_decode_rejects_non_otel_log_source() {
+        let err = OtelProtobufRequest::decode(&[], &LogSource::Json).unwrap_err();
+        assert!(matches!(err, OtelProtobufError::NotOtel(LogSource::Json)));
+    }
+
+    #[test]
+    fn otel_protobuf_truncated_body_decodes_no_rows() {
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+
+        let encoded = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        severity_text: "INFO".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+        .encode_to_vec();
+
+        assert!(matches!(
+            OtelProtobufRequest::decode(&encoded, &LogSource::OtelLogs),
+            Ok(OtelProtobufRequest::Logs(_))
+        ));
+        for len in 1..encoded.len() {
+            assert!(
+                matches!(
+                    OtelProtobufRequest::decode(&encoded[..len], &LogSource::OtelLogs),
+                    Err(OtelProtobufError::Decode(_))
+                ),
+                "a body cut to {len} of {} bytes must not decode",
+                encoded.len()
+            );
+        }
+    }
+
+    /// The protobuf and JSON encodings of one request must flatten to the same rows.
+    #[test]
+    fn otel_protobuf_and_json_encodings_flatten_to_the_same_rows() {
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
+
+        fn string_attribute(key: &str, value: &str) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(value.to_string())),
+                }),
+                ..Default::default()
             }
         }
+        let limits = || FlattenBudget::new(FlattenLimits::DEFAULT);
+
+        let resource = Some(Resource {
+            attributes: vec![string_attribute("service.name", "checkout")],
+            ..Default::default()
+        });
+        let logs = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: resource.clone(),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![
+                        LogRecord {
+                            time_unix_nano: 1_700_000_000_000_000_000,
+                            observed_time_unix_nano: 1_700_000_000_000_000_001,
+                            severity_number: 9,
+                            severity_text: "INFO".to_string(),
+                            body: Some(AnyValue {
+                                value: Some(any_value::Value::StringValue("paid".to_string())),
+                            }),
+                            attributes: vec![string_attribute("order", "42")],
+                            trace_id: vec![0xab; 16],
+                            span_id: vec![0xcd; 8],
+                            ..Default::default()
+                        },
+                        // Unset timestamps are filled from the clock, so every one is set
+                        LogRecord {
+                            time_unix_nano: 1_700_000_001_000_000_000,
+                            observed_time_unix_nano: 1_700_000_001_000_000_001,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let json: LogsData = serde_json::from_value(serde_json::to_value(&logs).unwrap()).unwrap();
+        let protobuf = OtelProtobufRequest::decode(
+            &ExportLogsServiceRequest {
+                resource_logs: logs.resource_logs.clone(),
+            }
+            .encode_to_vec(),
+            &LogSource::OtelLogs,
+        )
+        .unwrap();
+        let from_json = flatten_otel_logs(&json, "tenant", &mut limits()).unwrap();
+        assert_eq!(from_json.len(), 2);
+        assert_eq!(
+            protobuf.flatten("tenant", &mut limits()).unwrap(),
+            from_json
+        );
+
+        let traces = TracesData {
+            resource_spans: vec![ResourceSpans {
+                resource,
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![Span {
+                        trace_id: vec![0x11; 16],
+                        span_id: vec![0x22; 8],
+                        name: "charge".to_string(),
+                        start_time_unix_nano: 1_700_000_000_000_000_000,
+                        end_time_unix_nano: 1_700_000_000_500_000_000,
+                        attributes: vec![string_attribute("order", "42")],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let json: TracesData =
+            serde_json::from_value(serde_json::to_value(&traces).unwrap()).unwrap();
+        let protobuf = OtelProtobufRequest::decode(
+            &ExportTraceServiceRequest {
+                resource_spans: traces.resource_spans.clone(),
+            }
+            .encode_to_vec(),
+            &LogSource::OtelTraces,
+        )
+        .unwrap();
+        let from_json = flatten_otel_traces(&json, "tenant");
+        assert_eq!(from_json.len(), 1);
+        assert_eq!(
+            protobuf.flatten("tenant", &mut limits()).unwrap(),
+            from_json
+        );
     }
 
     #[test]
