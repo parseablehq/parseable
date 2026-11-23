@@ -16,7 +16,7 @@
  *
  */
 
-use chrono::DateTime;
+use chrono::{Datelike, DateTime, Timelike};
 use opentelemetry_proto::tonic::common::v1::{
     AnyValue, ArrayValue, KeyValue, KeyValueList, any_value::Value as OtelValue,
 };
@@ -263,11 +263,79 @@ pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) 
 pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
     if epoch_ns == 0 {
         return chrono::Utc::now()
-            .format("%Y-%m-%dT%H:%M:%S%.9fZ")
+            .format(TIMESTAMP_FORMAT)
             .to_string();
     }
-    let dt = DateTime::from_timestamp_nanos(epoch_ns).naive_utc();
-    dt.format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()
+    let timestamp = DateTime::from_timestamp_nanos(epoch_ns).naive_utc();
+    // The strftime machinery costs about 200 ns per call; writing the same
+    // fields of the already-converted timestamp costs a couple of ns. `%Y`
+    // needs a sign outside 0..=9999 (which an i64 of nanoseconds cannot reach),
+    // so anything outside keeps using the formatter.
+    if !(0..=9999).contains(&timestamp.year()) {
+        return timestamp.format(TIMESTAMP_FORMAT).to_string();
+    }
+    format_timestamp(&timestamp)
+}
+
+/// `%Y-%m-%dT%H:%M:%S%.9fZ` for a timestamp whose year has four digits
+fn format_timestamp(timestamp: &chrono::NaiveDateTime) -> String {
+    let mut buf = [0u8; TIMESTAMP_LEN];
+    let mut pos = 0;
+    let year = timestamp.year() as u32;
+    write_two_digits(&mut buf, &mut pos, year / 100);
+    write_two_digits(&mut buf, &mut pos, year % 100);
+    buf[pos] = b'-';
+    pos += 1;
+    write_two_digits(&mut buf, &mut pos, timestamp.month());
+    buf[pos] = b'-';
+    pos += 1;
+    write_two_digits(&mut buf, &mut pos, timestamp.day());
+    buf[pos] = b'T';
+    pos += 1;
+    write_two_digits(&mut buf, &mut pos, timestamp.hour());
+    buf[pos] = b':';
+    pos += 1;
+    write_two_digits(&mut buf, &mut pos, timestamp.minute());
+    buf[pos] = b':';
+    pos += 1;
+    write_two_digits(&mut buf, &mut pos, timestamp.second());
+    buf[pos] = b'.';
+    pos += 1;
+    let nanos = timestamp.nanosecond();
+    buf[pos] = b'0' + (nanos / 100_000_000) as u8;
+    pos += 1;
+    write_two_digits(&mut buf, &mut pos, (nanos / 1_000_000) % 100);
+    write_two_digits(&mut buf, &mut pos, (nanos / 10_000) % 100);
+    write_two_digits(&mut buf, &mut pos, (nanos / 100) % 100);
+    write_two_digits(&mut buf, &mut pos, nanos % 100);
+    buf[pos] = b'Z';
+    pos += 1;
+    debug_assert_eq!(pos, TIMESTAMP_LEN);
+
+    String::from_utf8(buf.to_vec()).expect("a timestamp is ASCII")
+}
+
+/// `YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ`
+const TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.9fZ";
+const TIMESTAMP_LEN: usize = 30;
+
+/// Two-digit decimal pairs `00`..`99`
+const DIGIT_PAIRS: [u8; 200] = {
+    let mut pairs = [0u8; 200];
+    let mut value = 0;
+    while value < 100 {
+        pairs[value * 2] = b'0' + (value / 10) as u8;
+        pairs[value * 2 + 1] = b'0' + (value % 10) as u8;
+        value += 1;
+    }
+    pairs
+};
+
+fn write_two_digits(buf: &mut [u8; TIMESTAMP_LEN], pos: &mut usize, value: u32) {
+    let pair = value as usize * 2;
+    buf[*pos] = DIGIT_PAIRS[pair];
+    buf[*pos + 1] = DIGIT_PAIRS[pair + 1];
+    *pos += 2;
 }
 
 #[cfg(test)]
@@ -294,6 +362,73 @@ mod tests {
             convert_epoch_nano_to_timestamp(1_000_000_000),
             "1970-01-01T00:00:01.000000000Z"
         );
+    }
+
+    /// The direct formatter must produce exactly what the strftime path produces,
+    /// for every kind of value an i64 of nanoseconds can hold: the ends of the
+    /// range, the whole of one day second by second, hours across the range
+    /// around the epoch and deterministic pseudorandom values.
+    #[test]
+    fn fast_timestamp_matches_strftime() {
+        let slow = |ns: i64| {
+            chrono::DateTime::from_timestamp_nanos(ns)
+                .naive_utc()
+                .format("%Y-%m-%dT%H:%M:%S%.9fZ")
+                .to_string()
+        };
+        let mut values = vec![
+            i64::MIN,
+            i64::MIN + 1,
+            i64::MIN + 999,
+            i64::MAX,
+            i64::MAX - 1,
+            i64::MIN / 2,
+            i64::MAX / 2,
+            1,
+            -1,
+            999_999_999,
+            1_000_000_000,
+            -999_999_999,
+            -1_000_000_000,
+            // leap day, year boundaries, month ends
+            951_782_400_000_000_000,
+            1_709_164_799_999_999_999,
+            1_709_164_800_000_000_000,
+            1_735_689_599_999_999_999,
+            1_735_689_600_000_000_000,
+        ];
+        // every second of one day
+        for second in 0..86_400 {
+            values.push(1_700_000_000_000_000_000 + second * 1_000_000_000);
+        }
+        // every hour of the first and last thousand hours the range can hold,
+        // and of the thousand hours around the epoch
+        for hour in 0..1_000 {
+            values.push(i64::MIN + hour * 3_600_000_000_000);
+            values.push(i64::MAX - hour * 3_600_000_000_000);
+            values.push(hour * 3_600_000_000_000);
+            values.push(-hour * 3_600_000_000_000);
+        }
+        // SplitMix64, as the deterministic-simulation conventions use
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..20_000 {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            values.push((z ^ (z >> 31)) as i64);
+        }
+
+        for ns in values {
+            if ns == 0 {
+                continue; // filled from the wall clock
+            }
+            assert_eq!(
+                convert_epoch_nano_to_timestamp(ns),
+                slow(ns),
+                "timestamp for {ns} ns differs"
+            );
+        }
     }
 
     fn logs_with_omitted_empty_collection_values() -> Value {
