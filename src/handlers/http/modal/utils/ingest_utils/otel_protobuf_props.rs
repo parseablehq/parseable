@@ -42,7 +42,7 @@
 
 use super::*;
 use crate::otel::metrics::{
-    flatten_otel_metrics_protobuf_with_exemplars, flatten_otel_metrics_with_exemplars,
+    flatten_otel_metrics_protobuf_with_options, flatten_otel_metrics_with_options,
 };
 use crate::otel::otel_utils::flatten_attributes;
 use crate::utils::json::flatten::FlattenCost;
@@ -1070,7 +1070,7 @@ fn pb_stage(
         match &request {
             // `OtelProtobufRequest::flatten` reads the exemplar flag from the server configuration
             OtelProtobufRequest::Metrics(message) => Ok(
-                flatten_otel_metrics_protobuf_with_exemplars(message, TENANT, flatten_exemplars),
+                flatten_otel_metrics_protobuf_with_options(message, TENANT, flatten_exemplars),
             ),
             _ => request.flatten(TENANT, &mut budget).map_err(flatten_error),
         };
@@ -1111,7 +1111,8 @@ fn json_stage(
         },
         LogSource::OtelMetrics => match deserialize_otel_json::<MetricsData>(json, normalise) {
             Ok(metrics) => {
-                let rows = flatten_otel_metrics_with_exemplars(&metrics, TENANT, flatten_exemplars);
+                let rows =
+                    flatten_otel_metrics_with_options(metrics.clone(), TENANT, flatten_exemplars);
                 (Req::Metrics(metrics), Ok(rows))
             }
             Err(error) => return (None, decode_error(error)),
@@ -1502,7 +1503,6 @@ fn decode_is_total(
             // Returns before the dataset field check, the first use of `PARSEABLE`
             let refused = flatten_and_push_otel_protobuf(
                 body,
-                usize::MAX,
                 "otel_pb_props",
                 source,
                 &HashMap::new(),
@@ -2275,8 +2275,7 @@ struct Scenario {
 ///   spans times events and links; data points plus `target_info`), or for
 ///   logs a flatten-limit error and no rows;
 /// - every decoded request the JSON mapping can carry gives the same outcome
-///   in the other encoding (unset timestamps of damaged bodies filled first);
-/// - a payload over the size limit is refused before decoding.
+///   in the other encoding (unset timestamps of damaged bodies filled first).
 ///
 /// Across the run: the sink holds exactly the rows of accepted requests, and
 /// the same seed gives the same run.
@@ -2365,27 +2364,6 @@ fn run_scenario(seed: u64) -> Result<Scenario, (String, Vec<String>)> {
             };
         let source = request.source();
 
-        // The size limit comes first, for every body
-        if !body.is_empty() && rng.percent(5) {
-            let refused = flatten_and_push_otel_protobuf(
-                &body,
-                body.len() - 1,
-                "dst",
-                &source,
-                &HashMap::new(),
-                request.telemetry_type(),
-                &None,
-            );
-            if !matches!(&refused, Err(PostError::Invalid(e)) if e.to_string().contains("exceeds maximum allowed size"))
-            {
-                return fail(
-                    format!("oversized body not refused: {refused:?}"),
-                    &mut trace,
-                );
-            }
-            *counts.entry("oversized_refused".into()).or_default() += 1;
-        }
-
         let normalise = rng.percent(50);
         let (decoded, outcome) = match encoding {
             Encoding::Protobuf => pb_stage(&source, &body, limits, false),
@@ -2399,7 +2377,6 @@ fn run_scenario(seed: u64) -> Result<Scenario, (String, Vec<String>)> {
                 if encoding == Encoding::Protobuf {
                     let refused = flatten_and_push_otel_protobuf(
                         &body,
-                        usize::MAX,
                         "dst",
                         &source,
                         &HashMap::new(),
@@ -2550,7 +2527,6 @@ fn dst_otlp_mixed_encoding_ingest() {
             "flatten_limit_refused",
             "cross_encoding_checked",
             "cross_encoding_not_representable",
-            "oversized_refused",
         ] {
             assert!(seen(needle), "no {needle} outcome in {totals:?}");
         }

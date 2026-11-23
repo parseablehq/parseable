@@ -64,7 +64,9 @@ fn stage(signal: &str, encoding: &str, body: &[u8]) -> Vec<Value> {
 }
 
 fn main() {
-    assert!(!cfg!(debug_assertions), "build otlp_stage with --release");
+    if cfg!(debug_assertions) {
+        panic!("build otlp_stage with --release");
+    }
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
         [signal, mode, json, protobuf, rows] if mode == "check" => {
