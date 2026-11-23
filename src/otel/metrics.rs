@@ -1586,14 +1586,20 @@ mod tests {
                                 version: "0.31.0".to_string(),
                                 attributes: vec![
                                     string_kv("scope.kind", "server"),
-                                    string_kv("scope.extra", format!("{resource_index}-{scope_index}")),
+                                    string_kv(
+                                        "scope.extra",
+                                        format!("{resource_index}-{scope_index}"),
+                                    ),
                                     int_kv("scope.ordinal", scope_index),
                                 ],
                                 dropped_attributes_count: 0,
                             }),
                             metrics: (0..METRICS_PER_SCOPE)
                                 .map(|metric_index| {
-                                    metric(metric_index, resource_index as usize * 10 + scope_index as usize)
+                                    metric(
+                                        metric_index,
+                                        resource_index as usize * 10 + scope_index as usize,
+                                    )
                                 })
                                 .collect(),
                             schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),

@@ -1294,14 +1294,21 @@ mod tests {
                                 version: "0.31.0".to_string(),
                                 attributes: vec![
                                     string_kv("scope.kind", "client"),
-                                    string_kv("scope.extra", format!("{resource_index}-{scope_index}")),
+                                    string_kv(
+                                        "scope.extra",
+                                        format!("{resource_index}-{scope_index}"),
+                                    ),
                                     int_kv("scope.ordinal", scope_index),
                                 ],
                                 dropped_attributes_count: 0,
                             }),
                             spans: (0..SPANS_PER_SCOPE)
                                 .map(|span_index| {
-                                    span(resource_index as usize * 1000 + scope_index as usize * 100 + span_index)
+                                    span(
+                                        resource_index as usize * 1000
+                                            + scope_index as usize * 100
+                                            + span_index,
+                                    )
                                 })
                                 .collect(),
                             schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),

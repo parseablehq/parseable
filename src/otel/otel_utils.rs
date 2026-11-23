@@ -16,7 +16,7 @@
  *
  */
 
-use chrono::{Datelike, DateTime, Timelike};
+use chrono::{DateTime, Datelike, Timelike};
 use opentelemetry_proto::tonic::common::v1::{
     AnyValue, ArrayValue, KeyValue, KeyValueList, any_value::Value as OtelValue,
 };
@@ -262,9 +262,7 @@ pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) 
 
 pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
     if epoch_ns == 0 {
-        return chrono::Utc::now()
-            .format(TIMESTAMP_FORMAT)
-            .to_string();
+        return chrono::Utc::now().format(TIMESTAMP_FORMAT).to_string();
     }
     let timestamp = DateTime::from_timestamp_nanos(epoch_ns).naive_utc();
     // The strftime machinery costs about 200 ns per call; writing the same
@@ -489,8 +487,8 @@ mod tests {
     //   cargo test --release --lib -- --ignored --exact otel::otel_utils::tests::benches::bench_convert_epoch_nano_to_timestamp --nocapture
     mod benches {
         use super::super::{convert_epoch_nano_to_timestamp, insert_attributes};
-        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
         use crate::otel::bench;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
 
         fn string_kv(key: &str, value: &str) -> KeyValue {
             KeyValue {

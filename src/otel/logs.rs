@@ -1055,14 +1055,21 @@ mod tests {
                                 version: "0.31.0".to_string(),
                                 attributes: vec![
                                     string_kv("scope.kind", "server"),
-                                    string_kv("scope.extra", format!("{resource_index}-{scope_index}")),
+                                    string_kv(
+                                        "scope.extra",
+                                        format!("{resource_index}-{scope_index}"),
+                                    ),
                                     int_kv("scope.ordinal", scope_index),
                                 ],
                                 dropped_attributes_count: 0,
                             }),
                             log_records: (0..RECORDS_PER_SCOPE)
                                 .map(|record_index| {
-                                    record(resource_index as usize * 1000 + scope_index as usize * 100 + record_index)
+                                    record(
+                                        resource_index as usize * 1000
+                                            + scope_index as usize * 100
+                                            + record_index,
+                                    )
                                 })
                                 .collect(),
                             schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
@@ -1076,7 +1083,8 @@ mod tests {
 
         fn flatten(request: &ExportLogsServiceRequest) -> Vec<serde_json::Value> {
             let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
-            flatten_otel_protobuf(request, "perfbench", &mut budget).expect("benchmark rows flatten")
+            flatten_otel_protobuf(request, "perfbench", &mut budget)
+                .expect("benchmark rows flatten")
         }
 
         #[test]
