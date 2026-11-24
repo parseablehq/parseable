@@ -285,7 +285,13 @@ fn json_object_text_bytes(text: &str) -> Option<usize> {
         if len == 0 {
             return 0;
         }
-        let fits = |buckets: usize| if buckets < 8 { buckets - 1 } else { buckets / 8 * 7 };
+        let fits = |buckets: usize| {
+            if buckets < 8 {
+                buckets - 1
+            } else {
+                buckets / 8 * 7
+            }
+        };
         let mut buckets = 4usize;
         while fits(buckets) < len {
             buckets = buckets.saturating_mul(2);
@@ -1261,17 +1267,24 @@ mod tests {
     /// to, and the old block of the last growth, which a reallocation holds too.
     #[test]
     fn parsed_body_estimate_covers_what_parsing_holds() {
-        let mut shapes: Vec<(String, String)> = [1usize, 3, 4, 7, 8, 15, 100, 1000, 100_000, 400_000]
-            .into_iter()
-            .map(|n| (format!("object of {n} fields"), many_fields(n)))
-            .collect();
+        let mut shapes: Vec<(String, String)> =
+            [1usize, 3, 4, 7, 8, 15, 100, 1000, 100_000, 400_000]
+                .into_iter()
+                .map(|n| (format!("object of {n} fields"), many_fields(n)))
+                .collect();
         for n in [1usize, 4, 5, 1000, 262_145] {
             let numbers = vec!["0"; n].join(",");
             shapes.push((format!("{n} numbers"), format!(r#"{{"a":[{numbers}]}}"#)));
             let singles = vec!["[0]"; n].join(",");
-            shapes.push((format!("{n} one-number arrays"), format!(r#"{{"a":[{singles}]}}"#)));
+            shapes.push((
+                format!("{n} one-number arrays"),
+                format!(r#"{{"a":[{singles}]}}"#),
+            ));
             let objects = vec![r#"{"k":"v","n":1}"#; n].join(",");
-            shapes.push((format!("{n} small objects"), format!(r#"{{"a":[{objects}]}}"#)));
+            shapes.push((
+                format!("{n} small objects"),
+                format!(r#"{{"a":[{objects}]}}"#),
+            ));
         }
         for n in [1000usize, 1_000_000] {
             // Escapes are unescaped into a scratch buffer while parsing
@@ -1282,7 +1295,7 @@ mod tests {
         }
         shapes.push((
             "nested objects".into(),
-            format!("{}{}", r#"{"a":"#.repeat(100), format!("0{}", "}".repeat(100))),
+            format!("{}0{}", r#"{"a":"#.repeat(100), "}".repeat(100)),
         ));
         let mut under = Vec::new();
         for (name, text) in shapes {

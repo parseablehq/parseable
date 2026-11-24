@@ -937,7 +937,8 @@ pub fn flatten_and_push_logs(
             // The body's length, as the expansion cap counts it, is that of the
             // JSON text of the value
             let body_len = json_byte_size(&json) as usize;
-            if let OtelIngested::Partial { message, .. } = ingest_otel_json(json, body_len, &target)?
+            if let OtelIngested::Partial { message, .. } =
+                ingest_otel_json(json, body_len, &target)?
             {
                 return Err(PostError::Invalid(anyhow::Error::msg(message)));
             }

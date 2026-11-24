@@ -550,13 +550,20 @@ fn realistic_requests_at_the_payload_limit_are_under_the_expansion_cap() {
             ratio,
             100.0 * totals.bytes as f64 / cap as f64
         );
-        assert!(totals.bytes.saturating_mul(8) <= cap, "{} is under 8x headroom", shape.name);
+        assert!(
+            totals.bytes.saturating_mul(8) <= cap,
+            "{} is under 8x headroom",
+            shape.name
+        );
         for body in &shape.small {
             let small = self::totals(shape.signal, body);
             let ratio = small.bytes as f64 / body.len() as f64;
             println!(
                 "EXPANSION {}, {} records: body {} B, {} row bytes, {ratio:.1} row bytes per body byte",
-                shape.name, small.records, body.len(), small.bytes
+                shape.name,
+                small.records,
+                body.len(),
+                small.bytes
             );
             assert!(
                 small.bytes.saturating_mul(8) <= max_expanded_bytes(body.len()),

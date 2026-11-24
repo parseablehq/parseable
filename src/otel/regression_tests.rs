@@ -97,6 +97,9 @@ impl RowSink for Last {
     }
 }
 
+/// Builds one row into a `Last`
+type BuildRow = Box<dyn Fn(&mut Last)>;
+
 /// Bytes the row built by `build` holds once built, and its `row_bytes`
 fn held_and_estimated(build: impl FnOnce(&mut Last)) -> (isize, usize) {
     let mut last = Last::default();
@@ -148,7 +151,7 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
         attributes
     };
 
-    let mut cases: Vec<(&str, Box<dyn Fn(&mut Last)>)> = Vec::new();
+    let mut cases: Vec<(&str, BuildRow)> = Vec::new();
     for (level, resource_attributes, scope_attributes) in [
         ("resource", repeated_keys(), vec![]),
         ("scope", vec![], repeated_keys()),
@@ -162,7 +165,8 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
                 "logs, scope"
             },
             Box::new(move |sink: &mut Last| {
-                let resource_fields = super::logs::resource_log_fields(resource(ra.clone()).as_ref(), "");
+                let resource_fields =
+                    super::logs::resource_log_fields(resource(ra.clone()).as_ref(), "");
                 let scope_fields = super::logs::scope_log_fields(scope(sa.clone()).as_ref(), "");
                 let row = super::logs::log_record_row(
                     &record,
@@ -205,7 +209,8 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
                     resource(resource_attributes.clone()).as_ref(),
                     "",
                 );
-                let scope_fields = super::traces::scope_span_fields(scope(scope_attributes.clone()).as_ref());
+                let scope_fields =
+                    super::traces::scope_span_fields(scope(scope_attributes.clone()).as_ref());
                 super::traces::span_rows(
                     &span,
                     &super::traces::SpanParents {
@@ -220,10 +225,34 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
         ));
     }
     for (name, resource_attributes, scope_attributes, metadata, target_info) in [
-        ("metrics, resource", with_identity(repeated_keys()), vec![], vec![], false),
-        ("metrics, resource, target_info row", with_identity(repeated_keys()), vec![], vec![], true),
-        ("metrics, scope", with_identity(vec![]), repeated_keys(), vec![], false),
-        ("metrics, metric metadata", with_identity(vec![]), vec![], repeated_keys(), false),
+        (
+            "metrics, resource",
+            with_identity(repeated_keys()),
+            vec![],
+            vec![],
+            false,
+        ),
+        (
+            "metrics, resource, target_info row",
+            with_identity(repeated_keys()),
+            vec![],
+            vec![],
+            true,
+        ),
+        (
+            "metrics, scope",
+            with_identity(vec![]),
+            repeated_keys(),
+            vec![],
+            false,
+        ),
+        (
+            "metrics, metric metadata",
+            with_identity(vec![]),
+            vec![],
+            repeated_keys(),
+            false,
+        ),
     ] {
         let metric = gauge(metadata);
         cases.push((
@@ -292,7 +321,11 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
     );
     assert!(failed.is_empty(), "rows hold over 2x row_bytes: {failed:?}");
     assert_eq!(rows, 1 << 16);
-    assert!(allocated.peak <= PEAK_BOUND, "peak {:.1} MiB", mb(allocated.peak));
+    assert!(
+        allocated.peak <= PEAK_BOUND,
+        "peak {:.1} MiB",
+        mb(allocated.peak)
+    );
 }
 
 /// A body of `count` two-byte empty entries of field 1 (`resource_logs`,

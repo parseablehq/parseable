@@ -273,7 +273,11 @@ fn json_text_log_body_is_not_parsed_into_unbounded_memory() {
     };
     let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
     let (result, allocated) = hand_over("10 MiB JSON text body", logs(&request, &mut budget));
-    assert_eq!(result.unwrap().rows, 1, "the record is kept, its body as text");
+    assert_eq!(
+        result.unwrap().rows,
+        1,
+        "the record is kept, its body as text"
+    );
     // The row holds copies of the body text, nothing parsed from it
     assert!(
         allocated.peak < PEAK_BOUND + 3 * body_len,

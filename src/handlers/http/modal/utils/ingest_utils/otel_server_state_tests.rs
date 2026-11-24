@@ -46,9 +46,7 @@ fn initialize_server() {
         crate::parseable::Parseable::new(
             crate::cli::Options::default(),
             #[cfg(feature = "kafka")]
-            <crate::connectors::kafka::config::KafkaConfig as clap::Parser>::parse_from([
-                "otel",
-            ]),
+            <crate::connectors::kafka::config::KafkaConfig as clap::Parser>::parse_from(["otel"]),
             provider,
             metastore,
             storage,
@@ -109,7 +107,10 @@ async fn otlp_json_checks_the_field_count_before_decoding() {
     let schema = (0..=limit)
         .map(|i| {
             let name = format!("f{i}");
-            (name.clone(), Arc::new(Field::new(name, DataType::Utf8, true)))
+            (
+                name.clone(),
+                Arc::new(Field::new(name, DataType::Utf8, true)),
+            )
         })
         .collect();
     PARSEABLE.streams.get_or_create(
@@ -124,9 +125,21 @@ async fn otlp_json_checks_the_field_count_before_decoding() {
         &None,
     );
     for (telemetry_type, log_source, body) in [
-        (TelemetryType::Logs, LogSource::OtelLogs, r#"{"resourceLogs":5}"#),
-        (TelemetryType::Metrics, LogSource::OtelMetrics, r#"{"resourceMetrics":5}"#),
-        (TelemetryType::Traces, LogSource::OtelTraces, r#"{"resourceSpans":5}"#),
+        (
+            TelemetryType::Logs,
+            LogSource::OtelLogs,
+            r#"{"resourceLogs":5}"#,
+        ),
+        (
+            TelemetryType::Metrics,
+            LogSource::OtelMetrics,
+            r#"{"resourceMetrics":5}"#,
+        ),
+        (
+            TelemetryType::Traces,
+            LogSource::OtelTraces,
+            r#"{"resourceSpans":5}"#,
+        ),
     ] {
         let req = TestRequest::default()
             .insert_header((CONTENT_TYPE, "application/json"))
