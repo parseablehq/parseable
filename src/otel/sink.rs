@@ -158,26 +158,37 @@ pub struct Staged {
     pub points: u64,
 }
 
-/// Row bytes per payload byte one request may expand to: the rows of a request
-/// may hold at most `EXPANSION_FACTOR` times `P_MAX_EVENT_PAYLOAD_SIZE` of
-/// estimated memory ([`row_bytes`]) in all, counted while they are staged.
+/// Row bytes per body byte one request may expand to: the rows of a request may
+/// hold at most `EXPANSION_FACTOR` times the length of its body (decompressed) of
+/// estimated memory ([`row_bytes`]) in all, counted while they are staged, and at
+/// least [`MIN_EXPANDED_BYTES`].
 ///
 /// Every row carries its own copy of the resource, scope, span and metric fields,
 /// so a small request can expand to a very large number of row bytes: 15 KB of
 /// resource attributes copied into each of 5 million two-byte log records is tens
 /// of GiB. Chunking bounds the memory this takes at once, not what is written to
 /// staging. The most measured for a request shaped like collector traffic is
-/// below 500 (short log records or bare gauge points under 30 Kubernetes resource
-/// attributes; ordinary k8s logs, spans and metrics expand 40-110x, see
-/// `realistic_tests`), so 1024 leaves about 2x headroom, and stops the requests
-/// that copy kilobytes of shared fields into millions of records of a few bytes,
-/// at 10 GiB of rows for the default 10 MiB payload limit.
-pub const EXPANSION_FACTOR: u64 = 1024;
+/// below 500 row bytes per body byte (short log records or bare gauge points under
+/// 30 Kubernetes resource attributes; ordinary k8s logs, spans and metrics expand
+/// 40-110x, see `realistic_tests`), and a request of such records expands less the
+/// fewer records share its resource, so 4096 leaves at least 8x headroom at every
+/// body size, and stops the requests that copy kilobytes of shared fields into
+/// millions of records of a few bytes.
+pub const EXPANSION_FACTOR: u64 = 4096;
 
-/// Estimated bytes of rows one request may expand to, for a payload limit of
-/// `max_payload` bytes
-pub fn max_expanded_bytes(max_payload: usize) -> u64 {
-    (max_payload as u64).saturating_mul(EXPANSION_FACTOR)
+/// Estimated bytes of rows any request may expand to, whatever the length of its
+/// body: one chunk. Below it the cap would only cut requests whose rows fit in one
+/// chunk, whose memory the chunk limit bounds anyway. The bodies it decides for are
+/// under 4 KiB, which realistic records expand to at most 2 MiB of rows (500 bytes
+/// per body byte), 8x under it.
+pub const MIN_EXPANDED_BYTES: u64 = CHUNK_LIMITS.bytes as u64;
+
+/// Estimated bytes of rows one request may expand to, for a body of `body_len`
+/// bytes
+pub fn max_expanded_bytes(body_len: usize) -> u64 {
+    (body_len as u64)
+        .saturating_mul(EXPANSION_FACTOR)
+        .max(MIN_EXPANDED_BYTES)
 }
 
 /// Collects rows into chunks and passes every full chunk to `stage`, with the

@@ -40,7 +40,7 @@ use prost::Message;
 use serde_json::{Map, Value};
 
 use super::protobuf_stream::{Signal, flatten_request, max_record_bytes, outline};
-use super::sink::{RowSink, max_expanded_bytes, row_bytes};
+use super::sink::{EXPANSION_FACTOR, MIN_EXPANDED_BYTES, RowSink, max_expanded_bytes, row_bytes};
 use crate::utils::json::flatten::{FlattenBudget, FlattenLimits, JsonFlattenError};
 
 /// `P_MAX_EVENT_PAYLOAD_SIZE` default
@@ -370,6 +370,8 @@ pub(crate) struct Shape {
     pub name: &'static str,
     pub signal: &'static str,
     pub body: Vec<u8>,
+    /// The same request with 1, 10 and 100 records
+    pub small: Vec<Vec<u8>>,
 }
 
 /// What the rows of a request add up to, as staging counts them
@@ -443,7 +445,16 @@ fn shape<M: Message>(
         request = build(n);
     }
     let body = request.encode_to_vec();
-    Shape { name, signal, body }
+    let small = [1, 10, 100]
+        .into_iter()
+        .map(|n| build(n).encode_to_vec())
+        .collect();
+    Shape {
+        name,
+        signal,
+        body,
+        small,
+    }
 }
 
 pub(crate) fn shapes() -> Vec<Shape> {
@@ -510,12 +521,12 @@ pub(crate) fn shapes() -> Vec<Shape> {
     ]
 }
 
-/// Every realistic shape at the payload limit is under the expansion cap, counted
-/// as staging counts it: the `row_bytes` of every row
+/// Every realistic shape at the payload limit is under the expansion cap for its
+/// body with at least 8x headroom, counted as staging counts it: the `row_bytes`
+/// of every row. So is the same shape with 1, 10 and 100 records.
 #[test]
 fn realistic_requests_at_the_payload_limit_are_under_the_expansion_cap() {
     use rayon::prelude::*;
-    let cap = max_expanded_bytes(PAYLOAD);
     let mut worst: f64 = 0.0;
     // Flattened at once: a few seconds each in a debug build
     let measured: Vec<(Shape, Totals)> = shapes()
@@ -526,6 +537,7 @@ fn realistic_requests_at_the_payload_limit_are_under_the_expansion_cap() {
         })
         .collect();
     for (shape, totals) in measured {
+        let cap = max_expanded_bytes(shape.body.len());
         let ratio = totals.bytes as f64 / shape.body.len() as f64;
         worst = worst.max(ratio);
         println!(
@@ -538,11 +550,24 @@ fn realistic_requests_at_the_payload_limit_are_under_the_expansion_cap() {
             ratio,
             100.0 * totals.bytes as f64 / cap as f64
         );
-        assert!(totals.bytes <= cap, "{} is refused", shape.name);
+        assert!(totals.bytes.saturating_mul(8) <= cap, "{} is under 8x headroom", shape.name);
+        for body in &shape.small {
+            let small = self::totals(shape.signal, body);
+            let ratio = small.bytes as f64 / body.len() as f64;
+            println!(
+                "EXPANSION {}, {} records: body {} B, {} row bytes, {ratio:.1} row bytes per body byte",
+                shape.name, small.records, body.len(), small.bytes
+            );
+            assert!(
+                small.bytes.saturating_mul(8) <= max_expanded_bytes(body.len()),
+                "{} with {} records",
+                shape.name,
+                small.records
+            );
+        }
     }
     println!(
-        "EXPANSION worst {worst:.1} row bytes per body byte, cap {} per body byte",
-        cap / PAYLOAD as u64
+        "EXPANSION worst {worst:.1} row bytes per body byte, cap {EXPANSION_FACTOR} per body byte, at least {MIN_EXPANDED_BYTES}"
     );
 }
 
@@ -578,7 +603,7 @@ fn copied_fields_over_tiny_records_are_over_the_expansion_cap() {
         bytes as f64 / (1u64 << 30) as f64
     );
     assert!(request.encoded_len() <= PAYLOAD);
-    assert!(bytes > max_expanded_bytes(PAYLOAD));
+    assert!(bytes > max_expanded_bytes(request.encoded_len()));
 }
 
 /// Writes the body of every shape to `OTLP_DUMP_DIR`, named after its signal

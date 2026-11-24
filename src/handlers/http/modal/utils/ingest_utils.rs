@@ -66,8 +66,8 @@ use crate::{
             refusal,
         },
         sink::{
-            CHUNK_LIMITS, ChunkLimits, Chunker, EXPANSION_FACTOR, RowSink, Staged,
-            max_expanded_bytes,
+            CHUNK_LIMITS, ChunkLimits, Chunker, EXPANSION_FACTOR, MIN_EXPANDED_BYTES, RowSink,
+            Staged, max_expanded_bytes,
         },
         traces::flatten_traces_into,
     },
@@ -305,7 +305,7 @@ fn handle_otel_ingestion(
                         return Err(PostError::SerdeError(e));
                     }
                 };
-                ingest_otel_json(json, &target).inspect_err(|e| {
+                ingest_otel_json(json, body.len(), &target).inspect_err(|e| {
                     error!("Ingestion failed for stream {stream_name}: {e}");
                 })
             }
@@ -390,6 +390,29 @@ impl OtelResources<'_> {
         }
     }
 
+    /// Leaf records of the request: log records, metrics or spans. A request
+    /// without any has no rows.
+    fn records(&self) -> u64 {
+        let count = |n: usize| n as u64;
+        match self {
+            Self::Logs(resources) => resources
+                .iter()
+                .flat_map(|r| &r.scope_logs)
+                .map(|s| count(s.log_records.len()))
+                .sum(),
+            Self::Metrics(resources) => resources
+                .iter()
+                .flat_map(|r| &r.scope_metrics)
+                .map(|s| count(s.metrics.len()))
+                .sum(),
+            Self::Traces(resources) => resources
+                .iter()
+                .flat_map(|r| &r.scope_spans)
+                .map(|s| count(s.spans.len()))
+                .sum(),
+        }
+    }
+
     /// Hands the rows of the request to `sink`, one at a time
     fn flatten_into<S: RowSink + ?Sized>(
         &self,
@@ -416,7 +439,7 @@ impl OtelResources<'_> {
 /// The refusal of a request whose rows hold more than `max` estimated bytes in all
 fn expansion_error(max: u64) -> PostError {
     PostError::Invalid(anyhow::anyhow!(
-        "The rows of the request take more than the {max} bytes allowed ({EXPANSION_FACTOR} times P_MAX_EVENT_PAYLOAD_SIZE). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record"
+        "The rows of the request take more than the {max} bytes allowed ({EXPANSION_FACTOR} times the length of its body, at least {MIN_EXPANDED_BYTES}). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record"
     ))
 }
 
@@ -427,6 +450,17 @@ struct StageLimits {
     /// Estimated row bytes the request may stage in all, see `max_expanded_bytes`
     max_expanded: u64,
     flatten: FlattenLimits,
+}
+
+impl StageLimits {
+    /// The limits of staging a request whose body (decompressed) is `body_len` bytes
+    fn for_body(body_len: usize, flatten: FlattenLimits) -> Self {
+        Self {
+            chunk: CHUNK_LIMITS,
+            max_expanded: max_expanded_bytes(body_len),
+            flatten,
+        }
+    }
 }
 
 /// Flattens one OTEL request and hands its rows to `stage` in chunks (see
@@ -500,26 +534,27 @@ fn otel_outcome(
     }
 }
 
-/// Stages the rows of one OTEL request in chunks into its stream, see
-/// `stage_otel_rows` and `otel_outcome`
+/// Stages the rows of one OTEL request of `records` leaf records (log records,
+/// metrics or spans), whose body is `body_len` bytes, in chunks into its stream,
+/// see `stage_otel_rows` and `otel_outcome`. The caller has checked the dataset
+/// field count (`verify_otel_fields_count`). A request without records has no
+/// rows, and is answered without the stream.
 fn ingest_otel_rows(
     signal: Signal,
     target: &OtelTarget<'_>,
+    body_len: usize,
+    records: u64,
     flatten: impl FnOnce(
         &mut FlattenBudget,
         &mut dyn RowSink<Error = PostError>,
     ) -> Result<(), PostError>,
     total: impl FnOnce() -> u64,
 ) -> Result<OtelIngested, PostError> {
+    if records == 0 {
+        return Ok(OtelIngested::Full);
+    }
     let tenant_str = target.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    // Verify the dataset fields count
-    verify_dataset_fields_count(target.stream_name, target.tenant_id)?;
-
-    let limits = StageLimits {
-        chunk: CHUNK_LIMITS,
-        max_expanded: max_expanded_bytes(max_event_payload_size()),
-        flatten: FlattenLimits::from_config(),
-    };
+    let limits = StageLimits::for_body(body_len, FlattenLimits::from_config());
     let mut staging = Staging::new(target.stream_name, target.tenant_id)?;
     let (result, staged) = stage_otel_rows(limits, flatten, |rows| {
         staging.push(
@@ -539,12 +574,15 @@ fn ingest_otel_rows(
 /// `ingest_otel_rows` for a request decoded whole (OTLP JSON)
 fn ingest_otel_resources(
     resources: OtelResources<'_>,
+    body_len: usize,
     target: &OtelTarget<'_>,
 ) -> Result<OtelIngested, PostError> {
     let flatten_exemplars = PARSEABLE.options.otel_flatten_exemplars;
     ingest_otel_rows(
         resources.signal(),
         target,
+        body_len,
+        resources.records(),
         |budget, sink| resources.flatten_into(budget, flatten_exemplars, sink),
         || resources.total(),
     )
@@ -564,21 +602,43 @@ fn count_collected(signal: Signal, records: u64, tenant_id: &str) {
     }
 }
 
-/// The OTEL arms of `handle_otel_ingestion` for a JSON body
-fn ingest_otel_json(json: Value, target: &OtelTarget<'_>) -> Result<OtelIngested, PostError> {
+/// The OTEL arms of `handle_otel_ingestion` for a JSON body of `body_len` bytes.
+/// The dataset field count is checked before the body is decoded into a request.
+fn ingest_otel_json(
+    json: Value,
+    body_len: usize,
+    target: &OtelTarget<'_>,
+) -> Result<OtelIngested, PostError> {
     let normalise = PARSEABLE.options.normalise_otel_payload;
+    // `{}` is the JSON encoding of an empty request, which the generated types
+    // refuse for the collection it leaves out; it has no rows
+    let empty = |json: &Value| -> Result<bool, PostError> {
+        verify_otel_fields_count(target.stream_name, target.tenant_id)?;
+        Ok(json.as_object().is_some_and(|fields| fields.is_empty()))
+    };
     match target.log_source {
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces if empty(&json)? => {
+            Ok(OtelIngested::Full)
+        }
         LogSource::OtelLogs => {
             let logs: LogsData = deserialize_otel_json(json, normalise)?;
-            ingest_otel_resources(OtelResources::Logs(&logs.resource_logs), target)
+            ingest_otel_resources(OtelResources::Logs(&logs.resource_logs), body_len, target)
         }
         LogSource::OtelMetrics => {
             let metrics: MetricsData = deserialize_otel_json(json, normalise)?;
-            ingest_otel_resources(OtelResources::Metrics(&metrics.resource_metrics), target)
+            ingest_otel_resources(
+                OtelResources::Metrics(&metrics.resource_metrics),
+                body_len,
+                target,
+            )
         }
         LogSource::OtelTraces => {
             let traces: TracesData = deserialize_otel_json(json, normalise)?;
-            ingest_otel_resources(OtelResources::Traces(&traces.resource_spans), target)
+            ingest_otel_resources(
+                OtelResources::Traces(&traces.resource_spans),
+                body_len,
+                target,
+            )
         }
         other => Err(PostError::Invalid(anyhow::anyhow!(
             "OTLP ingestion requires an OTLP log source, got {other}"
@@ -666,9 +726,12 @@ fn flatten_and_push_otel_protobuf(
     options: impl FnOnce() -> ProtobufOptions,
 ) -> Result<OtelIngested, PostError> {
     let (signal, outline, options) = outline_otel_protobuf(&body, target, options)?;
+    verify_otel_fields_count(target.stream_name, target.tenant_id)?;
     ingest_otel_rows(
         signal,
         target,
+        body.len(),
+        outline.records,
         |budget, sink| flatten_otel_protobuf(&body, signal, &options, target, budget, sink),
         || protobuf_total(&body, signal, &outline),
     )
@@ -858,7 +921,11 @@ pub fn flatten_and_push_logs(
                 telemetry_type,
                 tenant_id,
             };
-            if let OtelIngested::Partial { message, .. } = ingest_otel_json(json, &target)? {
+            // The body's length, as the expansion cap counts it, is that of the
+            // JSON text of the value
+            let body_len = json_byte_size(&json) as usize;
+            if let OtelIngested::Partial { message, .. } = ingest_otel_json(json, body_len, &target)?
+            {
                 return Err(PostError::Invalid(anyhow::Error::msg(message)));
             }
         }
@@ -1293,6 +1360,20 @@ pub fn get_otel_custom_fields_from_header(
     let mut custom_fields = get_custom_fields_from_header(req);
     custom_fields.insert(FORMAT_KEY.to_string(), log_source.to_string());
     custom_fields
+}
+
+/// `verify_dataset_fields_count` for an OTEL request, which may be answered
+/// without its stream: a stream that does not exist has no fields to count.
+/// Staging a chunk of a request that has rows needs the stream, and fails there
+/// as before (404).
+fn verify_otel_fields_count(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<(), PostError> {
+    match verify_dataset_fields_count(stream_name, tenant_id) {
+        Err(PostError::StreamNotFound(_)) => Ok(()),
+        checked => checked,
+    }
 }
 
 fn verify_dataset_fields_count(
@@ -1969,3 +2050,7 @@ mod tests {
 
 #[cfg(test)]
 mod otel_protobuf_props;
+#[cfg(test)]
+mod otel_regression_tests;
+#[cfg(test)]
+mod otel_server_state_tests;
