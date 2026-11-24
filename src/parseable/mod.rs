@@ -1297,23 +1297,37 @@ impl Parseable {
                 let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
 
                 // An API key stored before keys were hashed was hashed by reading
-                // it. Write the metadata back so that the key itself leaves
-                // storage now, not at the tenant's next change. The nodes that
-                // write the default tenant's metadata at every start (see
+                // it. Write the metadata back, to storage and to this node's
+                // staging copy, so that the key itself leaves both now, not at
+                // the tenant's next change. The nodes that write the default
+                // tenant's metadata at every start (see
                 // `resolve_parseable_metadata`) do this for theirs; the key keeps
                 // working either way, so a failure here only delays it.
-                if matches!(self.options.mode, Mode::All | Mode::Query)
-                    && crate::rbac::user::stores_unhashed_api_key(&meta)
-                    && let Err(error) = self
-                        .metastore
-                        .put_parseable_metadata(&metadata, &Some(tenant_id.clone()))
-                        .await
-                {
-                    tracing::warn!(
-                        %tenant_id,
-                        %error,
-                        "Could not rewrite tenant metadata with its API keys hashed"
-                    );
+                //
+                // This runs only where `validate_multi_tenancy` is called at
+                // start, which this repository's own `main` does not do: there a
+                // tenant's keys are hashed in storage at its next metadata write.
+                if crate::rbac::user::stores_unhashed_api_key(&meta) {
+                    let tenant = Some(tenant_id.clone());
+                    if matches!(self.options.mode, Mode::All | Mode::Query)
+                        && let Err(error) = self
+                            .metastore
+                            .put_parseable_metadata(&metadata, &tenant)
+                            .await
+                    {
+                        tracing::warn!(
+                            %tenant_id,
+                            %error,
+                            "Could not rewrite tenant metadata with its API keys hashed"
+                        );
+                    }
+                    if let Err(error) = crate::storage::put_staging_metadata(&metadata, &tenant) {
+                        tracing::warn!(
+                            %tenant_id,
+                            %error,
+                            "Could not rewrite the staging copy of tenant metadata with its API keys hashed"
+                        );
+                    }
                 }
 
                 TENANT_METADATA.insert_tenant(tenant_id.clone(), metadata.clone());

@@ -486,7 +486,21 @@ impl TryFrom<StoredApiKeyUser> for ApiKeyUser {
         // A record that has a hash is never rehashed from `apiKey`: the hash is
         // what authenticated since it was written.
         let (key_hash, key_hint) = match (stored.key_hash, stored.api_key) {
-            (Some(hash), _) => (hash, stored.key_hint.unwrap_or_default()),
+            (Some(hash), _) => {
+                // `hash_api_key` gives 64 lowercase hex characters, and that is
+                // what a presented key is compared with. A hash edited into
+                // another form would load, be listed and never match. Refusing it
+                // here would fail the load of the whole metadata, so say so.
+                let hash = hash.to_ascii_lowercase();
+                if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    tracing::warn!(
+                        key_id = %stored.key_id,
+                        key_name = %stored.key_name,
+                        "Stored API key hash is not a SHA-256 in hex: this key cannot authenticate; delete it and create another"
+                    );
+                }
+                (hash, stored.key_hint.unwrap_or_default())
+            }
             (None, Some(key)) => (hash_api_key(&key), api_key_hint(&key)),
             (None, None) => return Err("an API key user needs keyHash"),
         };
@@ -1154,6 +1168,31 @@ mod apikey_serde_tests {
         assert!(api_key.matches_active_key("the-key-that-was-hashed", now));
         assert!(!api_key.matches_active_key("the-key-in-the-record", now));
         assert_eq!(api_key.key_hint, "shed");
+    }
+
+    #[test]
+    fn stored_hash_is_read_in_any_case_and_a_malformed_one_never_matches() {
+        let key = "550e8400-e29b-41d4-a716-446655440000";
+        let now = Utc::now();
+        let mut record = unhashed_record("unused");
+        record.as_object_mut().unwrap().remove("apiKey");
+
+        record["keyHash"] = hash_api_key(key).to_ascii_uppercase().into();
+        let user: User = serde_json::from_value(record.clone()).unwrap();
+        let api_key = user.as_api_key().unwrap();
+        assert_eq!(api_key.key_hash, hash_api_key(key));
+        assert!(api_key.matches_active_key(key, now));
+
+        // Loads, so that one bad record does not take the metadata with it, and
+        // authenticates nothing
+        for malformed in ["", "abc", &hash_api_key(key)[..63], &"g".repeat(64)] {
+            record["keyHash"] = malformed.into();
+            let user: User = serde_json::from_value(record.clone()).unwrap();
+            let api_key = user.as_api_key().unwrap();
+            for presented in [key, "", malformed] {
+                assert!(!api_key.matches_active_key(presented, now), "{malformed:?}");
+            }
+        }
     }
 
     #[test]
