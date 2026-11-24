@@ -25,6 +25,8 @@ pub mod sink;
 pub mod traces;
 
 #[cfg(test)]
+mod corpus_tests;
+#[cfg(test)]
 mod memory_tests;
 #[cfg(test)]
 mod realistic_tests;
