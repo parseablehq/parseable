@@ -42,6 +42,7 @@ use crate::{
         error::EventError,
         format::{EventFormat, LogSource, json},
     },
+    handlers::http::max_event_payload_size,
     handlers::{
         CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, EXTRACT_LOG_KEY, LOG_SOURCE_KEY,
         STREAM_NAME_HEADER_KEY, TelemetryType,
@@ -55,7 +56,9 @@ use crate::{
         increment_traces_collected_by_date,
     },
     otel::{
-        expansion::{RequestSize, logs_size, metrics_size, traces_size},
+        expansion::{
+            EXPANSION_FACTOR, RequestSize, logs_size, max_expanded_bytes, metrics_size, traces_size,
+        },
         logs::flatten_logs_into,
         metrics::flatten_metrics_into,
         otel_utils::deserialize_otel_json,
@@ -390,6 +393,20 @@ impl OtelResources<'_> {
     }
 }
 
+/// Refuses a request whose rows would hold more than `max_expanded_bytes` of the
+/// payload limit, before anything is staged
+fn check_expansion(size: &RequestSize, max_payload: usize) -> Result<(), PostError> {
+    let max = max_expanded_bytes(max_payload);
+    if size.bytes > max {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "The request would expand to {} rows holding about {} bytes, more than the {max} bytes allowed ({EXPANSION_FACTOR} times P_MAX_EVENT_PAYLOAD_SIZE). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record",
+            size.rows,
+            size.bytes,
+        )));
+    }
+    Ok(())
+}
+
 /// Stages the rows of one decoded OTEL request in chunks (see `Chunker`), so
 /// that its rows are never all held at once.
 ///
@@ -410,6 +427,7 @@ fn ingest_otel_resources(
     verify_dataset_fields_count(target.stream_name, target.tenant_id)?;
     let flatten_exemplars = PARSEABLE.options.otel_flatten_exemplars;
     let size = resources.size(flatten_exemplars);
+    check_expansion(&size, max_event_payload_size())?;
 
     // The JSON log bodies of every record of the request share one budget
     let mut budget = FlattenBudget::new(FlattenLimits::from_config());

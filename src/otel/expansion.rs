@@ -72,6 +72,23 @@ impl RequestSize {
     }
 }
 
+/// Estimated bytes of rows one request may expand to, for a payload limit of
+/// `max_payload` bytes: `EXPANSION_FACTOR` row bytes per payload byte
+pub fn max_expanded_bytes(max_payload: usize) -> u64 {
+    (max_payload as u64).saturating_mul(EXPANSION_FACTOR)
+}
+
+/// Row bytes per payload byte a request may expand to. The most measured for a
+/// request shaped like collector traffic is 459: short log records (a time, a
+/// severity and a two-byte body) or bare gauge points under 30 Kubernetes resource
+/// attributes; k8s logs, spans and metrics with ordinary records expand 40-110x
+/// (`realistic_tests`). 1024 leaves 2.2x headroom over the worst of them, and
+/// refuses the requests that copy kilobytes of shared fields into millions of
+/// records of a few bytes (47,000 row bytes per body byte for 500 attributes over
+/// empty records, `copied_fields_over_tiny_records_are_over_the_expansion_cap`), at 10 GiB of
+/// rows for the default 10 MiB payload limit.
+pub const EXPANSION_FACTOR: u64 = 1024;
+
 /// Timestamps are formatted as `%Y-%m-%dT%H:%M:%S%.9fZ`
 const TIMESTAMP_LEN: usize = 30;
 /// Longest decimal `i64`
