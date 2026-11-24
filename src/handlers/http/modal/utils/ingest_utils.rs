@@ -71,7 +71,7 @@ use crate::{
         get_tenant_id_from_request,
         json::{
             convert_array_to_object,
-            flatten::{FlattenBudget, FlattenLimits, JsonFlattenError, convert_to_array},
+            flatten::{FlattenBudget, FlattenLimits, convert_to_array},
         },
     },
 };
@@ -541,7 +541,7 @@ impl OtelProtobufRequest {
         &self,
         tenant_id: &str,
         budget: &mut FlattenBudget,
-    ) -> Result<Vec<Value>, JsonFlattenError> {
+    ) -> Result<Vec<Value>, crate::utils::json::flatten::JsonFlattenError> {
         match self {
             Self::Logs(message) => {
                 crate::otel::logs::flatten_otel_protobuf(message, tenant_id, budget)

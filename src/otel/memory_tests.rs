@@ -58,6 +58,9 @@ fn kv(key: impl Into<String>, value: any_value::Value) -> KeyValue {
     }
 }
 
+/// Takes a chunk of rows, as staging does
+type Stage<'a> = dyn FnMut(Vec<Value>) -> Result<(), JsonFlattenError> + 'a;
+
 /// Rows handed over, and the most rows a chunk held
 #[derive(Debug, Default)]
 struct Handed {
@@ -69,7 +72,7 @@ struct Handed {
 /// full, as staging does, and reports what that allocated
 fn hand_over<E: std::fmt::Debug>(
     name: &str,
-    flatten: impl FnOnce(&mut dyn FnMut(Vec<Value>) -> Result<(), JsonFlattenError>) -> Result<(), E>,
+    flatten: impl FnOnce(&mut Stage) -> Result<(), E>,
 ) -> (Result<Handed, String>, Allocated) {
     let (result, allocated) = measure(|| {
         let mut handed = Handed::default();
@@ -92,10 +95,7 @@ fn hand_over<E: std::fmt::Debug>(
 
 fn traces(
     request: &ExportTraceServiceRequest,
-) -> impl FnOnce(
-    &mut dyn FnMut(Vec<Value>) -> Result<(), JsonFlattenError>,
-) -> Result<(), JsonFlattenError>
-+ '_ {
+) -> impl FnOnce(&mut Stage) -> Result<(), JsonFlattenError> + '_ {
     move |stage| {
         let mut chunker = Chunker::new(CHUNK_LIMITS, stage);
         crate::otel::traces::flatten_traces_into(&request.resource_spans, &mut chunker)?;
@@ -105,10 +105,7 @@ fn traces(
 
 fn metrics(
     request: &ExportMetricsServiceRequest,
-) -> impl FnOnce(
-    &mut dyn FnMut(Vec<Value>) -> Result<(), JsonFlattenError>,
-) -> Result<(), JsonFlattenError>
-+ '_ {
+) -> impl FnOnce(&mut Stage) -> Result<(), JsonFlattenError> + '_ {
     move |stage| {
         let mut chunker = Chunker::new(CHUNK_LIMITS, stage);
         crate::otel::metrics::flatten_metrics_into(&request.resource_metrics, false, &mut chunker)?;
@@ -119,10 +116,7 @@ fn metrics(
 fn logs<'a>(
     request: &'a ExportLogsServiceRequest,
     budget: &'a mut FlattenBudget,
-) -> impl FnOnce(
-    &mut dyn FnMut(Vec<Value>) -> Result<(), JsonFlattenError>,
-) -> Result<(), JsonFlattenError>
-+ 'a {
+) -> impl FnOnce(&mut Stage) -> Result<(), JsonFlattenError> + 'a {
     move |stage| {
         let mut chunker = Chunker::new(CHUNK_LIMITS, stage);
         crate::otel::logs::flatten_logs_into(&request.resource_logs, budget, &mut chunker)?;

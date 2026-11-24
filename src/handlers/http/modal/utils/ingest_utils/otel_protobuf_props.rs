@@ -48,7 +48,7 @@ use crate::otel::metrics::{
 use crate::otel::otel_utils::flatten_attributes;
 use crate::otel::sink::{ChunkLimits, Chunker};
 use crate::otel::traces::flatten_otel_traces;
-use crate::utils::json::flatten::FlattenCost;
+use crate::utils::json::flatten::{FlattenCost, JsonFlattenError};
 use opentelemetry_proto::tonic::common::v1::{
     AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
 };
