@@ -438,51 +438,7 @@ mod tests {
 
     // serde_json::Map hides IndexMap's capacity. Compare retained allocation
     // bytes with the oracle as well as inspecting Vec capacities directly.
-    mod allocations {
-        use std::{
-            alloc::{GlobalAlloc, Layout, System},
-            cell::Cell,
-        };
-        std::thread_local! {
-            static LIVE: Cell<Option<isize>> = const { Cell::new(None) };
-        }
-        struct Tracking;
-        fn add(bytes: isize) {
-            let _ = LIVE.try_with(|live| {
-                if let Some(n) = live.get() {
-                    live.set(Some(n + bytes));
-                }
-            });
-        }
-        unsafe impl GlobalAlloc for Tracking {
-            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-                let ptr = unsafe { System.alloc(layout) };
-                if !ptr.is_null() {
-                    add(layout.size() as isize);
-                }
-                ptr
-            }
-            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-                add(-(layout.size() as isize));
-                unsafe { System.dealloc(ptr, layout) }
-            }
-            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-                let result = unsafe { System.realloc(ptr, layout, size) };
-                if !result.is_null() {
-                    add(size as isize - layout.size() as isize);
-                }
-                result
-            }
-        }
-        #[global_allocator]
-        static ALLOCATOR: Tracking = Tracking;
-        pub fn retained<T>(f: impl FnOnce() -> T) -> (T, isize) {
-            LIVE.with(|n| n.set(Some(0)));
-            let value = f();
-            let bytes = LIVE.with(|n| n.replace(None).unwrap());
-            (value, bytes)
-        }
-    }
+    use crate::test_alloc as allocations;
 
     #[test]
     fn final_container_capacities_match_oracle() {

@@ -150,7 +150,15 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
                 });
             }
         };
-        if let Err(err) = flatten::flatten(&mut flattened_json, "_", None, None, None, false) {
+        if let Err(err) = flatten::flatten(
+            &mut flattened_json,
+            "_",
+            None,
+            None,
+            None,
+            false,
+            &mut budget,
+        ) {
             return Err(StreamError::Custom {
                 msg: err.to_string(),
                 status: StatusCode::BAD_REQUEST,
