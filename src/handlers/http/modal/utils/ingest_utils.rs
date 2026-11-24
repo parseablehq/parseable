@@ -501,8 +501,12 @@ fn stage_otel_rows(
 ///   staged in full as rejected, answered with status 200 as OTLP/HTTP requires.
 ///   `total` gives the rejected unit for the whole request (log records, data
 ///   points or spans), and is only asked for here;
-/// - a server error keeps its 5xx status. The exporter then retries the whole
-///   request, so the rows of the chunks already staged are staged twice.
+/// - a server error keeps its 5xx status, and the chunks already staged stay
+///   staged. OTLP/HTTP exporters retry only 429, 502, 503 and 504: after a 500
+///   (most staging errors) the client counts the whole batch as failed and does
+///   not send it again, so the rows staged are kept but counted as not delivered;
+///   after a 503 (some object storage errors) it sends the whole request again,
+///   and the rows of the chunks already staged are staged twice.
 fn otel_outcome(
     signal: Signal,
     stream_name: &str,
