@@ -98,6 +98,9 @@ jobs:
           git -C "$src" fetch --quiet --depth 1 https://github.com/parseablehq/quest.git "$QUEST_SOURCE_REF"
           git -C "$src" checkout --quiet FETCH_HEAD
           test "$(git -C "$src" rev-parse HEAD)" = "$QUEST_SOURCE_REF"
+          # This server returns an API key masked where upstream returns the
+          # key; see the patch for why. Drop it if Quest stops expecting the key.
+          git -C "$src" apply "$GITHUB_WORKSPACE/scripts/ci/quest-api-key-hash.patch"
           docker build --tag "$QUEST_IMAGE" "$src"
       - name: Run Quest
         run: docker compose up --no-build --exit-code-from quest
