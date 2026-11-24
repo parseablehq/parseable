@@ -1043,8 +1043,8 @@ mod tests {
         assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "192.0.2.1");
     }
 
-    // Micro-benchmarks and equivalence proofs for the shared ingest path
-    // (hunt-perf-glm). The benches are `#[ignore]`d release-profile loops that
+    // Micro-benchmarks and equivalence proofs for the shared ingest path.
+    // The benches are `#[ignore]`d release-profile loops that
     // construct the objects the handlers read, so they never touch `PARSEABLE`
     // and are safe to run through a test-name filter. Each bench runs one of
     // two sections per process, selected by `HUNT_BENCH_SECTION`:

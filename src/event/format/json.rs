@@ -2162,7 +2162,7 @@ mod partition_batching_tests {
         }
     }
 
-    // --- fields_mismatch lookup table (hunt-perf-glm) ---
+    // --- fields_mismatch lookup table ---
 
     #[test]
     fn fields_mismatch_lookup_table_matches_the_linear_scan() {
