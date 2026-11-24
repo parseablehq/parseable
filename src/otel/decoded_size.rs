@@ -308,7 +308,8 @@ fn vec_capacity_bytes(len: usize, element_size: usize) -> usize {
 
 /// Bytes prost allocates for a string or bytes field of `len` bytes
 fn bytes_capacity(len: usize) -> usize {
-    vec_capacity_bytes(len.min(1), 1).max(len)
+    // `vec_capacity_bytes(len.min(1), 1).max(len)`: 8 bytes at least, once there is one
+    if len == 0 { 0 } else { len.max(8) }
 }
 
 /// Counts the elements of the repeated fields of one message, and adds the `Vec`s that
@@ -317,15 +318,21 @@ fn bytes_capacity(len: usize) -> usize {
 struct Vecs {
     lens: [usize; SLOTS],
     element_sizes: [usize; SLOTS],
+    /// Whether any slot was pushed to; most messages have no repeated field
+    used: bool,
 }
 
 impl Vecs {
     fn push(&mut self, slot: usize, kind: Kind, elements: usize) {
         self.lens[slot] = self.lens[slot].saturating_add(elements);
         self.element_sizes[slot] = kind.element_size();
+        self.used = true;
     }
 
     fn add_to(&self, size: &mut usize) {
+        if !self.used {
+            return;
+        }
         for (&len, &element_size) in self.lens.iter().zip(&self.element_sizes) {
             add(size, vec_capacity_bytes(len, element_size));
         }
@@ -467,6 +474,13 @@ const MAX_DEPTH: u32 = 128;
 struct Malformed;
 
 fn varint(buf: &mut &[u8]) -> Result<u64, Malformed> {
+    // Keys, lengths and small numbers take one byte
+    if let Some((&byte, rest)) = buf.split_first()
+        && byte < 0x80
+    {
+        *buf = rest;
+        return Ok(u64::from(byte));
+    }
     let mut value = 0u64;
     for (index, &byte) in buf.iter().enumerate().take(10) {
         value |= u64::from(byte & 0x7f) << (7 * index);
