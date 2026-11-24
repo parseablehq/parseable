@@ -160,8 +160,9 @@ pub struct Staged {
 
 /// Row bytes per body byte one request may expand to: the rows of a request may
 /// hold at most `EXPANSION_FACTOR` times the length of its body (decompressed) of
-/// estimated memory ([`row_bytes`]) in all, counted while they are staged, and at
-/// least [`MIN_EXPANDED_BYTES`].
+/// estimated memory ([`row_bytes`]) in all, counted while they are staged, at
+/// least [`MIN_EXPANDED_BYTES`] and at most [`EXPANSION_CEILING_FACTOR`] times
+/// the payload limit.
 ///
 /// Every row carries its own copy of the resource, scope, span and metric fields,
 /// so a small request can expand to a very large number of row bytes: 15 KB of
@@ -171,9 +172,9 @@ pub struct Staged {
 /// below 500 row bytes per body byte (short log records or bare gauge points under
 /// 30 Kubernetes resource attributes; ordinary k8s logs, spans and metrics expand
 /// 40-110x, see `realistic_tests`), and a request of such records expands less the
-/// fewer records share its resource, so 4096 leaves at least 8x headroom at every
-/// body size, and stops the requests that copy kilobytes of shared fields into
-/// millions of records of a few bytes.
+/// fewer records share its resource, so 4096 leaves at least 8x headroom wherever
+/// the ceiling does not decide, and stops the requests that copy kilobytes of
+/// shared fields into millions of records of a few bytes.
 pub const EXPANSION_FACTOR: u64 = 4096;
 
 /// Estimated bytes of rows any request may expand to, whatever the length of its
@@ -183,12 +184,30 @@ pub const EXPANSION_FACTOR: u64 = 4096;
 /// per body byte), 8x under it.
 pub const MIN_EXPANDED_BYTES: u64 = CHUNK_LIMITS.bytes as u64;
 
+/// Estimated row bytes per byte of the payload limit (`P_MAX_EVENT_PAYLOAD_SIZE`)
+/// that no request may pass, however long its body: 10 GiB at the default limit
+/// of 10 MiB.
+///
+/// What a request stages stays in the staging buffers until they are converted, as
+/// record batches of about a sixth of the estimate (1.6 GiB measured for 10 GiB of
+/// rows), so `EXPANSION_FACTOR` alone would let one body of the full payload limit
+/// add 40 GiB of rows, 6 GiB of record batches. The ceiling decides for bodies
+/// over a quarter of the payload limit. The largest realistic request measured,
+/// short log records under 30 Kubernetes resource attributes filling the payload
+/// limit, takes 4.1 GiB, so the ceiling leaves 2.4x headroom there, and the 8x of
+/// `EXPANSION_FACTOR` up to a quarter of the limit: 138,000 such records, 16 times
+/// the 8192 records of a collector's default batch.
+pub const EXPANSION_CEILING_FACTOR: u64 = 1024;
+
 /// Estimated bytes of rows one request may expand to, for a body of `body_len`
-/// bytes
-pub fn max_expanded_bytes(body_len: usize) -> u64 {
+/// bytes (decompressed) under a payload limit of `max_payload` bytes
+pub fn max_expanded_bytes(body_len: usize, max_payload: usize) -> u64 {
+    let ceiling = (max_payload as u64)
+        .saturating_mul(EXPANSION_CEILING_FACTOR)
+        .max(MIN_EXPANDED_BYTES);
     (body_len as u64)
         .saturating_mul(EXPANSION_FACTOR)
-        .max(MIN_EXPANDED_BYTES)
+        .clamp(MIN_EXPANDED_BYTES, ceiling)
 }
 
 /// Collects rows into chunks and passes every full chunk to `stage`, with the

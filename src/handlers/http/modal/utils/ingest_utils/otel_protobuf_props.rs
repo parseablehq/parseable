@@ -86,7 +86,11 @@ const PROTOBUF_OPTIONS: ProtobufOptions = ProtobufOptions {
 
 /// The staging limits of the server defaults, for a body at the payload limit
 fn test_limits() -> StageLimits {
-    StageLimits::for_body(PROTOBUF_OPTIONS.max_payload, FlattenLimits::DEFAULT)
+    StageLimits::for_body(
+        PROTOBUF_OPTIONS.max_payload,
+        PROTOBUF_OPTIONS.max_payload,
+        FlattenLimits::DEFAULT,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -3890,7 +3894,7 @@ mod streamed {
         for (outcome, counted) in [&protobuf, &json] {
             assert!(counted.chunks > 0 && counted.records < 2000, "{counted:?}");
             let message = format!(
-                "Invalid Request: The rows of the request take more than the {cap} bytes allowed (4096 times the length of its body, at least 16777216). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record"
+                "Invalid Request: The rows of the request take more than the {cap} bytes allowed (4096 times the length of its body, at least 16777216 and at most 1024 times the payload limit). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record"
             );
             assert_eq!(
                 outcome.as_ref().unwrap(),

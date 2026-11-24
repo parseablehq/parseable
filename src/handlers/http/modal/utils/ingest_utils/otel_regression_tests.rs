@@ -71,20 +71,31 @@ fn target<'a>(
 
 /// The staging limits ingestion uses for a body of `body_len` bytes
 fn limits_for(body_len: usize) -> StageLimits {
-    StageLimits::for_body(body_len, FlattenLimits::DEFAULT)
+    StageLimits::for_body(body_len, PAYLOAD, FlattenLimits::DEFAULT)
 }
 
 /// Review finding 8: the expansion cap was 1024 x `P_MAX_EVENT_PAYLOAD_SIZE`
 /// (10 GiB) whatever the size of the body, so a body of a few KiB could stage
-/// gigabytes of rows. It is now 4096 x the length of the body, with a floor.
+/// gigabytes of rows. It is now 4096 x the length of the body, with a floor, and
+/// that 10 GiB (1024 x the payload limit) is kept as a ceiling, which decides for
+/// bodies over a quarter of the limit: without it a body of the full limit could
+/// stage 40 GiB of rows.
 #[test]
-fn expansion_cap_is_4096_times_the_body_with_a_floor() {
-    use crate::otel::sink::{EXPANSION_FACTOR, MIN_EXPANDED_BYTES};
+fn expansion_cap_is_4096_times_the_body_with_a_floor_and_a_ceiling() {
+    use crate::otel::sink::{EXPANSION_CEILING_FACTOR, EXPANSION_FACTOR, MIN_EXPANDED_BYTES};
     assert_eq!(EXPANSION_FACTOR, 4096);
-    assert_eq!(max_expanded_bytes(0), MIN_EXPANDED_BYTES);
-    assert_eq!(max_expanded_bytes(1000), MIN_EXPANDED_BYTES);
-    assert_eq!(max_expanded_bytes(1 << 20), 4u64 << 30);
-    assert_eq!(max_expanded_bytes(PAYLOAD), 40u64 << 30);
+    assert_eq!(EXPANSION_CEILING_FACTOR, 1024);
+    assert_eq!(max_expanded_bytes(0, PAYLOAD), MIN_EXPANDED_BYTES);
+    assert_eq!(max_expanded_bytes(1000, PAYLOAD), MIN_EXPANDED_BYTES);
+    assert_eq!(max_expanded_bytes(1 << 20, PAYLOAD), 4u64 << 30);
+    assert_eq!(max_expanded_bytes(PAYLOAD / 4, PAYLOAD), 10u64 << 30);
+    assert_eq!(max_expanded_bytes(PAYLOAD / 4 + 1, PAYLOAD), 10u64 << 30);
+    assert_eq!(max_expanded_bytes(PAYLOAD, PAYLOAD), 10u64 << 30);
+    // The ceiling follows the payload limit, and is never under the floor
+    assert_eq!(max_expanded_bytes(4 * PAYLOAD, 4 * PAYLOAD), 40u64 << 30);
+    assert_eq!(max_expanded_bytes(usize::MAX, usize::MAX), u64::MAX);
+    assert_eq!(max_expanded_bytes(1 << 20, 1024), MIN_EXPANDED_BYTES);
+    assert_eq!(max_expanded_bytes(1 << 20, 0), MIN_EXPANDED_BYTES);
 }
 
 /// Review finding 8, as a request: a body of 47 KiB whose rows expand past 4096x

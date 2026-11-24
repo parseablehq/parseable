@@ -66,8 +66,8 @@ use crate::{
             refusal,
         },
         sink::{
-            CHUNK_LIMITS, ChunkLimits, Chunker, EXPANSION_FACTOR, MIN_EXPANDED_BYTES, RowSink,
-            Staged, max_expanded_bytes,
+            CHUNK_LIMITS, ChunkLimits, Chunker, EXPANSION_CEILING_FACTOR, EXPANSION_FACTOR,
+            MIN_EXPANDED_BYTES, RowSink, Staged, max_expanded_bytes,
         },
         traces::flatten_traces_into,
     },
@@ -439,7 +439,7 @@ impl OtelResources<'_> {
 /// The refusal of a request whose rows hold more than `max` estimated bytes in all
 fn expansion_error(max: u64) -> PostError {
     PostError::Invalid(anyhow::anyhow!(
-        "The rows of the request take more than the {max} bytes allowed ({EXPANSION_FACTOR} times the length of its body, at least {MIN_EXPANDED_BYTES}). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record"
+        "The rows of the request take more than the {max} bytes allowed ({EXPANSION_FACTOR} times the length of its body, at least {MIN_EXPANDED_BYTES} and at most {EXPANSION_CEILING_FACTOR} times the payload limit). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record"
     ))
 }
 
@@ -453,11 +453,12 @@ struct StageLimits {
 }
 
 impl StageLimits {
-    /// The limits of staging a request whose body (decompressed) is `body_len` bytes
-    fn for_body(body_len: usize, flatten: FlattenLimits) -> Self {
+    /// The limits of staging a request whose body (decompressed) is `body_len`
+    /// bytes, under a payload limit of `max_payload` bytes
+    fn for_body(body_len: usize, max_payload: usize, flatten: FlattenLimits) -> Self {
         Self {
             chunk: CHUNK_LIMITS,
-            max_expanded: max_expanded_bytes(body_len),
+            max_expanded: max_expanded_bytes(body_len, max_payload),
             flatten,
         }
     }
@@ -567,7 +568,11 @@ fn ingest_otel_rows(
         return Ok(OtelIngested::Full);
     }
     let tenant_str = target.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    let limits = StageLimits::for_body(body_len, FlattenLimits::from_config());
+    let limits = StageLimits::for_body(
+        body_len,
+        max_event_payload_size(),
+        FlattenLimits::from_config(),
+    );
     let mut staging = Staging::new(target.stream_name, target.tenant_id)?;
     let (result, staged) = stage_otel_rows(limits, flatten, |rows| {
         staging.push(
