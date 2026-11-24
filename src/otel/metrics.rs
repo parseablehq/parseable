@@ -791,6 +791,15 @@ fn process_resource_metrics<T, S, M>(
 /// and returns a `Vec` of `Value::Object` of the flattened json
 #[cfg_attr(feature = "hotpath", hotpath::measure)]
 pub fn flatten_otel_metrics(message: MetricsData, tenant_id: &str) -> Vec<Value> {
+    flatten_otel_metrics_with_options(message, tenant_id, PARSEABLE.options.otel_flatten_exemplars)
+}
+
+/// Flattens a JSON-decoded metrics request with an explicit exemplar policy.
+pub fn flatten_otel_metrics_with_options(
+    message: MetricsData,
+    tenant_id: &str,
+    flatten_exemplars: bool,
+) -> Vec<Value> {
     process_resource_metrics(
         &message.resource_metrics,
         |record| record.resource.as_ref(),
@@ -801,7 +810,7 @@ pub fn flatten_otel_metrics(message: MetricsData, tenant_id: &str) -> Vec<Value>
         |scope_metric| &scope_metric.metrics,
         |metric| metric,
         tenant_id,
-        PARSEABLE.options.otel_flatten_exemplars,
+        flatten_exemplars,
     )
 }
 
@@ -809,6 +818,19 @@ pub fn flatten_otel_metrics(message: MetricsData, tenant_id: &str) -> Vec<Value>
 pub fn flatten_otel_metrics_protobuf(
     message: &ExportMetricsServiceRequest,
     tenant_id: &str,
+) -> Vec<Value> {
+    flatten_otel_metrics_protobuf_with_options(
+        message,
+        tenant_id,
+        PARSEABLE.options.otel_flatten_exemplars,
+    )
+}
+
+/// Flattens a protobuf metrics request with an explicit exemplar policy.
+pub fn flatten_otel_metrics_protobuf_with_options(
+    message: &ExportMetricsServiceRequest,
+    tenant_id: &str,
+    flatten_exemplars: bool,
 ) -> Vec<Value> {
     let span = info_span!(
         "flatten_otel_metrics_protobuf",
@@ -827,7 +849,7 @@ pub fn flatten_otel_metrics_protobuf(
         |scope_metric| &scope_metric.metrics,
         |metric| metric,
         tenant_id,
-        PARSEABLE.options.otel_flatten_exemplars,
+        flatten_exemplars,
     );
 
     span.record("output_count", result.len());

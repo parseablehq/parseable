@@ -34,7 +34,7 @@ use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
 use crate::handlers::http::modal::utils::ingest_utils::{
-    ingest_helper, process_otel_content, validate_stream_for_ingestion,
+    ingest_helper, otel_success_response, process_otel_content, validate_stream_for_ingestion,
 };
 use crate::handlers::{
     DatasetTag, EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY,
@@ -314,7 +314,7 @@ pub async fn handle_otel_logs_ingestion(
 
     process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Logs).await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok(otel_success_response(&req))
 }
 
 // Handler for POST /v1/metrics to ingest OTEL metrics
@@ -347,7 +347,7 @@ pub async fn handle_otel_metrics_ingestion(
     )
     .await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok(otel_success_response(&req))
 }
 
 // Handler for POST /v1/traces to ingest OTEL traces
@@ -373,7 +373,7 @@ pub async fn handle_otel_traces_ingestion(
 
     process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Traces).await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok(otel_success_response(&req))
 }
 
 // Handler for POST /api/v1/logstream/{logstream}
