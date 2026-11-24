@@ -17,11 +17,13 @@
  */
 
 //! Regression tests for what two reviews of chunked OTLP ingestion found: the
-//! memory of rows whose shared maps were sized by repeated attribute keys.
+//! memory of rows whose shared maps were sized by repeated attribute keys, and
+//! the memory of walking a body of millions of empty resource or scope levels.
 //! Measured with the test allocator (layout bytes, calling thread). Each test
 //! prints `REGRESSION <name>: ...`. None touches `PARSEABLE`, so they may be run
 //! with the name filter `otel::regression_tests`.
 
+use bytes::Bytes;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value};
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
@@ -32,6 +34,7 @@ use opentelemetry_proto::tonic::trace::v1::span::Event;
 use prost::Message as _;
 use serde_json::{Map, Value};
 
+use super::protobuf_stream::{Signal, count_points, flatten_request, max_record_bytes, outline};
 use super::sink::{CHUNK_LIMITS, Chunker, RowSink, row_bytes};
 use crate::test_alloc::measure;
 use crate::utils::json::flatten::{FlattenBudget, FlattenLimits, JsonFlattenError};
@@ -41,6 +44,9 @@ const MIB: usize = 1024 * 1024;
 /// What a request may make the server hold while its rows are built and staged,
 /// as `memory_tests` states it: two chunks of rows and a little more
 const PEAK_BOUND: usize = 2 * CHUNK_LIMITS.bytes + 8 * MIB;
+
+/// `P_MAX_EVENT_PAYLOAD_SIZE` default
+const PAYLOAD: usize = 10 * MIB;
 
 fn mb(bytes: impl TryInto<i128>) -> f64 {
     bytes.try_into().ok().unwrap() as f64 / MIB as f64
@@ -287,4 +293,83 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
     assert!(failed.is_empty(), "rows hold over 2x row_bytes: {failed:?}");
     assert_eq!(rows, 1 << 16);
     assert!(allocated.peak <= PEAK_BOUND, "peak {:.1} MiB", mb(allocated.peak));
+}
+
+/// A body of `count` two-byte empty entries of field 1 (`resource_logs`,
+/// `resource_metrics`, `resource_spans`): every one an empty resource level
+fn empty_resources(count: usize) -> Bytes {
+    Bytes::from([0x0a, 0x00].repeat(count))
+}
+
+/// One resource level holding `count` two-byte empty scope levels (field 2)
+fn empty_scopes_in_one_resource(count: usize) -> Bytes {
+    let scopes = [0x12, 0x00].repeat(count);
+    let mut body = vec![0x0a];
+    prost::encoding::encode_varint(scopes.len() as u64, &mut body);
+    body.extend_from_slice(&scopes);
+    Bytes::from(body)
+}
+
+/// Security review finding 1: the outer levels of a protobuf body were indexed
+/// (32 bytes per entry) before the first was read, so a 10 MiB body of 5.2 million
+/// empty two-byte `resource_logs` entries held 384 MiB while it was answered 200.
+/// The levels are walked as they are read: what reading a body holds for them does
+/// not grow with how many there are, for empty resources and for empty scopes of
+/// one resource, in every pass over the body.
+#[test]
+fn outer_levels_are_read_in_memory_independent_of_their_count() {
+    let max_record = max_record_bytes(PAYLOAD);
+    for (shape, body) in [
+        ("empty resources", empty_resources(PAYLOAD / 2)),
+        (
+            "empty scopes of one resource",
+            empty_scopes_in_one_resource((PAYLOAD - 8) / 2),
+        ),
+    ] {
+        assert!(body.len() <= PAYLOAD);
+        for (name, signal) in [
+            ("logs", Signal::Logs),
+            ("metrics", Signal::Metrics),
+            ("traces", Signal::Traces),
+        ] {
+            let (read, outlined) = measure(|| outline(&body, signal).expect("the body decodes"));
+            let (rows, flattened) = measure(|| {
+                let mut rows = 0usize;
+                let mut chunker = Chunker::new(CHUNK_LIMITS, |chunk: Vec<Value>, _bytes: usize| {
+                    rows += chunk.len();
+                    Ok::<_, JsonFlattenError>(())
+                });
+                flatten_request(
+                    &body,
+                    signal,
+                    max_record,
+                    &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+                    false,
+                    &mut chunker,
+                )
+                .map_err(|_| "flatten failed")
+                .and_then(|()| chunker.finish().map_err(|_| "staging failed"))
+                .unwrap();
+                drop(chunker);
+                rows
+            });
+            let (points, counted) = measure(|| count_points(&body));
+            println!(
+                "REGRESSION outer levels, {shape}, {name}: body {:.1} MiB, {} records, {rows} rows, {points} points; peak: outline {} B, flatten_request {} B, count_points {} B",
+                mb(body.len()),
+                read.records,
+                outlined.peak,
+                flattened.peak,
+                counted.peak
+            );
+            assert_eq!((read.records, rows, points), (0, 0, 0));
+            for (pass, peak) in [
+                ("outline", outlined.peak),
+                ("flatten_request", flattened.peak),
+                ("count_points", counted.peak),
+            ] {
+                assert!(peak < 64 * 1024, "{shape}, {name}: {pass} held {peak} B");
+            }
+        }
+    }
 }
