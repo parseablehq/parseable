@@ -127,8 +127,15 @@ test('demo switches source and signal, blocks incompatible datasets, and copies 
   await expect(page.getByLabel('Ingestion command', { exact: true })).toHaveCount(0);
   await page.getByLabel('Destination dataset', { exact: true }).selectOption('demo_metrics');
   await expect(page.getByLabel('Ingestion command', { exact: true })).toContainText('/v1/metrics');
+  // The note under the snippet names the encoding the snippet uses
+  await expect(
+    page.getByText('This configuration uses JSON and sends only metrics to this dataset.'),
+  ).toBeVisible();
   await page.getByRole('radio', { name: /^OpenTelemetry Collector/ }).check();
   await expect(page.getByLabel('collector.yaml', { exact: true })).toContainText('encoding: proto');
+  await expect(
+    page.getByText('This configuration uses protobuf and sends only metrics to this dataset.'),
+  ).toBeVisible();
   await expect(page.getByLabel('collector.yaml', { exact: true })).toContainText(
     'X-P-Stream: "demo_metrics"',
   );

@@ -79,7 +79,8 @@ export function ConnectionConfig({
             {options.source !== 'json' && (
               <p>
                 Parseable OSS accepts OTLP over HTTP with JSON or protobuf encoding. This
-                configuration uses JSON and sends only {options.signal} to this dataset.
+                configuration uses {options.source === 'collector' ? 'protobuf' : 'JSON'} and sends
+                only {options.signal} to this dataset.
               </p>
             )}
           </div>
