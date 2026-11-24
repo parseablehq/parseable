@@ -86,6 +86,62 @@ pub fn collect_json_from_value(key: &str, value: OtelValue) -> Map<String, Value
     value_json
 }
 
+/// Inserts `value` under `key` (or, for a key-value list, its own fields) into
+/// `map`, taking the value by reference: the scalars and nested values are copied
+/// once into their JSON form, instead of the whole OTEL value being cloned first
+/// and then converted.
+fn insert_json_from_ref(map: &mut Map<String, Value>, key: &str, value: &OtelValue) {
+    match value {
+        OtelValue::StringValue(str_val) => {
+            map.insert(key.to_string(), Value::String(str_val.clone()));
+        }
+        OtelValue::BoolValue(bool_val) => {
+            map.insert(key.to_string(), Value::Bool(*bool_val));
+        }
+        OtelValue::IntValue(int_val) => {
+            map.insert(key.to_string(), Value::String(int_val.to_string()));
+        }
+        OtelValue::DoubleValue(double_val) => insert_json_double(map, key, *double_val),
+        OtelValue::ArrayValue(array_val) => insert_json_array(map, key, array_val),
+        OtelValue::KvlistValue(kv_list_val) => {
+            // Create a JSON object to store the key-value list
+            let kv_object = collect_json_from_key_value_list(kv_list_val);
+            map.extend(kv_object);
+        }
+        OtelValue::BytesValue(bytes_val) => {
+            map.insert(
+                key.to_string(),
+                Value::String(String::from_utf8_lossy(bytes_val).to_string()),
+            );
+        }
+        OtelValue::StringValueStrindex(str_index) => {
+            tracing::warn!(
+                "StringValueStrindex is not supported in key-value lists, index: {str_index}"
+            );
+        }
+    }
+}
+
+fn insert_json_double(map: &mut Map<String, Value>, key: &str, double_val: f64) {
+    if let Some(number) = serde_json::Number::from_f64(double_val) {
+        map.insert(key.to_string(), Value::Number(number));
+    }
+}
+
+fn insert_json_array(map: &mut Map<String, Value>, key: &str, array_val: &ArrayValue) {
+    let json_array_value = collect_json_from_array_value(array_val);
+    // Convert the array to a JSON string
+    let json_array_string = match serde_json::to_string(&json_array_value) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("failed to serialise array value: {e}");
+            String::default()
+        }
+    };
+    // Insert the array into the result map
+    map.insert(key.to_string(), Value::String(json_array_string));
+}
+
 fn insert_json_from_value(map: &mut Map<String, Value>, key: &str, value: OtelValue) {
     match value {
         OtelValue::StringValue(str_val) => {
@@ -97,27 +153,11 @@ fn insert_json_from_value(map: &mut Map<String, Value>, key: &str, value: OtelVa
         OtelValue::IntValue(int_val) => {
             map.insert(key.to_string(), Value::String(int_val.to_string()));
         }
-        OtelValue::DoubleValue(double_val) => {
-            if let Some(number) = serde_json::Number::from_f64(double_val) {
-                map.insert(key.to_string(), Value::Number(number));
-            }
-        }
-        OtelValue::ArrayValue(array_val) => {
-            let json_array_value = collect_json_from_array_value(&array_val);
-            // Convert the array to a JSON string
-            let json_array_string = match serde_json::to_string(&json_array_value) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("failed to serialise array value: {e}");
-                    String::default()
-                }
-            };
-            // Insert the array into the result map
-            map.insert(key.to_string(), Value::String(json_array_string));
-        }
+        OtelValue::DoubleValue(double_val) => insert_json_double(map, key, double_val),
+        OtelValue::ArrayValue(array_val) => insert_json_array(map, key, &array_val),
         OtelValue::KvlistValue(kv_list_val) => {
             // Create a JSON object to store the key-value list
-            let kv_object = collect_json_from_key_value_list(kv_list_val);
+            let kv_object = collect_json_from_key_value_list(&kv_list_val);
             map.extend(kv_object);
         }
         OtelValue::BytesValue(bytes_val) => {
@@ -170,7 +210,7 @@ fn collect_json_from_array_value(array_value: &ArrayValue) -> Value {
                 }
                 OtelValue::KvlistValue(kv_list) => {
                     // Recursively collect JSON from nested key-value lists
-                    let nested_json = collect_json_from_key_value_list(kv_list.clone());
+                    let nested_json = collect_json_from_key_value_list(kv_list);
                     json_array.push(Value::Object(nested_json));
                 }
                 OtelValue::StringValueStrindex(str_index) => {
@@ -187,13 +227,13 @@ fn collect_json_from_array_value(array_value: &ArrayValue) -> Value {
 /// Recursively converts an OpenTelemetry KeyValueList into a JSON Map
 /// The function iterates through the key-value pairs in the list
 /// and collects their JSON representations into a single Map
-fn collect_json_from_key_value_list(key_value_list: KeyValueList) -> Map<String, Value> {
+fn collect_json_from_key_value_list(key_value_list: &KeyValueList) -> Map<String, Value> {
     let mut kv_list_json: Map<String, Value> =
         Map::with_capacity(attribute_capacity(&key_value_list.values));
-    for key_value in key_value_list.values {
-        if let Some(val) = key_value.value {
-            if let Some(val) = val.value {
-                insert_json_from_value(&mut kv_list_json, &key_value.key, val);
+    for key_value in &key_value_list.values {
+        if let Some(val) = &key_value.value {
+            if let Some(val) = &val.value {
+                insert_json_from_ref(&mut kv_list_json, &key_value.key, val);
             } else {
                 tracing::warn!("Key '{}' has no value in key-value list", key_value.key);
             }
@@ -211,8 +251,8 @@ pub fn collect_json_from_values(values: &Option<AnyValue>, key: &str) -> Map<Str
     let mut value_json: Map<String, Value> = Map::with_capacity(1);
 
     for value in values.iter() {
-        if let Some(value) = value.value.clone() {
-            insert_json_from_value(&mut value_json, key, value);
+        if let Some(value) = value.value.as_ref() {
+            insert_json_from_ref(&mut value_json, key, value);
         }
     }
 
@@ -231,10 +271,10 @@ pub fn flatten_attributes(attributes: &[KeyValue]) -> Map<String, Value> {
     let mut attributes_json: Map<String, Value> =
         Map::with_capacity(attribute_capacity(attributes));
     for attribute in attributes {
-        if let Some(value) = &attribute.value
-            && let Some(value) = value.value.clone()
+        if let Some(value) = attribute.value.as_ref()
+            && let Some(value) = value.value.as_ref()
         {
-            insert_json_from_value(&mut attributes_json, &attribute.key, value);
+            insert_json_from_ref(&mut attributes_json, &attribute.key, value);
         }
     }
     attributes_json
@@ -317,10 +357,10 @@ pub fn fit_map(map: &mut Map<String, Value>, capacity: usize, counted: usize, ad
 
 pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
     for attribute in attributes {
-        if let Some(value) = &attribute.value
-            && let Some(value) = value.value.clone()
+        if let Some(value) = attribute.value.as_ref()
+            && let Some(value) = value.value.as_ref()
         {
-            insert_json_from_value(map, &attribute.key, value);
+            insert_json_from_ref(map, &attribute.key, value);
         }
     }
 }
