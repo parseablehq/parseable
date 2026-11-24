@@ -21,6 +21,7 @@ use opentelemetry_proto::tonic::common::v1::KeyValue;
 use opentelemetry_proto::tonic::resource::v1::Resource;
 use opentelemetry_proto::tonic::trace::v1::ResourceSpans;
 use opentelemetry_proto::tonic::trace::v1::Span;
+#[cfg(test)]
 use opentelemetry_proto::tonic::trace::v1::Status;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
 use opentelemetry_proto::tonic::trace::v1::span::Event;
@@ -302,6 +303,7 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
 /// there is a mapping of status code to status description provided in proto
 /// this function fetches the status description from the status code
 /// and adds it to the flattened json
+#[cfg(test)]
 fn flatten_status(status: &Status) -> Map<String, Value> {
     let mut status_json = Map::new();
     status_json.insert(
@@ -312,50 +314,67 @@ fn flatten_status(status: &Status) -> Map<String, Value> {
         "span_status_code".to_string(),
         Value::Number(status.code.into()),
     );
-    let description = match status.code {
+    status_json.insert(
+        "span_status_description".to_string(),
+        Value::String(status_description(status.code).to_string()),
+    );
+
+    status_json
+}
+
+fn status_description(code: i32) -> &'static str {
+    match code {
         0 => "UNSET",
         1 => "OK",
         2 => "ERROR",
         _ => "",
-    };
-    status_json.insert(
-        "span_status_description".to_string(),
-        Value::String(description.to_string()),
-    );
-
-    status_json
+    }
 }
 
 /// otel log event has flags
 /// there is a mapping of flags to flags description provided in proto
 /// this function fetches the flags description from the flags
 /// and adds it to the flattened json
+#[cfg(test)]
 fn flatten_flags(flags: u32) -> Map<String, Value> {
     let mut flags_json = Map::new();
     flags_json.insert("span_flags".to_string(), Value::Number(flags.into()));
-    let description = match flags {
+    flags_json.insert(
+        "span_flags_description".to_string(),
+        Value::String(flags_description(flags).to_string()),
+    );
+
+    flags_json
+}
+
+fn flags_description(flags: u32) -> &'static str {
+    match flags {
         0 => "DO_NOT_USE",
         255 => "TRACE_FLAGS_MASK",
         256 => "CONTEXT_HAS_IS_REMOTE_MASK",
         512 => "CONTEXT_IS_REMOTE_MASK",
         _ => "",
-    };
-    flags_json.insert(
-        "span_flags_description".to_string(),
-        Value::String(description.to_string()),
-    );
-
-    flags_json
+    }
 }
 
 /// otel span event has kind
 /// there is a mapping of kind to kind description provided in proto
 /// this function fetches the kind description from the kind
 /// and adds it to the flattened json
+#[cfg(test)]
 fn flatten_kind(kind: i32) -> Map<String, Value> {
     let mut kind_json = Map::new();
     kind_json.insert("span_kind".to_string(), Value::Number(kind.into()));
-    let description = match kind {
+    kind_json.insert(
+        "span_kind_description".to_string(),
+        Value::String(kind_description(kind).to_string()),
+    );
+
+    kind_json
+}
+
+fn kind_description(kind: i32) -> &'static str {
+    match kind {
         0 => "UNSPECIFIED",
         1 => "INTERNAL",
         2 => "SERVER",
@@ -363,13 +382,7 @@ fn flatten_kind(kind: i32) -> Map<String, Value> {
         4 => "PRODUCER",
         5 => "CONSUMER",
         _ => "",
-    };
-    kind_json.insert(
-        "span_kind_description".to_string(),
-        Value::String(description.to_string()),
-    );
-
-    kind_json
+    }
 }
 
 /// The fields of one span that every row of it gets; `extra` is the capacity the
@@ -395,12 +408,28 @@ fn flatten_span_fields(span_record: &Span, extra: usize) -> Map<String, Value> {
         "span_parent_span_id".to_string(),
         Value::String(hex::encode(&span_record.parent_span_id)),
     );
-    span_record_json.extend(flatten_flags(span_record.flags));
+    // The flags, kind and status fields are inserted directly: a map of their
+    // own only to be merged into this one bought their keys a second hash
+    span_record_json.insert(
+        "span_flags".to_string(),
+        Value::Number(span_record.flags.into()),
+    );
+    span_record_json.insert(
+        "span_flags_description".to_string(),
+        Value::String(flags_description(span_record.flags).to_string()),
+    );
     span_record_json.insert(
         "span_name".to_string(),
         Value::String(span_record.name.clone()),
     );
-    span_record_json.extend(flatten_kind(span_record.kind));
+    span_record_json.insert(
+        "span_kind".to_string(),
+        Value::Number(span_record.kind.into()),
+    );
+    span_record_json.insert(
+        "span_kind_description".to_string(),
+        Value::String(kind_description(span_record.kind).to_string()),
+    );
     span_record_json.insert(
         "span_start_time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -448,7 +477,18 @@ fn flatten_span_fields(span_record: &Span, extra: usize) -> Map<String, Value> {
         Value::Number(span_record.dropped_links_count.into()),
     );
     if let Some(status) = &span_record.status {
-        span_record_json.extend(flatten_status(status));
+        span_record_json.insert(
+            "span_status_message".to_string(),
+            Value::String(status.message.clone()),
+        );
+        span_record_json.insert(
+            "span_status_code".to_string(),
+            Value::Number(status.code.into()),
+        );
+        span_record_json.insert(
+            "span_status_description".to_string(),
+            Value::String(status_description(status.code).to_string()),
+        );
     }
     span_record_json
 }

@@ -118,20 +118,6 @@ fn severity_number_from_text(severity_text: &str) -> Option<i32> {
     }
 }
 
-/// Add the normalized severity fields to the flattened JSON.
-fn flatten_severity(severity_number: i32, severity_text: &str) -> Map<String, Value> {
-    let mut severity_json: Map<String, Value> = Map::new();
-    severity_json.insert(
-        "severity_number".to_string(),
-        Value::Number(severity_number.into()),
-    );
-    severity_json.insert(
-        "severity_text".to_string(),
-        Value::String(severity_text.to_string()),
-    );
-    severity_json
-}
-
 /// Maps OTel severity_number (0–24) to a log category.
 /// See https://opentelemetry.io/docs/specs/otel/logs/data-model/#severity-fields
 fn category_from_severity(severity_number: i32) -> Option<&'static str> {
@@ -425,7 +411,11 @@ fn flatten_log_record_into(
 
     let (severity_number, severity_text) =
         normalize_severity(log_record.severity_number, &log_record.severity_text);
-    log_record_json.extend(flatten_severity(severity_number, &severity_text));
+    log_record_json.insert(
+        "severity_number".to_string(),
+        Value::Number(severity_number.into()),
+    );
+    log_record_json.insert("severity_text".to_string(), Value::String(severity_text));
 
     // Primary: derive category from the normalized severity_number
     let mut log_category = category_from_severity(severity_number);
