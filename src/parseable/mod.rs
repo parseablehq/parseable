@@ -1296,6 +1296,26 @@ impl Parseable {
                 validate_tenant_id(&tenant_id).map_err(|e| anyhow::anyhow!(e))?;
                 let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
 
+                // An API key stored before keys were hashed was hashed by reading
+                // it. Write the metadata back so that the key itself leaves
+                // storage now, not at the tenant's next change. The nodes that
+                // write the default tenant's metadata at every start (see
+                // `resolve_parseable_metadata`) do this for theirs; the key keeps
+                // working either way, so a failure here only delays it.
+                if matches!(self.options.mode, Mode::All | Mode::Query)
+                    && crate::rbac::user::stores_unhashed_api_key(&meta)
+                    && let Err(error) = self
+                        .metastore
+                        .put_parseable_metadata(&metadata, &Some(tenant_id.clone()))
+                        .await
+                {
+                    tracing::warn!(
+                        %tenant_id,
+                        %error,
+                        "Could not rewrite tenant metadata with its API keys hashed"
+                    );
+                }
+
                 TENANT_METADATA.insert_tenant(tenant_id.clone(), metadata.clone());
                 recognized_tenants.push(tenant_id);
             } else if !is_multi_tenant {

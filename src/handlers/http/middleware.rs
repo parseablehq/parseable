@@ -502,9 +502,11 @@ fn find_api_key_user(api_key_value: &str, tenant_id: &Option<String>) -> Option<
     let users_guard = users();
     let tenant_users = users_guard.get(tenant)?;
     let now = Utc::now();
+    // Stored keys are hashes: hash the presented one once for the whole scan
+    let hash = user::hash_api_key(api_key_value);
     tenant_users.values().find_map(|user| {
         if let UserType::ApiKey(api_key) = &user.ty
-            && api_key.matches_active_key(api_key_value, now)
+            && api_key.matches_active_hash(&hash, now)
         {
             Some(user.clone())
         } else {
