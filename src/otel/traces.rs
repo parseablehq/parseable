@@ -32,7 +32,7 @@ use crate::otel::otel_utils::flatten_attributes;
 
 use super::otel_utils::attribute_capacity;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
-use super::otel_utils::insert_attributes;
+use super::otel_utils::insert_attributes_fitted;
 use super::sink::RowSink;
 
 pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 32] = [
@@ -74,13 +74,14 @@ pub fn scope_span_fields(scope: Option<&InstrumentationScope>) -> Map<String, Va
     let Some(scope) = scope else {
         return Map::new();
     };
-    let mut scope_span_json = Map::with_capacity(5 + attribute_capacity(&scope.attributes));
+    let capacity = 5 + attribute_capacity(&scope.attributes);
+    let mut scope_span_json = Map::with_capacity(capacity);
     scope_span_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
     scope_span_json.insert(
         "scope_version".to_string(),
         Value::String(scope.version.clone()),
     );
-    insert_attributes(&mut scope_span_json, &scope.attributes);
+    insert_attributes_fitted(&mut scope_span_json, &scope.attributes, capacity);
     scope_span_json.insert(
         "scope_dropped_attributes_count".to_string(),
         Value::Number(scope.dropped_attributes_count.into()),
@@ -90,11 +91,10 @@ pub fn scope_span_fields(scope: Option<&InstrumentationScope>) -> Map<String, Va
 
 /// Fields every row of one `ResourceSpans` gets, after all others
 pub fn resource_span_fields(resource: Option<&Resource>, schema_url: &str) -> Map<String, Value> {
-    let mut resource_span_json = Map::with_capacity(
-        4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes)),
-    );
+    let capacity = 4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes));
+    let mut resource_span_json = Map::with_capacity(capacity);
     if let Some(resource) = resource {
-        insert_attributes(&mut resource_span_json, &resource.attributes);
+        insert_attributes_fitted(&mut resource_span_json, &resource.attributes, capacity);
         resource_span_json.insert(
             "resource_dropped_attributes_count".to_string(),
             Value::Number(resource.dropped_attributes_count.into()),
@@ -352,7 +352,9 @@ fn flatten_kind(kind: i32) -> Map<String, Value> {
 
 /// The fields of one span that every row of it gets
 fn flatten_span_fields(span_record: &Span) -> Map<String, Value> {
-    let mut span_record_json = Map::with_capacity(40 + attribute_capacity(&span_record.attributes));
+    // Room for the scope and resource fields merged into the span's own row
+    let capacity = 40 + attribute_capacity(&span_record.attributes);
+    let mut span_record_json = Map::with_capacity(capacity);
     span_record_json.insert(
         "span_trace_id".to_string(),
         Value::String(hex::encode(&span_record.trace_id)),
@@ -407,7 +409,7 @@ fn flatten_span_fields(span_record: &Span) -> Map<String, Value> {
         Value::Number(serde_json::Number::from(duration_nanos)),
     );
 
-    insert_attributes(&mut span_record_json, &span_record.attributes);
+    insert_attributes_fitted(&mut span_record_json, &span_record.attributes, capacity);
     span_record_json.insert(
         "span_dropped_attributes_count".to_string(),
         Value::Number(span_record.dropped_attributes_count.into()),

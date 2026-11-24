@@ -37,7 +37,8 @@ use crate::metrics::increment_metrics_collected_by_date;
 use crate::parseable::PARSEABLE;
 
 use super::otel_utils::{
-    attribute_capacity, convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
+    attribute_capacity, convert_epoch_nano_to_timestamp, insert_attributes,
+    insert_attributes_fitted, insert_number_if_some,
 };
 use super::sink::RowSink;
 
@@ -600,8 +601,9 @@ pub fn metric_rows<E>(
     };
 
     // Build metric-level fields once
-    let mut metadata = Map::with_capacity(attribute_capacity(&metrics_record.metadata));
-    insert_attributes(&mut metadata, &metrics_record.metadata);
+    let capacity = attribute_capacity(&metrics_record.metadata);
+    let mut metadata = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut metadata, &metrics_record.metadata, capacity);
     let fields = MetricFields {
         name: Value::String(metrics_record.name.clone()),
         description: Value::String(metrics_record.description.clone()),
@@ -715,11 +717,10 @@ pub struct ResourceMetricFields {
 impl ResourceMetricFields {
     pub fn new(resource: Option<&Resource>, schema_url: &str) -> Self {
         // Build resource-level fields once per resource
-        let mut resource_fields = Map::with_capacity(
-            resource.map_or(0, |resource| attribute_capacity(&resource.attributes)) + 2,
-        );
+        let capacity = resource.map_or(0, |resource| attribute_capacity(&resource.attributes)) + 2;
+        let mut resource_fields = Map::with_capacity(capacity);
         if let Some(resource) = resource {
-            insert_attributes(&mut resource_fields, &resource.attributes);
+            insert_attributes_fitted(&mut resource_fields, &resource.attributes, capacity);
             resource_fields.insert(
                 "resource_dropped_attributes_count".to_string(),
                 Value::Number(resource.dropped_attributes_count.into()),

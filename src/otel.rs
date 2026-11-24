@@ -28,6 +28,8 @@ pub mod traces;
 mod memory_tests;
 #[cfg(test)]
 mod realistic_tests;
+#[cfg(test)]
+mod regression_tests;
 
 /// Shared driver for the release-profile micro-benchmarks. Each benchmark is an
 /// `#[ignore]`d test that never touches the `PARSEABLE` global, so it can be run

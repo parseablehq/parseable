@@ -283,6 +283,31 @@ pub fn attribute_capacity(attributes: &[KeyValue]) -> usize {
         .count()
 }
 
+/// Inserts `attributes` into `map` like `insert_attributes`, for a map created
+/// with room for `capacity` entries, `attribute_capacity(attributes)` of them for
+/// these attributes. When the attributes make fewer entries than that (repeated
+/// keys), the map is rebuilt with room for that many fewer.
+///
+/// Resource, scope, span and metric maps are cloned into rows, or are rows, and
+/// `IndexMap::clone` keeps the capacity, while `row_bytes` counts the entries: a
+/// scope of 128 attributes with one key made every row of it hold about 10 times
+/// what was counted. Attributes with distinct keys rebuild nothing.
+pub fn insert_attributes_fitted(
+    map: &mut Map<String, Value>,
+    attributes: &[KeyValue],
+    capacity: usize,
+) {
+    let counted = attribute_capacity(attributes);
+    let before = map.len();
+    insert_attributes(map, attributes);
+    let added = map.len().saturating_sub(before);
+    if added < counted {
+        let mut fitted = Map::with_capacity(capacity.saturating_sub(counted - added));
+        fitted.extend(std::mem::take(map));
+        *map = fitted;
+    }
+}
+
 pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
     for attribute in attributes {
         if let Some(value) = &attribute.value

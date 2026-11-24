@@ -19,6 +19,7 @@ use super::otel_utils::attribute_capacity;
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
+use super::otel_utils::insert_attributes_fitted;
 use super::sink::{CHUNK_LIMITS, ENTRY_BYTES, RowSink, VALUE_BYTES, heap_bytes};
 use crate::metrics::increment_logs_collected_by_date;
 use crate::utils::json::flatten::{
@@ -448,15 +449,15 @@ pub fn scope_log_fields(
     scope: Option<&InstrumentationScope>,
     schema_url: &str,
 ) -> Map<String, Value> {
-    let mut scope_log_json =
-        Map::with_capacity(5 + scope.map_or(0, |scope| attribute_capacity(&scope.attributes)));
+    let capacity = 5 + scope.map_or(0, |scope| attribute_capacity(&scope.attributes));
+    let mut scope_log_json = Map::with_capacity(capacity);
     if let Some(scope) = scope {
         scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
         scope_log_json.insert(
             "scope_version".to_string(),
             Value::String(scope.version.clone()),
         );
-        insert_attributes(&mut scope_log_json, &scope.attributes);
+        insert_attributes_fitted(&mut scope_log_json, &scope.attributes, capacity);
         scope_log_json.insert(
             "scope_dropped_attributes_count".to_string(),
             Value::Number(scope.dropped_attributes_count.into()),
@@ -471,11 +472,10 @@ pub fn scope_log_fields(
 
 /// Fields every row of one `ResourceLogs` gets, after the record's own fields
 pub fn resource_log_fields(resource: Option<&Resource>, schema_url: &str) -> Map<String, Value> {
-    let mut resource_log_json = Map::with_capacity(
-        4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes)),
-    );
+    let capacity = 4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes));
+    let mut resource_log_json = Map::with_capacity(capacity);
     if let Some(resource) = resource {
-        insert_attributes(&mut resource_log_json, &resource.attributes);
+        insert_attributes_fitted(&mut resource_log_json, &resource.attributes, capacity);
         resource_log_json.insert(
             "resource_dropped_attributes_count".to_string(),
             Value::Number(resource.dropped_attributes_count.into()),
