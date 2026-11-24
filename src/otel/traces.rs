@@ -16,8 +16,10 @@
  *
  */
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
 use opentelemetry_proto::tonic::common::v1::KeyValue;
-use opentelemetry_proto::tonic::trace::v1::ScopeSpans;
+use opentelemetry_proto::tonic::resource::v1::Resource;
+use opentelemetry_proto::tonic::trace::v1::ResourceSpans;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use opentelemetry_proto::tonic::trace::v1::Status;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
@@ -31,6 +33,7 @@ use crate::otel::otel_utils::flatten_attributes;
 use super::otel_utils::attribute_capacity;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
+use super::sink::RowSink;
 
 pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 32] = [
     "scope_name",
@@ -66,108 +69,133 @@ pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 32] = [
     "span_status_description",
     "span_status_message",
 ];
-/// this function flattens the `ScopeSpans` object
-/// and returns a `Vec` of `Map` of the flattened json
-fn flatten_scope_span(scope_span: &ScopeSpans, tenant_id: &str) -> Vec<Map<String, Value>> {
-    let mut vec_scope_span_json = Vec::with_capacity(scope_span.spans.len());
-    let mut scope_span_json = Map::with_capacity(
-        5 + scope_span
-            .scope
-            .as_ref()
-            .map_or(0, |scope| attribute_capacity(&scope.attributes)),
+/// Fields every row of one `ScopeSpans` gets from its scope, when it has one
+pub fn scope_span_fields(scope: Option<&InstrumentationScope>) -> Map<String, Value> {
+    let Some(scope) = scope else {
+        return Map::new();
+    };
+    let mut scope_span_json = Map::with_capacity(5 + attribute_capacity(&scope.attributes));
+    scope_span_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
+    scope_span_json.insert(
+        "scope_version".to_string(),
+        Value::String(scope.version.clone()),
     );
-    for span in &scope_span.spans {
-        let span_record_json = flatten_span_record(span);
-        vec_scope_span_json.extend(span_record_json);
+    insert_attributes(&mut scope_span_json, &scope.attributes);
+    scope_span_json.insert(
+        "scope_dropped_attributes_count".to_string(),
+        Value::Number(scope.dropped_attributes_count.into()),
+    );
+    scope_span_json
+}
+
+/// Fields every row of one `ResourceSpans` gets, after all others
+pub fn resource_span_fields(resource: Option<&Resource>, schema_url: &str) -> Map<String, Value> {
+    let mut resource_span_json = Map::with_capacity(
+        4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes)),
+    );
+    if let Some(resource) = resource {
+        insert_attributes(&mut resource_span_json, &resource.attributes);
+        resource_span_json.insert(
+            "resource_dropped_attributes_count".to_string(),
+            Value::Number(resource.dropped_attributes_count.into()),
+        );
     }
+    resource_span_json.insert(
+        "resource_schema_url".to_string(),
+        Value::String(schema_url.to_string()),
+    );
+    resource_span_json
+}
 
-    let date = chrono::Utc::now().date_naive().to_string();
-    increment_traces_collected_by_date(scope_span.spans.len() as u64, &date, tenant_id);
+/// The fields a span row gets from its scope and resource, in the order they are
+/// merged over the span's own fields
+pub struct SpanParents<'a> {
+    pub scope_fields: &'a Map<String, Value>,
+    pub scope_schema_url: &'a str,
+    pub resource_fields: &'a Map<String, Value>,
+}
 
-    if let Some(scope) = &scope_span.scope {
-        scope_span_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
-        scope_span_json.insert(
-            "scope_version".to_string(),
-            Value::String(scope.version.clone()),
+impl SpanParents<'_> {
+    fn finish(&self, mut row: Map<String, Value>) -> Map<String, Value> {
+        for (key, value) in self.scope_fields {
+            row.insert(key.clone(), value.clone());
+        }
+        row.insert(
+            "scope_schema_url".to_string(),
+            Value::String(self.scope_schema_url.to_string()),
         );
-        insert_attributes(&mut scope_span_json, &scope.attributes);
-        scope_span_json.insert(
-            "scope_dropped_attributes_count".to_string(),
-            Value::Number(scope.dropped_attributes_count.into()),
-        );
+        row.extend(self.resource_fields.clone());
+        row
+    }
+}
 
-        for span_json in &mut vec_scope_span_json {
-            for (key, value) in &scope_span_json {
-                span_json.insert(key.clone(), value.clone());
+/// Hands the rows of one span to `sink`: one per event, then one per link, each with
+/// the span's fields merged over it, or the span's own row when it has neither. Each
+/// event or link row is built only once the one before it was handed over.
+pub fn span_rows<S: RowSink>(
+    span: &Span,
+    parents: &SpanParents<'_>,
+    sink: &mut S,
+) -> Result<(), S::Error> {
+    let span_record_json = flatten_span_fields(span);
+    if span.events.is_empty() && span.links.is_empty() {
+        sink.row(parents.finish(span_record_json))?;
+    } else {
+        for event in &span.events {
+            let mut row = event_row(event, span.start_time_unix_nano);
+            for (key, value) in &span_record_json {
+                row.insert(key.clone(), value.clone());
+            }
+            sink.row(parents.finish(row))?;
+        }
+        for link in &span.links {
+            let mut row = link_row(link);
+            for (key, value) in &span_record_json {
+                row.insert(key.clone(), value.clone());
+            }
+            sink.row(parents.finish(row))?;
+        }
+    }
+    sink.record_end();
+    Ok(())
+}
+
+/// Hands the rows of every span of `resource_spans` to `sink`, one at a time
+pub fn flatten_traces_into<S: RowSink>(
+    resource_spans: &[ResourceSpans],
+    sink: &mut S,
+) -> Result<(), S::Error> {
+    for resource_span in resource_spans {
+        let resource_fields =
+            resource_span_fields(resource_span.resource.as_ref(), &resource_span.schema_url);
+        for scope_span in &resource_span.scope_spans {
+            let scope_fields = scope_span_fields(scope_span.scope.as_ref());
+            let parents = SpanParents {
+                scope_fields: &scope_fields,
+                scope_schema_url: &scope_span.schema_url,
+                resource_fields: &resource_fields,
+            };
+            for span in &scope_span.spans {
+                span_rows(span, &parents, sink)?;
             }
         }
     }
-
-    for span_json in &mut vec_scope_span_json {
-        span_json.insert(
-            "scope_schema_url".to_string(),
-            Value::String(scope_span.schema_url.clone()),
-        );
-    }
-
-    vec_scope_span_json
+    Ok(())
 }
 
-/// Common function to process resource spans and merge resource-level fields
-fn process_resource_spans<T>(
-    resource_spans: &[T],
-    get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
-    get_scope_spans: fn(&T) -> &[ScopeSpans],
-    get_schema_url: fn(&T) -> &str,
-    tenant_id: &str,
-) -> Vec<Value>
-where
-    T: std::fmt::Debug,
-{
-    let mut vec_otel_json = Vec::new();
-
-    for resource_span in resource_spans {
-        let resource = get_resource(resource_span);
-        let mut resource_span_json = Map::with_capacity(
-            4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes)),
-        );
-
-        // Process resource attributes if present
-        if let Some(resource) = resource {
-            insert_attributes(&mut resource_span_json, &resource.attributes);
-            resource_span_json.insert(
-                "resource_dropped_attributes_count".to_string(),
-                Value::Number(resource.dropped_attributes_count.into()),
-            );
-        }
-
-        // Process scope spans
-        let scope_spans = get_scope_spans(resource_span);
-        let mut vec_resource_spans_json = Vec::with_capacity(
-            scope_spans
-                .iter()
-                .map(|scope_span| scope_span.spans.len())
-                .sum(),
-        );
-        for scope_span in scope_spans {
-            let scope_span_json = flatten_scope_span(scope_span, tenant_id);
-            vec_resource_spans_json.extend(scope_span_json);
-        }
-
-        // Add resource schema URL
-        resource_span_json.insert(
-            "resource_schema_url".to_string(),
-            Value::String(get_schema_url(resource_span).to_string()),
-        );
-
-        // Merge resource-level fields into each span record
-        for mut resource_spans_json in vec_resource_spans_json {
-            resource_spans_json.extend(resource_span_json.clone());
-            vec_otel_json.push(Value::Object(resource_spans_json));
-        }
-    }
-
-    vec_otel_json
+/// All rows of `resource_spans` at once, counting the spans for `tenant_id`.
+/// Ingestion streams the rows instead, see `flatten_traces_into`.
+fn collect_resource_spans(resource_spans: &[ResourceSpans], tenant_id: &str) -> Vec<Value> {
+    let mut rows = Vec::new();
+    flatten_traces_into(resource_spans, &mut rows).expect("span rows are never refused");
+    let spans: usize = resource_spans
+        .iter()
+        .flat_map(|resource_span| &resource_span.scope_spans)
+        .map(|scope_span| scope_span.spans.len())
+        .sum();
+    let date = chrono::Utc::now().date_naive().to_string();
+    increment_traces_collected_by_date(spans as u64, &date, tenant_id);
+    rows
 }
 
 /// Flattens OpenTelemetry traces from protobuf format
@@ -175,92 +203,77 @@ pub fn flatten_otel_traces_protobuf(
     message: &ExportTraceServiceRequest,
     tenant_id: &str,
 ) -> Vec<Value> {
-    process_resource_spans(
-        &message.resource_spans,
-        |rs| rs.resource.as_ref(),
-        |rs| &rs.scope_spans,
-        |rs| &rs.schema_url,
-        tenant_id,
-    )
+    collect_resource_spans(&message.resource_spans, tenant_id)
 }
 
 /// this function performs the custom flattening of the otel traces event
 /// and returns a `Vec` of `Value::Object` of the flattened json
 pub fn flatten_otel_traces(message: &TracesData, tenant_id: &str) -> Vec<Value> {
-    process_resource_spans(
-        &message.resource_spans,
-        |rs| rs.resource.as_ref(),
-        |rs| &rs.scope_spans,
-        |rs| &rs.schema_url,
-        tenant_id,
-    )
+    collect_resource_spans(&message.resource_spans, tenant_id)
 }
 
-/// otel traces has json array of events
-/// this function flattens the `Event` object
-/// and returns a `Vec` of `Map` of the flattened json
+/// The own fields of the row of one span event
+fn event_row(event: &Event, span_start_time_unix_nano: u64) -> Map<String, Value> {
+    let mut event_json = Map::with_capacity(6 + attribute_capacity(&event.attributes));
+    event_json.insert(
+        "event_time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(event.time_unix_nano as i64).to_string()),
+    );
+    // add epoch value of event time in json
+    event_json.insert(
+        "event_time_unix_nano_epoch".to_string(),
+        Value::Number(serde_json::Number::from(event.time_unix_nano)),
+    );
+    event_json.insert("event_name".to_string(), Value::String(event.name.clone()));
+
+    // Calculate event duration in nanoseconds from span start
+    let duration_nanos = event
+        .time_unix_nano
+        .saturating_sub(span_start_time_unix_nano);
+    event_json.insert(
+        "event_duration_ns".to_string(),
+        Value::Number(serde_json::Number::from(duration_nanos)),
+    );
+
+    insert_events_attributes(&mut event_json, &event.attributes);
+    event_json.insert(
+        "event_dropped_attributes_count".to_string(),
+        Value::Number(event.dropped_attributes_count.into()),
+    );
+    event_json
+}
+
+/// The own fields of the row of one span link
+fn link_row(link: &Link) -> Map<String, Value> {
+    let mut link_json = Map::with_capacity(5 + attribute_capacity(&link.attributes));
+    link_json.insert(
+        "link_span_id".to_string(),
+        Value::String(hex::encode(&link.span_id)),
+    );
+    link_json.insert(
+        "link_trace_id".to_string(),
+        Value::String(hex::encode(&link.trace_id)),
+    );
+
+    insert_links_attributes(&mut link_json, &link.attributes);
+    link_json.insert(
+        "link_dropped_attributes_count".to_string(),
+        Value::Number(link.dropped_attributes_count.into()),
+    );
+    link_json
+}
+
+#[cfg(test)]
 fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<String, Value>> {
     events
         .iter()
-        .map(|event| {
-            let mut event_json = Map::with_capacity(6 + attribute_capacity(&event.attributes));
-            event_json.insert(
-                "event_time_unix_nano".to_string(),
-                Value::String(
-                    convert_epoch_nano_to_timestamp(event.time_unix_nano as i64).to_string(),
-                ),
-            );
-            // add epoch value of event time in json
-            event_json.insert(
-                "event_time_unix_nano_epoch".to_string(),
-                Value::Number(serde_json::Number::from(event.time_unix_nano)),
-            );
-            event_json.insert("event_name".to_string(), Value::String(event.name.clone()));
-
-            // Calculate event duration in nanoseconds from span start
-            let duration_nanos = event
-                .time_unix_nano
-                .saturating_sub(span_start_time_unix_nano);
-            event_json.insert(
-                "event_duration_ns".to_string(),
-                Value::Number(serde_json::Number::from(duration_nanos)),
-            );
-
-            insert_events_attributes(&mut event_json, &event.attributes);
-            event_json.insert(
-                "event_dropped_attributes_count".to_string(),
-                Value::Number(event.dropped_attributes_count.into()),
-            );
-            event_json
-        })
+        .map(|event| event_row(event, span_start_time_unix_nano))
         .collect()
 }
 
-/// otel traces has json array of links
-/// this function flattens the `Link` object
-/// and returns a `Vec` of `Map` of the flattened json
+#[cfg(test)]
 fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
-    links
-        .iter()
-        .map(|link| {
-            let mut link_json = Map::with_capacity(5 + attribute_capacity(&link.attributes));
-            link_json.insert(
-                "link_span_id".to_string(),
-                Value::String(hex::encode(&link.span_id)),
-            );
-            link_json.insert(
-                "link_trace_id".to_string(),
-                Value::String(hex::encode(&link.trace_id)),
-            );
-
-            insert_links_attributes(&mut link_json, &link.attributes);
-            link_json.insert(
-                "link_dropped_attributes_count".to_string(),
-                Value::Number(link.dropped_attributes_count.into()),
-            );
-            link_json
-        })
-        .collect()
+    links.iter().map(link_row).collect()
 }
 
 /// otel trace event has status
@@ -337,11 +350,8 @@ fn flatten_kind(kind: i32) -> Map<String, Value> {
     kind_json
 }
 
-/// this function flattens the `Span` object
-/// and returns a `Vec` of `Map` of the flattened json
-/// this function is called recursively for each span record object in the otel traces event
-fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
-    let mut span_records_json = Vec::new();
+/// The fields of one span that every row of it gets
+fn flatten_span_fields(span_record: &Span) -> Map<String, Value> {
     let mut span_record_json = Map::with_capacity(40 + attribute_capacity(&span_record.attributes));
     span_record_json.insert(
         "span_trace_id".to_string(),
@@ -402,14 +412,10 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
         "span_dropped_attributes_count".to_string(),
         Value::Number(span_record.dropped_attributes_count.into()),
     );
-    let events_json = flatten_events(&span_record.events, span_record.start_time_unix_nano);
-    span_records_json.extend(events_json);
     span_record_json.insert(
         "span_dropped_events_count".to_string(),
         Value::Number(span_record.dropped_events_count.into()),
     );
-    let links_json = flatten_links(&span_record.links);
-    span_records_json.extend(links_json);
 
     span_record_json.insert(
         "span_dropped_links_count".to_string(),
@@ -418,19 +424,29 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     if let Some(status) = &span_record.status {
         span_record_json.extend(flatten_status(status));
     }
-    // if span_record.events is null, code should still flatten other elements in the span record - this is handled in the if block
-    // else block handles the flattening the span record that includes events and links records in each span record
-    if span_records_json.is_empty() {
-        span_records_json = vec![span_record_json];
-    } else {
-        for span_json in &mut span_records_json {
-            for (key, value) in &span_record_json {
-                span_json.insert(key.clone(), value.clone());
-            }
-        }
-    }
+    span_record_json
+}
 
-    span_records_json
+/// The rows of one span without its scope and resource fields
+#[cfg(test)]
+fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
+    let empty = Map::new();
+    let parents = SpanParents {
+        scope_fields: &empty,
+        scope_schema_url: "",
+        resource_fields: &empty,
+    };
+    let mut rows = Vec::new();
+    span_rows(span_record, &parents, &mut rows).expect("span rows are never refused");
+    rows.into_iter()
+        .map(|row| {
+            let Value::Object(mut row) = row else {
+                unreachable!("rows are objects")
+            };
+            row.shift_remove("scope_schema_url");
+            row
+        })
+        .collect()
 }
 
 pub fn insert_events_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
@@ -454,7 +470,7 @@ mod tests {
     use super::*;
     use opentelemetry_proto::tonic::common::v1::{AnyValue, EntityRef, KeyValue};
     use opentelemetry_proto::tonic::resource::v1::Resource;
-    use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, TracesData};
+    use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, TracesData};
 
     /// Helper function to create a sample trace ID
     fn sample_trace_id() -> Vec<u8> {
@@ -1188,8 +1204,6 @@ mod tests {
         use opentelemetry_proto::tonic::trace::v1::span::{Event, Link};
         use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span, Status};
 
-        use super::super::flatten_otel_traces_protobuf;
-
         const SPANS_PER_SCOPE: usize = 250;
         const ITERS: usize = 20;
 
@@ -1322,8 +1336,12 @@ mod tests {
             ExportTraceServiceRequest { resource_spans }
         }
 
+        /// What ingestion does with a decoded request before staging: the rows
+        /// handed over in chunks (collected here)
         fn flatten(request: &ExportTraceServiceRequest) -> Vec<serde_json::Value> {
-            flatten_otel_traces_protobuf(request, "perfbench")
+            bench::chunked(|chunker| {
+                super::super::flatten_traces_into(&request.resource_spans, chunker)
+            })
         }
 
         #[test]

@@ -22,6 +22,7 @@
 //! measurement starts. Each test prints `MEMORY <name>: ...` with its numbers.
 //! None of them touches `PARSEABLE`, so they may be run with a name filter.
 
+use crate::otel::sink::{CHUNK_LIMITS, Chunker, row_bytes};
 use crate::test_alloc::{Allocated, measure};
 use crate::utils::json::flatten::{FlattenBudget, FlattenLimits, JsonFlattenError};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
@@ -43,7 +44,7 @@ const MIB: usize = 1024 * 1024;
 /// one chunk of rows (whose real size stays within 2x of its estimate), the row
 /// that filled it and the chunk's `Vec`. It does not grow with the rows of the
 /// request.
-const PEAK_BOUND: usize = 2 * 16 * MIB + 8 * MIB;
+const PEAK_BOUND: usize = 2 * CHUNK_LIMITS.bytes + 8 * MIB;
 
 fn mb(bytes: impl TryInto<i128>) -> f64 {
     bytes.try_into().ok().unwrap() as f64 / MIB as f64
@@ -89,15 +90,6 @@ fn hand_over<E: std::fmt::Debug>(
     (result, allocated)
 }
 
-/// The flatteners build every row of a request before handing them over, so the
-/// consumer gets them as one chunk
-fn all_at_once(
-    rows: Vec<Value>,
-    stage: &mut dyn FnMut(Vec<Value>) -> Result<(), JsonFlattenError>,
-) -> Result<(), JsonFlattenError> {
-    stage(rows)
-}
-
 fn traces(
     request: &ExportTraceServiceRequest,
 ) -> impl FnOnce(
@@ -105,10 +97,9 @@ fn traces(
 ) -> Result<(), JsonFlattenError>
 + '_ {
     move |stage| {
-        all_at_once(
-            crate::otel::traces::flatten_otel_traces_protobuf(request, "t"),
-            stage,
-        )
+        let mut chunker = Chunker::new(CHUNK_LIMITS, stage);
+        crate::otel::traces::flatten_traces_into(&request.resource_spans, &mut chunker)?;
+        chunker.finish()
     }
 }
 
@@ -119,10 +110,9 @@ fn metrics(
 ) -> Result<(), JsonFlattenError>
 + '_ {
     move |stage| {
-        all_at_once(
-            crate::otel::metrics::flatten_otel_metrics_protobuf_with_options(request, "t", false),
-            stage,
-        )
+        let mut chunker = Chunker::new(CHUNK_LIMITS, stage);
+        crate::otel::metrics::flatten_metrics_into(&request.resource_metrics, false, &mut chunker)?;
+        chunker.finish()
     }
 }
 
@@ -134,10 +124,9 @@ fn logs<'a>(
 ) -> Result<(), JsonFlattenError>
 + 'a {
     move |stage| {
-        all_at_once(
-            crate::otel::logs::flatten_otel_protobuf(request, "t", budget)?,
-            stage,
-        )
+        let mut chunker = Chunker::new(CHUNK_LIMITS, stage);
+        crate::otel::logs::flatten_logs_into(&request.resource_logs, budget, &mut chunker)?;
+        chunker.finish()
     }
 }
 
@@ -429,8 +418,11 @@ fn valueless_attributes_do_not_size_temporary_maps() {
         ..Default::default()
     };
     let request = one_span(span);
-    let (rows, allocated) =
-        measure(|| crate::otel::traces::flatten_otel_traces_protobuf(&request, "t"));
+    let (rows, allocated) = measure(|| {
+        let mut rows = Vec::new();
+        crate::otel::traces::flatten_traces_into(&request.resource_spans, &mut rows).unwrap();
+        rows
+    });
     println!(
         "MEMORY valueless attributes, span: {} rows, peak {} B",
         rows.len(),
@@ -445,4 +437,104 @@ fn valueless_attributes_do_not_size_temporary_maps() {
         "peak {} B, clones {clones} B",
         allocated.peak
     );
+}
+
+/// The chunk limit is an estimate of the memory rows hold (`row_bytes`); it must
+/// track what they really allocate, for realistic rows and for rows of many tiny
+/// fields alike (review finding 3: JSON length was 18.5x off)
+#[test]
+fn row_estimate_tracks_allocated_memory() {
+    use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+
+    let realistic: Vec<KeyValue> = [
+        ("service.name", "checkout"),
+        ("service.namespace", "shop"),
+        ("service.instance.id", "checkout-7d9f8b6c4-x2x9q"),
+        ("k8s.namespace.name", "production"),
+        ("k8s.pod.name", "checkout-7d9f8b6c4-x2x9q"),
+        ("k8s.pod.uid", "6b1a3c1e-2f0e-4d5a-9a43-77b8c2d1e0f1"),
+        ("k8s.deployment.name", "checkout"),
+        ("k8s.node.name", "ip-10-0-12-34.ec2.internal"),
+        ("k8s.cluster.name", "prod-eu-west-1"),
+        ("host.name", "ip-10-0-12-34.ec2.internal"),
+        ("cloud.provider", "aws"),
+        ("cloud.region", "eu-west-1"),
+        ("container.name", "checkout"),
+        ("container.image.name", "registry.example.com/shop/checkout"),
+        ("container.image.tag", "1.42.3"),
+        ("telemetry.sdk.name", "opentelemetry"),
+        ("telemetry.sdk.language", "java"),
+        ("telemetry.sdk.version", "1.38.0"),
+    ]
+    .into_iter()
+    .map(|(k, v)| kv(k, any_value::Value::StringValue(v.into())))
+    .collect();
+    let tiny: Vec<KeyValue> = (0..1000)
+        .map(|i| kv(format!("k{i:03}"), any_value::Value::IntValue(0)))
+        .collect();
+    for (name, resource, record_attributes) in
+        [("realistic", realistic, 6), ("tiny fields", tiny, 0)]
+    {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: resource,
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "io.opentelemetry.logback".into(),
+                        version: "2.6.0".into(),
+                        ..Default::default()
+                    }),
+                    log_records: (0..500u64)
+                        .map(|i| LogRecord {
+                            time_unix_nano: 1_700_000_000_000_000_000 + i,
+                            observed_time_unix_nano: 1_700_000_000_000_000_000 + i,
+                            severity_number: 9,
+                            severity_text: "INFO".into(),
+                            body: Some(AnyValue {
+                                value: Some(any_value::Value::StringValue(format!(
+                                    "GET /api/v1/orders/{i} 200 in 12ms"
+                                ))),
+                            }),
+                            attributes: (0..record_attributes)
+                                .map(|a| {
+                                    kv(format!("attr.{a}"), any_value::Value::IntValue(i as i64))
+                                })
+                                .collect(),
+                            trace_id: vec![7; 16],
+                            span_id: vec![3; 8],
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let (rows, allocated) = measure(|| {
+            let mut rows = Vec::new();
+            crate::otel::logs::flatten_logs_into(
+                &request.resource_logs,
+                &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+                &mut rows,
+            )
+            .unwrap();
+            rows
+        });
+        let estimate: usize = rows
+            .iter()
+            .map(|row| row_bytes(row.as_object().unwrap()))
+            .sum();
+        let ratio = allocated.retained as f64 / estimate as f64;
+        println!(
+            "MEMORY row estimate, {name}: {} rows, allocated {} B, estimated {} B, allocated/estimated {:.2}",
+            rows.len(),
+            allocated.retained,
+            estimate,
+            ratio,
+        );
+        assert!((0.5..=2.0).contains(&ratio), "{name}: {ratio:.2}");
+    }
 }

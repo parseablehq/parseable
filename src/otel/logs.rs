@@ -19,16 +19,19 @@ use super::otel_utils::attribute_capacity;
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
+use super::sink::RowSink;
 use crate::metrics::increment_logs_collected_by_date;
 use crate::utils::json::flatten::{
     FlattenBudget, FlattenCost, JsonFlattenError, expand_generic_flattening, flatten_pipeline_cost,
     string_json_len,
 };
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
-use opentelemetry_proto::tonic::logs::v1::ScopeLogs;
+use opentelemetry_proto::tonic::logs::v1::ResourceLogs;
 use opentelemetry_proto::tonic::logs::v1::SeverityNumber;
+use opentelemetry_proto::tonic::resource::v1::Resource;
 use serde_json::Map;
 use serde_json::Value;
 
@@ -311,20 +314,14 @@ pub fn flatten_log_record(
     Ok(log_record_json)
 }
 
-/// this function flattens the `ScopeLogs` object
-/// and returns a `Vec` of `Map` of the flattened json
-fn flatten_scope_log(
-    scope_log: &ScopeLogs,
-    budget: &mut FlattenBudget,
-) -> Result<Vec<Map<String, Value>>, JsonFlattenError> {
-    let mut vec_scope_log_json = Vec::with_capacity(scope_log.log_records.len());
-    let mut scope_log_json = Map::with_capacity(
-        5 + scope_log
-            .scope
-            .as_ref()
-            .map_or(0, |scope| attribute_capacity(&scope.attributes)),
-    );
-    if let Some(scope) = &scope_log.scope {
+/// Fields every row of one `ScopeLogs` gets, before the record's own fields
+pub fn scope_log_fields(
+    scope: Option<&InstrumentationScope>,
+    schema_url: &str,
+) -> Map<String, Value> {
+    let mut scope_log_json =
+        Map::with_capacity(5 + scope.map_or(0, |scope| attribute_capacity(&scope.attributes)));
+    if let Some(scope) = scope {
         scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
         scope_log_json.insert(
             "scope_version".to_string(),
@@ -338,78 +335,84 @@ fn flatten_scope_log(
     }
     scope_log_json.insert(
         "scope_log_schema_url".to_string(),
-        Value::String(scope_log.schema_url.clone()),
+        Value::String(schema_url.to_string()),
     );
-
-    for log_record in &scope_log.log_records {
-        let log_record_json = flatten_log_record(log_record, budget)?;
-        let mut combined_json = scope_log_json.clone();
-        combined_json.extend(log_record_json);
-        vec_scope_log_json.push(combined_json);
-    }
-
-    Ok(vec_scope_log_json)
+    scope_log_json
 }
 
-/// Common function to process resource logs and merge resource-level fields
-fn process_resource_logs<T>(
-    resource_logs: &[T],
-    get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
-    get_scope_logs: fn(&T) -> &[ScopeLogs],
-    get_schema_url: fn(&T) -> &str,
-    tenant_id: &str,
-    budget: &mut FlattenBudget,
-) -> Result<Vec<Value>, JsonFlattenError>
-where
-    T: std::fmt::Debug,
-{
-    let mut vec_otel_json = Vec::new();
-    let mut logs_collected: u64 = 0;
-
-    for resource_log in resource_logs {
-        let resource = get_resource(resource_log);
-        let mut resource_log_json = Map::with_capacity(
-            4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes)),
-        );
-
-        // Process resource attributes if present
-        if let Some(resource) = resource {
-            insert_attributes(&mut resource_log_json, &resource.attributes);
-            resource_log_json.insert(
-                "resource_dropped_attributes_count".to_string(),
-                Value::Number(resource.dropped_attributes_count.into()),
-            );
-        }
-
-        let scope_logs = get_scope_logs(resource_log);
-        let mut vec_resource_logs_json = Vec::with_capacity(
-            scope_logs
-                .iter()
-                .map(|scope_log| scope_log.log_records.len())
-                .sum(),
-        );
-
-        for scope_log in scope_logs {
-            vec_resource_logs_json.extend(flatten_scope_log(scope_log, budget)?);
-            logs_collected += scope_log.log_records.len() as u64;
-        }
-
+/// Fields every row of one `ResourceLogs` gets, after the record's own fields
+pub fn resource_log_fields(resource: Option<&Resource>, schema_url: &str) -> Map<String, Value> {
+    let mut resource_log_json = Map::with_capacity(
+        4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes)),
+    );
+    if let Some(resource) = resource {
+        insert_attributes(&mut resource_log_json, &resource.attributes);
         resource_log_json.insert(
-            "schema_url".to_string(),
-            Value::String(get_schema_url(resource_log).to_string()),
+            "resource_dropped_attributes_count".to_string(),
+            Value::Number(resource.dropped_attributes_count.into()),
         );
+    }
+    resource_log_json.insert(
+        "schema_url".to_string(),
+        Value::String(schema_url.to_string()),
+    );
+    resource_log_json
+}
 
-        for mut resource_logs_json in vec_resource_logs_json {
-            resource_logs_json.extend(resource_log_json.clone());
-            vec_otel_json.push(Value::Object(resource_logs_json));
+/// The row of one log record: the scope fields, the record's own fields over them,
+/// then the resource fields over both
+pub fn log_record_row(
+    log_record: &LogRecord,
+    scope_fields: &Map<String, Value>,
+    resource_fields: &Map<String, Value>,
+    budget: &mut FlattenBudget,
+) -> Result<Map<String, Value>, JsonFlattenError> {
+    let log_record_json = flatten_log_record(log_record, budget)?;
+    let mut row = scope_fields.clone();
+    row.extend(log_record_json);
+    row.extend(resource_fields.clone());
+    Ok(row)
+}
+
+/// Hands the row of every log record of `resource_logs` to `sink`, one at a time.
+/// The JSON bodies of every record are charged to `budget`, which all records of the
+/// request share, before their rows are built.
+pub fn flatten_logs_into<S: RowSink>(
+    resource_logs: &[ResourceLogs],
+    budget: &mut FlattenBudget,
+    sink: &mut S,
+) -> Result<(), S::Error> {
+    for resource_log in resource_logs {
+        let resource_fields =
+            resource_log_fields(resource_log.resource.as_ref(), &resource_log.schema_url);
+        for scope_log in &resource_log.scope_logs {
+            let scope_fields = scope_log_fields(scope_log.scope.as_ref(), &scope_log.schema_url);
+            for log_record in &scope_log.log_records {
+                sink.row(log_record_row(
+                    log_record,
+                    &scope_fields,
+                    &resource_fields,
+                    budget,
+                )?)?;
+                sink.record_end();
+            }
         }
     }
+    Ok(())
+}
 
-    // Only count the logs of a request that was converted in full
+/// All rows of `resource_logs` at once. Counts the records for `tenant_id` once
+/// every one was converted. Ingestion streams the rows instead, see `flatten_logs_into`.
+fn collect_resource_logs(
+    resource_logs: &[ResourceLogs],
+    tenant_id: &str,
+    budget: &mut FlattenBudget,
+) -> Result<Vec<Value>, JsonFlattenError> {
+    let mut rows = Vec::new();
+    flatten_logs_into(resource_logs, budget, &mut rows)?;
     let date = chrono::Utc::now().date_naive().to_string();
-    increment_logs_collected_by_date(logs_collected, &date, tenant_id);
-
-    Ok(vec_otel_json)
+    increment_logs_collected_by_date(rows.len() as u64, &date, tenant_id);
+    Ok(rows)
 }
 
 /// Same as `flatten_otel_logs`, for the protobuf request
@@ -418,14 +421,7 @@ pub fn flatten_otel_protobuf(
     tenant_id: &str,
     budget: &mut FlattenBudget,
 ) -> Result<Vec<Value>, JsonFlattenError> {
-    process_resource_logs(
-        &message.resource_logs,
-        |record| record.resource.as_ref(),
-        |record| &record.scope_logs,
-        |record| &record.schema_url,
-        tenant_id,
-        budget,
-    )
+    collect_resource_logs(&message.resource_logs, tenant_id, budget)
 }
 
 /// this function performs the custom flattening of the otel logs
@@ -438,14 +434,7 @@ pub fn flatten_otel_logs(
     tenant_id: &str,
     budget: &mut FlattenBudget,
 ) -> Result<Vec<Value>, JsonFlattenError> {
-    process_resource_logs(
-        &message.resource_logs,
-        |record| record.resource.as_ref(),
-        |record| &record.scope_logs,
-        |record| &record.schema_url,
-        tenant_id,
-        budget,
-    )
+    collect_resource_logs(&message.resource_logs, tenant_id, budget)
 }
 
 #[cfg(test)]
@@ -995,7 +984,6 @@ mod tests {
     // They never touch the PARSEABLE global: every timestamp is set, so the rows
     // are deterministic, and the flatten budget is built from FlattenLimits::DEFAULT.
     mod benches {
-        use super::super::flatten_otel_protobuf;
         use crate::otel::bench;
         use crate::utils::json::flatten::{FlattenBudget, FlattenLimits};
         use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
@@ -1142,10 +1130,13 @@ mod tests {
             ExportLogsServiceRequest { resource_logs }
         }
 
+        /// What ingestion does with a decoded request before staging: the rows
+        /// handed over in chunks (collected here)
         fn flatten(request: &ExportLogsServiceRequest) -> Vec<serde_json::Value> {
             let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
-            flatten_otel_protobuf(request, "perfbench", &mut budget)
-                .expect("benchmark rows flatten")
+            bench::chunked(|chunker| {
+                super::super::flatten_logs_into(&request.resource_logs, &mut budget, chunker)
+            })
         }
 
         #[test]

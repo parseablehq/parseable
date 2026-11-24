@@ -19,6 +19,7 @@
 pub mod logs;
 pub mod metrics;
 pub mod otel_utils;
+pub mod sink;
 pub mod traces;
 
 #[cfg(test)]
@@ -37,6 +38,7 @@ mod memory_tests;
 /// the per-row wall time for `perf stat` to turn into instruction counts.
 #[cfg(test)]
 pub(crate) mod bench {
+    use crate::utils::json::flatten::JsonFlattenError;
     use std::time::Instant;
 
     /// Runs `body` `iters` times, requiring identical output every time, and
@@ -105,6 +107,30 @@ pub(crate) mod bench {
             "{name}: iters={iters} ns_per_call={:.1}",
             start.elapsed().as_secs_f64() * 1e9 / iters as f64
         );
+    }
+
+    /// The rows `flatten` hands to a `Chunker` with the default limits, each
+    /// chunk appended to the result as it is passed on
+    pub fn chunked(
+        flatten: impl FnOnce(
+            &mut super::sink::Chunker<
+                &mut dyn FnMut(Vec<serde_json::Value>) -> Result<(), JsonFlattenError>,
+            >,
+        ) -> Result<(), JsonFlattenError>,
+    ) -> Vec<serde_json::Value> {
+        let mut rows = Vec::new();
+        let mut stage = |chunk: Vec<serde_json::Value>| {
+            rows.extend(chunk);
+            Ok(())
+        };
+        let mut chunker = super::sink::Chunker::new(
+            super::sink::CHUNK_LIMITS,
+            &mut stage as &mut dyn FnMut(Vec<serde_json::Value>) -> Result<(), JsonFlattenError>,
+        );
+        flatten(&mut chunker).expect("benchmark rows flatten");
+        chunker.finish().expect("benchmark rows stage");
+        drop(chunker);
+        rows
     }
 
     fn dump_dir() -> Option<String> {
