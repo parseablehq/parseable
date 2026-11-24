@@ -136,8 +136,7 @@ pub struct ChunkLimits {
     pub bytes: usize,
 }
 
-/// Default chunk limits, see `REPORT.md` of the change that introduced them for the
-/// measurements. A chunk is full at 8192 rows (the default batch size of the
+/// Default chunk limits. A chunk is full at 8192 rows (the default batch size of the
 /// OpenTelemetry collector) or 16 MiB of estimated row memory, whichever comes first.
 /// Rows of realistic requests hold 1-10 KiB each, so the memory limit usually decides.
 pub const CHUNK_LIMITS: ChunkLimits = ChunkLimits {
