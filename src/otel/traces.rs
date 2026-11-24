@@ -132,7 +132,7 @@ impl SpanParents<'_> {
 /// Hands the rows of one span to `sink`: one per event, then one per link, each with
 /// the span's fields merged over it, or the span's own row when it has neither. Each
 /// event or link row is built only once the one before it was handed over.
-pub fn span_rows<S: RowSink>(
+pub fn span_rows<S: RowSink + ?Sized>(
     span: &Span,
     parents: &SpanParents<'_>,
     sink: &mut S,
@@ -161,7 +161,7 @@ pub fn span_rows<S: RowSink>(
 }
 
 /// Hands the rows of every span of `resource_spans` to `sink`, one at a time
-pub fn flatten_traces_into<S: RowSink>(
+pub fn flatten_traces_into<S: RowSink + ?Sized>(
     resource_spans: &[ResourceSpans],
     sink: &mut S,
 ) -> Result<(), S::Error> {

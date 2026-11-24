@@ -216,26 +216,50 @@ fn log_record_bytes(record: &LogRecord) -> usize {
         + hex_field("trace_id", record.trace_id.len())
 }
 
+/// Sizes a logs request one part at a time, in the order of the request
+#[derive(Debug, Default)]
+pub struct LogsSizer {
+    size: RequestSize,
+    resource: usize,
+    shared: usize,
+}
+
+impl LogsSizer {
+    pub fn resource(&mut self, resource: Option<&Resource>, schema_url: &str) {
+        self.resource = resource_bytes(resource) + str_field("schema_url", schema_url.len());
+    }
+
+    pub fn scope(&mut self, scope: Option<&InstrumentationScope>, schema_url: &str) {
+        self.shared = VALUE_BYTES
+            + self.resource
+            + scope_bytes(scope)
+            + str_field("scope_log_schema_url", schema_url.len());
+    }
+
+    pub fn record(&mut self, record: &LogRecord) {
+        self.size.records += 1;
+        self.size.add_rows(1, self.shared);
+        self.size.add_bytes(log_record_bytes(record));
+    }
+
+    pub fn finish(self) -> RequestSize {
+        self.size
+    }
+}
+
 /// Rows and row bytes of a logs request
 pub fn logs_size(resource_logs: &[ResourceLogs]) -> RequestSize {
-    let mut size = RequestSize::default();
+    let mut sizer = LogsSizer::default();
     for resource_log in resource_logs {
-        let resource = resource_bytes(resource_log.resource.as_ref())
-            + str_field("schema_url", resource_log.schema_url.len());
+        sizer.resource(resource_log.resource.as_ref(), &resource_log.schema_url);
         for scope_log in &resource_log.scope_logs {
-            let shared = VALUE_BYTES
-                + resource
-                + scope_bytes(scope_log.scope.as_ref())
-                + str_field("scope_log_schema_url", scope_log.schema_url.len());
-            let records = scope_log.log_records.len() as u64;
-            size.records += records;
-            size.add_rows(records, shared);
+            sizer.scope(scope_log.scope.as_ref(), &scope_log.schema_url);
             for record in &scope_log.log_records {
-                size.add_bytes(log_record_bytes(record));
+                sizer.record(record);
             }
         }
     }
-    size
+    sizer.finish()
 }
 
 // ---------------------------------------------------------------------------
@@ -284,31 +308,57 @@ fn link_bytes(link: &Link) -> usize {
         + num_field("link_dropped_attributes_count")
 }
 
+/// Sizes a traces request one part at a time, in the order of the request
+#[derive(Debug, Default)]
+pub struct TracesSizer {
+    size: RequestSize,
+    resource: usize,
+    shared: usize,
+}
+
+impl TracesSizer {
+    pub fn resource(&mut self, resource: Option<&Resource>, schema_url: &str) {
+        self.resource =
+            resource_bytes(resource) + str_field("resource_schema_url", schema_url.len());
+    }
+
+    pub fn scope(&mut self, scope: Option<&InstrumentationScope>, schema_url: &str) {
+        self.shared = VALUE_BYTES
+            + self.resource
+            + scope_bytes(scope)
+            + str_field("scope_schema_url", schema_url.len());
+    }
+
+    pub fn span(&mut self, span: &Span) {
+        self.size.records += 1;
+        let rows = (span.events.len() + span.links.len()).max(1) as u64;
+        self.size.add_rows(rows, self.shared + span_bytes(span));
+        for event in &span.events {
+            self.size.add_bytes(event_bytes(event));
+        }
+        for link in &span.links {
+            self.size.add_bytes(link_bytes(link));
+        }
+    }
+
+    pub fn finish(self) -> RequestSize {
+        self.size
+    }
+}
+
 /// Rows and row bytes of a traces request
 pub fn traces_size(resource_spans: &[ResourceSpans]) -> RequestSize {
-    let mut size = RequestSize::default();
+    let mut sizer = TracesSizer::default();
     for resource_span in resource_spans {
-        let resource = resource_bytes(resource_span.resource.as_ref())
-            + str_field("resource_schema_url", resource_span.schema_url.len());
+        sizer.resource(resource_span.resource.as_ref(), &resource_span.schema_url);
         for scope_span in &resource_span.scope_spans {
-            let shared = VALUE_BYTES
-                + resource
-                + scope_bytes(scope_span.scope.as_ref())
-                + str_field("scope_schema_url", scope_span.schema_url.len());
-            size.records += scope_span.spans.len() as u64;
+            sizer.scope(scope_span.scope.as_ref(), &scope_span.schema_url);
             for span in &scope_span.spans {
-                let rows = (span.events.len() + span.links.len()).max(1) as u64;
-                size.add_rows(rows, shared + span_bytes(span));
-                for event in &span.events {
-                    size.add_bytes(event_bytes(event));
-                }
-                for link in &span.links {
-                    size.add_bytes(link_bytes(link));
-                }
+                sizer.span(span);
             }
         }
     }
-    size
+    sizer.finish()
 }
 
 // ---------------------------------------------------------------------------
@@ -470,53 +520,92 @@ fn metric_points(metric: &Metric, flatten_exemplars: bool, row: usize, size: &mu
     }
 }
 
-/// Rows and row bytes of a metrics request
-pub fn metrics_size(resource_metrics: &[ResourceMetrics], flatten_exemplars: bool) -> RequestSize {
-    let mut size = RequestSize::default();
-    for resource_metric in resource_metrics {
+/// Sizes a metrics request one part at a time, in the order of the request
+#[derive(Debug, Default)]
+pub struct MetricsSizer {
+    size: RequestSize,
+    flatten_exemplars: bool,
+    identity: bool,
+    resource: usize,
+    envelope: usize,
+    any_rows: bool,
+}
+
+impl MetricsSizer {
+    pub fn new(flatten_exemplars: bool) -> Self {
+        Self {
+            flatten_exemplars,
+            ..Self::default()
+        }
+    }
+
+    pub fn resource(&mut self, resource: Option<&Resource>, schema_url: &str) {
         // Built once per resource, as the flattener does, since the identity is
         // read from the flattened resource fields
-        let identity = super::metrics::ResourceMetricFields::new(
-            resource_metric.resource.as_ref(),
-            &resource_metric.schema_url,
-        )
-        .has_target_identity();
-        let resource = resource_bytes(resource_metric.resource.as_ref())
-            + str_field("resource_schema_url", resource_metric.schema_url.len())
-            + if identity {
+        self.identity =
+            super::metrics::ResourceMetricFields::new(resource, schema_url).has_target_identity();
+        self.resource = resource_bytes(resource)
+            + str_field("resource_schema_url", schema_url.len())
+            + if self.identity {
                 str_field("job", 32) + str_field("instance", 32)
             } else {
                 0
             };
-        let mut any_rows = false;
-        for scope_metric in &resource_metric.scope_metrics {
-            let envelope = resource
-                + scope_bytes(scope_metric.scope.as_ref())
-                + str_field("scope_schema_url", scope_metric.schema_url.len());
-            size.records += scope_metric.metrics.len() as u64;
-            for metric in &scope_metric.metrics {
-                let row = VALUE_BYTES
-                    + envelope
-                    + str_field("metric_name", metric.name.len())
-                    + str_field("metric_description", metric.description.len())
-                    + str_field("metric_unit", metric.unit.len())
-                    + str_field("metric_type", 21)
-                    + attributes_bytes(&metric.metadata, 0)
-                    + num_field(super::metrics::SERIES_HASH_COLUMN);
-                any_rows |= metric.data.is_some();
-                metric_points(metric, flatten_exemplars, row, &mut size);
-            }
-        }
-        if identity && any_rows {
+        self.any_rows = false;
+    }
+
+    pub fn scope(&mut self, scope: Option<&InstrumentationScope>, schema_url: &str) {
+        self.envelope =
+            self.resource + scope_bytes(scope) + str_field("scope_schema_url", schema_url.len());
+    }
+
+    pub fn metric(&mut self, metric: &Metric) {
+        self.size.records += 1;
+        let row = VALUE_BYTES
+            + self.envelope
+            + str_field("metric_name", metric.name.len())
+            + str_field("metric_description", metric.description.len())
+            + str_field("metric_unit", metric.unit.len())
+            + str_field("metric_type", 21)
+            + attributes_bytes(&metric.metadata, 0)
+            + num_field(super::metrics::SERIES_HASH_COLUMN);
+        self.any_rows |= metric.data.is_some();
+        metric_points(metric, self.flatten_exemplars, row, &mut self.size);
+    }
+
+    pub fn resource_end(&mut self) {
+        if self.identity && self.any_rows {
             // target_info
-            size.add_rows(
+            self.size.add_rows(
                 1,
                 VALUE_BYTES
-                    + resource
+                    + self.resource
                     + 6 * str_field("metric_description", 16)
                     + num_field(super::metrics::SERIES_HASH_COLUMN),
             );
         }
     }
-    size
+
+    pub fn finish(self) -> RequestSize {
+        self.size
+    }
+}
+
+/// Rows and row bytes of a metrics request
+pub fn metrics_size(resource_metrics: &[ResourceMetrics], flatten_exemplars: bool) -> RequestSize {
+    let mut sizer = MetricsSizer::new(flatten_exemplars);
+    for resource_metric in resource_metrics {
+        sizer.resource(
+            resource_metric.resource.as_ref(),
+            &resource_metric.schema_url,
+        );
+        for scope_metric in &resource_metric.scope_metrics {
+            sizer.scope(scope_metric.scope.as_ref(), &scope_metric.schema_url);
+            for metric in &scope_metric.metrics {
+                sizer.metric(metric);
+            }
+        }
+        sizer.resource_end();
+    }
+    sizer.finish()
 }

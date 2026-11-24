@@ -506,7 +506,7 @@ pub fn log_record_row(
 /// Hands the row of every log record of `resource_logs` to `sink`, one at a time.
 /// The JSON bodies of every record are charged to `budget`, which all records of the
 /// request share, before their rows are built.
-pub fn flatten_logs_into<S: RowSink>(
+pub fn flatten_logs_into<S: RowSink + ?Sized>(
     resource_logs: &[ResourceLogs],
     budget: &mut FlattenBudget,
     sink: &mut S,

@@ -16,10 +16,12 @@
  *
  */
 
+pub mod decoded_size;
 pub mod expansion;
 pub mod logs;
 pub mod metrics;
 pub mod otel_utils;
+pub mod protobuf_stream;
 pub mod sink;
 pub mod traces;
 

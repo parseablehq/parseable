@@ -78,6 +78,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const TENANT: &str = "tenant";
 
+/// The server defaults the protobuf path reads from the configuration
+const PROTOBUF_OPTIONS: ProtobufOptions = ProtobufOptions {
+    max_payload: 10 * 1024 * 1024,
+    flatten_exemplars: false,
+};
+
 // ---------------------------------------------------------------------------
 // Seeds and runners
 // ---------------------------------------------------------------------------
@@ -1650,7 +1656,7 @@ fn decode_is_total(
         Err(error) => {
             // Returns before the dataset field check, the first use of `PARSEABLE`
             let refused = flatten_and_push_otel_protobuf(
-                body,
+                web::Bytes::copy_from_slice(body),
                 &OtelTarget {
                     stream_name: "otel_pb_props",
                     log_source: source,
@@ -1658,6 +1664,7 @@ fn decode_is_total(
                     telemetry_type,
                     tenant_id: &None,
                 },
+                PROTOBUF_OPTIONS,
             )
             .expect_err("a body that does not decode is refused");
             prop_assert!(matches!(refused, PostError::Invalid(_)), "{refused:?}");
@@ -2526,7 +2533,7 @@ fn run_scenario(seed: u64) -> Result<Scenario, (String, Vec<String>)> {
                 }
                 if encoding == Encoding::Protobuf {
                     let refused = flatten_and_push_otel_protobuf(
-                        &body,
+                        web::Bytes::copy_from_slice(&body),
                         &OtelTarget {
                             stream_name: "dst",
                             log_source: &source,
@@ -2534,6 +2541,7 @@ fn run_scenario(seed: u64) -> Result<Scenario, (String, Vec<String>)> {
                             telemetry_type: request.telemetry_type(),
                             tenant_id: &None,
                         },
+                        PROTOBUF_OPTIONS,
                     );
                     if !matches!(&refused, Err(PostError::Invalid(e)) if e.to_string().ends_with(error.as_str()))
                     {
@@ -2692,4 +2700,437 @@ fn dst_otlp_mixed_encoding_seeds_differ() {
         .map(|seed| run_scenario(seed).map_err(|(e, _)| e).unwrap().digest)
         .collect();
     assert_eq!(digests.len(), 4);
+}
+
+// ---------------------------------------------------------------------------
+// Streamed decoding (`protobuf_stream`) against whole-request decoding
+// ---------------------------------------------------------------------------
+
+mod streamed {
+    use super::*;
+    use crate::otel::expansion::{logs_size, metrics_size, traces_size};
+    use crate::otel::protobuf_stream::{Signal, StreamError, flatten_request, size_request};
+    use prost::Message as ProstMessage;
+    use prost::encoding::{WireType, encode_key, encode_varint};
+
+    /// Wire edits applied while re-encoding a request field by field
+    struct Edits<'a>(&'a mut SplitMix64);
+
+    impl Edits<'_> {
+        /// An unknown field (numbers 4-40 or a large one) of a random wire type
+        fn unknown(&mut self, out: &mut Vec<u8>) {
+            let tag = if self.0.percent(80) {
+                4 + self.0.below(37) as u32
+            } else {
+                1 << 20
+            };
+            match self.0.below(5) {
+                0 => {
+                    encode_key(tag, WireType::Varint, out);
+                    encode_varint(self.0.next_u64() >> self.0.below(64), out);
+                }
+                1 => {
+                    encode_key(tag, WireType::SixtyFourBit, out);
+                    out.extend_from_slice(&self.0.next_u64().to_le_bytes());
+                }
+                2 => {
+                    encode_key(tag, WireType::ThirtyTwoBit, out);
+                    out.extend_from_slice(&(self.0.next_u64() as u32).to_le_bytes());
+                }
+                3 => {
+                    let len = self.0.below(12) as usize;
+                    encode_key(tag, WireType::LengthDelimited, out);
+                    encode_varint(len as u64, out);
+                    out.extend((0..len).map(|_| self.0.next_u64() as u8));
+                }
+                _ => {
+                    encode_key(tag, WireType::StartGroup, out);
+                    if self.0.percent(50) {
+                        encode_key(tag + 1, WireType::Varint, out);
+                        encode_varint(7, out);
+                    }
+                    encode_key(tag, WireType::EndGroup, out);
+                }
+            }
+        }
+
+        /// `fields` in a shuffled order, with unknown fields between them
+        fn level(&mut self, mut fields: Vec<Vec<u8>>) -> Vec<u8> {
+            for i in (1..fields.len()).rev() {
+                if self.0.percent(50) {
+                    let j = self.0.below(i as u64 + 1) as usize;
+                    fields.swap(i, j);
+                }
+            }
+            let mut out = Vec::new();
+            for field in fields {
+                if self.0.percent(25) {
+                    self.unknown(&mut out);
+                }
+                out.extend(field);
+            }
+            if self.0.percent(25) {
+                self.unknown(&mut out);
+            }
+            out
+        }
+
+        fn len_field(tag: u32, body: &[u8]) -> Vec<u8> {
+            let mut out = Vec::new();
+            encode_key(tag, WireType::LengthDelimited, &mut out);
+            encode_varint(body.len() as u64, &mut out);
+            out.extend_from_slice(body);
+            out
+        }
+
+        /// A singular message field, sometimes split over two occurrences, which
+        /// prost merges: repeated fields concatenate, the last scalar wins
+        fn singular<M: ProstMessage + Clone>(
+            &mut self,
+            tag: u32,
+            msg: &M,
+            split: impl Fn(&M) -> (M, M),
+        ) -> Vec<Vec<u8>> {
+            if self.0.percent(30) {
+                let (first, second) = split(msg);
+                vec![
+                    Self::len_field(tag, &first.encode_to_vec()),
+                    Self::len_field(tag, &second.encode_to_vec()),
+                ]
+            } else {
+                vec![Self::len_field(tag, &msg.encode_to_vec())]
+            }
+        }
+
+        /// `schema_url`, sometimes after an earlier occurrence it replaces
+        fn schema_url(&mut self, url: &str) -> Vec<Vec<u8>> {
+            let mut fields = vec![];
+            if self.0.percent(20) {
+                fields.push(Self::len_field(3, b"https://replaced.example"));
+            }
+            if !url.is_empty() || self.0.percent(20) {
+                fields.push(Self::len_field(3, url.as_bytes()));
+            }
+            fields
+        }
+
+        /// A parent level: `resource`/`scope` (field 1), children (field 2), schema_url (3)
+        fn parent<P: ProstMessage + Clone>(
+            &mut self,
+            parent: Option<&P>,
+            split: impl Fn(&P) -> (P, P),
+            children: Vec<Vec<u8>>,
+            url: &str,
+        ) -> Vec<u8> {
+            let mut fields = vec![];
+            if let Some(parent) = parent {
+                fields.extend(self.singular(1, parent, split));
+            }
+            fields.extend(children.iter().map(|child| Self::len_field(2, child)));
+            fields.extend(self.schema_url(url));
+            self.level(fields)
+        }
+    }
+
+    fn split_resource(resource: &Resource) -> (Resource, Resource) {
+        let at = resource.attributes.len() / 2;
+        (
+            Resource {
+                attributes: resource.attributes[..at].to_vec(),
+                dropped_attributes_count: 3,
+                ..Default::default()
+            },
+            Resource {
+                attributes: resource.attributes[at..].to_vec(),
+                ..resource.clone()
+            },
+        )
+    }
+
+    fn split_scope(scope: &InstrumentationScope) -> (InstrumentationScope, InstrumentationScope) {
+        let at = scope.attributes.len() / 2;
+        (
+            InstrumentationScope {
+                name: "replaced".into(),
+                attributes: scope.attributes[..at].to_vec(),
+                ..Default::default()
+            },
+            InstrumentationScope {
+                attributes: scope.attributes[at..].to_vec(),
+                ..scope.clone()
+            },
+        )
+    }
+
+    /// The protobuf body of `request`, re-encoded field by field with `edits`
+    fn edited_body(request: &Req, rng: &mut SplitMix64) -> Vec<u8> {
+        let mut edits = Edits(rng);
+        let resources: Vec<Vec<u8>> = match request {
+            Req::Logs(data) => data
+                .resource_logs
+                .iter()
+                .map(|r| {
+                    let scopes = r
+                        .scope_logs
+                        .iter()
+                        .map(|s| {
+                            let records = s
+                                .log_records
+                                .iter()
+                                .map(ProstMessage::encode_to_vec)
+                                .collect();
+                            edits.parent(s.scope.as_ref(), split_scope, records, &s.schema_url)
+                        })
+                        .collect();
+                    edits.parent(r.resource.as_ref(), split_resource, scopes, &r.schema_url)
+                })
+                .collect(),
+            Req::Traces(data) => data
+                .resource_spans
+                .iter()
+                .map(|r| {
+                    let scopes = r
+                        .scope_spans
+                        .iter()
+                        .map(|s| {
+                            let spans = s.spans.iter().map(ProstMessage::encode_to_vec).collect();
+                            edits.parent(s.scope.as_ref(), split_scope, spans, &s.schema_url)
+                        })
+                        .collect();
+                    edits.parent(r.resource.as_ref(), split_resource, scopes, &r.schema_url)
+                })
+                .collect(),
+            Req::Metrics(data) => data
+                .resource_metrics
+                .iter()
+                .map(|r| {
+                    let scopes = r
+                        .scope_metrics
+                        .iter()
+                        .map(|s| {
+                            let metrics =
+                                s.metrics.iter().map(ProstMessage::encode_to_vec).collect();
+                            edits.parent(s.scope.as_ref(), split_scope, metrics, &s.schema_url)
+                        })
+                        .collect();
+                    edits.parent(r.resource.as_ref(), split_resource, scopes, &r.schema_url)
+                })
+                .collect(),
+        };
+        let fields = resources.iter().map(|r| Edits::len_field(1, r)).collect();
+        edits.level(fields)
+    }
+
+    fn signal(request: &Req) -> Signal {
+        match request {
+            Req::Logs(_) => Signal::Logs,
+            Req::Metrics(_) => Signal::Metrics,
+            Req::Traces(_) => Signal::Traces,
+        }
+    }
+
+    /// Rows and size of `body` decoded whole, or prost's error text
+    fn whole(
+        request: &Req,
+        body: &[u8],
+        flatten_exemplars: bool,
+    ) -> Result<(Vec<u8>, RequestSize), String> {
+        let decoded =
+            OtelProtobufRequest::decode(body, &request.source()).map_err(|e| e.to_string())?;
+        let decoded = Req::from_decoded(decoded);
+        let resources = decoded.resources();
+        let mut rows = Vec::new();
+        resources
+            .flatten_into(
+                &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+                flatten_exemplars,
+                &mut rows,
+            )
+            .map_err(|e| format!("flatten: {e}"))?;
+        let size = match &decoded {
+            Req::Logs(data) => logs_size(&data.resource_logs),
+            Req::Metrics(data) => metrics_size(&data.resource_metrics, flatten_exemplars),
+            Req::Traces(data) => traces_size(&data.resource_spans),
+        };
+        Ok((serde_json::to_vec(&rows).unwrap(), size))
+    }
+
+    /// Rows and size of `body` read one record at a time, or the error text
+    fn streamed(
+        request: &Req,
+        body: &[u8],
+        flatten_exemplars: bool,
+    ) -> Result<(Vec<u8>, RequestSize), String> {
+        let text = |e: StreamError<_>| match e {
+            StreamError::Decode(e) => OtelProtobufError::Decode(e).to_string(),
+            StreamError::RecordTooLarge { .. } => "record too large".to_string(),
+            StreamError::Consumer(e) => format!("flatten: {e}"),
+        };
+        let size = size_request(
+            web::Bytes::copy_from_slice(body),
+            signal(request),
+            usize::MAX,
+            flatten_exemplars,
+        )
+        .map_err(|e| {
+            text(match e {
+                StreamError::Decode(e) => StreamError::Decode(e),
+                StreamError::RecordTooLarge { leaf, limit } => {
+                    StreamError::RecordTooLarge { leaf, limit }
+                }
+                StreamError::Consumer(never) => match never {},
+            })
+        })?;
+        let mut rows: Vec<Value> = Vec::new();
+        flatten_request(
+            web::Bytes::copy_from_slice(body),
+            signal(request),
+            usize::MAX,
+            &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+            flatten_exemplars,
+            &mut rows,
+        )
+        .map_err(text)?;
+        Ok((serde_json::to_vec(&rows).unwrap(), size))
+    }
+
+    fn streamed_matches_whole(
+        mut request: Req,
+        seed: u64,
+        flatten_exemplars: bool,
+        cut: Option<u64>,
+    ) -> TestCaseResult {
+        fill_unset_timestamps(&mut request);
+        let mut rng = SplitMix64(seed);
+        let mut body = edited_body(&request, &mut rng);
+        if let Some(cut) = cut {
+            body.truncate((cut % (body.len() as u64 + 1)) as usize);
+        }
+        let whole = whole(&request, &body, flatten_exemplars);
+        let streamed = streamed(&request, &body, flatten_exemplars);
+        prop_assert_eq!(
+            &whole,
+            &streamed,
+            "whole (left) and streamed (right) differ"
+        );
+        Ok(())
+    }
+
+    fn requests() -> BoxedStrategy<Req> {
+        prop_oneof![
+            logs_data(true).prop_map(Req::Logs),
+            traces_data(true).prop_map(Req::Traces),
+            metrics_data(true).prop_map(Req::Metrics),
+        ]
+        .boxed()
+    }
+
+    #[test]
+    fn otel_pb_streamed_rows_match_whole_decoding() {
+        check(
+            "otel_pb_streamed_rows_match_whole_decoding",
+            192,
+            (requests(), any::<u64>(), any::<bool>()),
+            |(request, seed, flatten_exemplars)| {
+                streamed_matches_whole(request, seed, flatten_exemplars, None)
+            },
+        );
+    }
+
+    #[test]
+    fn otel_pb_streamed_errors_match_whole_decoding() {
+        check(
+            "otel_pb_streamed_errors_match_whole_decoding",
+            192,
+            (requests(), any::<u64>(), any::<u64>()),
+            |(request, seed, cut)| streamed_matches_whole(request, seed, false, Some(cut)),
+        );
+    }
+
+    /// Single-byte damage: streamed and whole decoding accept and refuse the same
+    /// bodies, with the same rows, and give the same error (the sizing pass reports
+    /// the break prost meets first, see `first_error`)
+    #[test]
+    fn otel_pb_streamed_damaged_bodies_match_whole_decoding() {
+        let (refused, other_error) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        check(
+            "otel_pb_streamed_damaged_bodies_match_whole_decoding",
+            192,
+            (requests(), any::<u64>(), any::<u64>(), any::<u8>()),
+            |(mut request, seed, at, byte)| {
+                fill_unset_timestamps(&mut request);
+                let mut body = edited_body(&request, &mut SplitMix64(seed));
+                if !body.is_empty() {
+                    let at = (at % body.len() as u64) as usize;
+                    body[at] = byte;
+                }
+                match (
+                    whole(&request, &body, false),
+                    streamed(&request, &body, false),
+                ) {
+                    (Ok(whole), Ok(streamed)) => prop_assert_eq!(whole, streamed),
+                    (Err(whole), Err(streamed)) => {
+                        refused.fetch_add(1, Ordering::Relaxed);
+                        if whole != streamed {
+                            other_error.fetch_add(1, Ordering::Relaxed);
+                        }
+                        prop_assert_eq!(whole, streamed, "error texts differ");
+                    }
+                    (whole, streamed) => prop_assert!(
+                        false,
+                        "whole {:?} and streamed {:?} disagree",
+                        whole.map(|_| ()),
+                        streamed.map(|_| ())
+                    ),
+                }
+                Ok(())
+            },
+        );
+        println!(
+            "otel_pb_streamed_damaged_bodies: refused {} bodies, {} with another error text",
+            refused.into_inner(),
+            other_error.into_inner()
+        );
+    }
+
+    /// The cap on the decoded size of one record refuses the record before it is
+    /// decoded, and only a record over it
+    #[test]
+    fn oversized_records_are_refused_before_decoding() {
+        let span = Span {
+            events: vec![Event::default(); 1 << 16],
+            ..Default::default()
+        };
+        let request = Req::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![span],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        });
+        let body = web::Bytes::from(request.encode_pb());
+        let estimate = crate::otel::decoded_size::leaf_decoded_size(
+            &request_span_bytes(&request),
+            crate::otel::decoded_size::Leaf::Span,
+        );
+        let (_, allocated) = crate::test_alloc::measure(|| {
+            size_request(body.clone(), Signal::Traces, estimate - 1, false)
+        });
+        assert!(matches!(
+            size_request(body.clone(), Signal::Traces, estimate - 1, false),
+            Err(StreamError::RecordTooLarge { .. })
+        ));
+        assert!(allocated.peak < 64 * 1024, "peak {} B", allocated.peak);
+        let size = size_request(body, Signal::Traces, estimate, false).unwrap();
+        assert_eq!(size.rows, 1 << 16);
+    }
+
+    fn request_span_bytes(request: &Req) -> Vec<u8> {
+        match request {
+            Req::Traces(data) => data.resource_spans[0].scope_spans[0].spans[0].encode_to_vec(),
+            _ => unreachable!(),
+        }
+    }
 }

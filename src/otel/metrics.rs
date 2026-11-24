@@ -797,7 +797,7 @@ impl ResourceMetricFields {
 
 /// Hands the rows of every metric of one scope to `sink`, tracking in `latest` the
 /// latest `time_unix_nano` of the rows for the resource's `target_info` row
-pub fn metric_rows_into<S: RowSink>(
+pub fn metric_rows_into<S: RowSink + ?Sized>(
     metric: &Metric,
     envelope: &Map<String, Value>,
     flatten_exemplars: bool,
@@ -836,7 +836,7 @@ pub fn metric_rows_into<S: RowSink>(
 /// Hands the rows of every metric of `resource_metrics` to `sink`, one at a time,
 /// with one `target_info` row after the rows of each resource that has a
 /// Prometheus target identity
-pub fn flatten_metrics_into<S: RowSink>(
+pub fn flatten_metrics_into<S: RowSink + ?Sized>(
     resource_metrics: &[ResourceMetrics],
     flatten_exemplars: bool,
     sink: &mut S,
