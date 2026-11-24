@@ -379,12 +379,45 @@ pub fn read_request<L: LeafRecord, E>(
     Ok(())
 }
 
+/// Reads only the request level of `body`: the framing of its resource levels and
+/// its unknown fields. Needs no limit, so a body that is not a request of the signal
+/// at all can be refused before anything else is looked at. On an error, reports
+/// the one whole-request decoding gives (`first_error`, here without a cap on the
+/// records it decodes on the way, one at a time).
+pub fn check_request_level(body: Bytes, signal: Signal) -> Result<(), StreamError<Infallible>> {
+    let names = signal.names();
+    let mut request = RequestLevel {
+        names,
+        body_len: body.len(),
+        children: Vec::new(),
+    };
+    match request.merge(body.clone()) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(match signal {
+            Signal::Logs => first_error::<LogRecord>(body, names, usize::MAX),
+            Signal::Traces => first_error::<Span>(body, names, usize::MAX),
+            Signal::Metrics => first_error::<Metric>(body, names, usize::MAX),
+        }
+        .unwrap_or(StreamError::Decode(error))),
+    }
+}
+
 /// The signal of a protobuf body
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
     Logs,
     Metrics,
     Traces,
+}
+
+impl Signal {
+    fn names(self) -> &'static Names {
+        match self {
+            Self::Logs => &LOGS,
+            Self::Metrics => &METRICS,
+            Self::Traces => &TRACES,
+        }
+    }
 }
 
 /// Rows, row bytes, records and data points of the request `body`, read one record

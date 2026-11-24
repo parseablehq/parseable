@@ -20,6 +20,7 @@ use actix_web::http::header::{CONTENT_TYPE, USER_AGENT};
 use actix_web::mime::Mime;
 use actix_web::{HttpRequest, HttpResponse, web};
 use chrono::Utc;
+#[cfg(test)]
 use opentelemetry_proto::tonic::collector::{
     logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
     trace::v1::ExportTraceServiceRequest,
@@ -29,6 +30,7 @@ use opentelemetry_proto::tonic::{
     metrics::v1::{MetricsData, ResourceMetrics},
     trace::v1::{ResourceSpans, TracesData},
 };
+#[cfg(test)]
 use prost::Message as _;
 use rayon::prelude::*;
 use serde_json::Value;
@@ -62,7 +64,10 @@ use crate::{
         logs::flatten_logs_into,
         metrics::flatten_metrics_into,
         otel_utils::deserialize_otel_json,
-        protobuf_stream::{Signal, StreamError, flatten_request, max_record_bytes, size_request},
+        protobuf_stream::{
+            Signal, StreamError, check_request_level, flatten_request, max_record_bytes,
+            size_request,
+        },
         sink::{CHUNK_LIMITS, Chunker, RowSink, Staged},
         traces::flatten_traces_into,
     },
@@ -304,17 +309,15 @@ fn handle_otel_ingestion(
                     error!("Ingestion failed for stream {stream_name}: {e}");
                 })
             }
-            Some(OtelContentType::Protobuf) => flatten_and_push_otel_protobuf(
-                body,
-                &target,
-                ProtobufOptions {
+            Some(OtelContentType::Protobuf) => {
+                flatten_and_push_otel_protobuf(body, &target, || ProtobufOptions {
                     max_payload: max_event_payload_size(),
                     flatten_exemplars: PARSEABLE.options.otel_flatten_exemplars,
-                },
-            )
-            .inspect_err(|e| {
-                error!("Ingestion failed for stream {stream_name}: {e}");
-            }),
+                })
+                .inspect_err(|e| {
+                    error!("Ingestion failed for stream {stream_name}: {e}");
+                })
+            }
             None => {
                 error!(
                     "Ingestion failed for stream {stream_name}: Unsupported Content-Type: {content_type}. Expected application/json or application/x-protobuf"
@@ -596,7 +599,7 @@ struct ProtobufOptions {
 fn flatten_and_push_otel_protobuf(
     body: web::Bytes,
     target: &OtelTarget<'_>,
-    options: ProtobufOptions,
+    options: impl FnOnce() -> ProtobufOptions,
 ) -> Result<OtelIngested, PostError> {
     let signal = match target.log_source {
         LogSource::OtelLogs => Signal::Logs,
@@ -609,6 +612,11 @@ fn flatten_and_push_otel_protobuf(
             ));
         }
     };
+    // A body that is not a request at all is refused before the configuration is read
+    check_request_level(body.clone(), signal).map_err(|e| {
+        from_stream_error(target, e.map_consumer::<PostError>(|never| match never {}))
+    })?;
+    let options = options();
     let max_record = max_record_bytes(options.max_payload);
     let size =
         size_request(body.clone(), signal, max_record, options.flatten_exemplars).map_err(|e| {

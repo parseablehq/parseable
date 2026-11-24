@@ -1664,7 +1664,7 @@ fn decode_is_total(
                     telemetry_type,
                     tenant_id: &None,
                 },
-                PROTOBUF_OPTIONS,
+                || PROTOBUF_OPTIONS,
             )
             .expect_err("a body that does not decode is refused");
             prop_assert!(matches!(refused, PostError::Invalid(_)), "{refused:?}");
@@ -2541,7 +2541,7 @@ fn run_scenario(seed: u64) -> Result<Scenario, (String, Vec<String>)> {
                             telemetry_type: request.telemetry_type(),
                             tenant_id: &None,
                         },
-                        PROTOBUF_OPTIONS,
+                        || PROTOBUF_OPTIONS,
                     );
                     if !matches!(&refused, Err(PostError::Invalid(e)) if e.to_string().ends_with(error.as_str()))
                     {
