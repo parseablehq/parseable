@@ -27,9 +27,7 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use opentelemetry_proto::tonic::resource::v1::Resource;
 use serde_json::{Map, Value};
 
-use rustc_hash::FxHasher;
-use std::borrow::Cow;
-use std::collections::HashSet;
+use rustc_hash::{FxHashSet, FxHasher};
 use std::hash::Hasher;
 use tracing::info_span;
 
@@ -96,7 +94,7 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 39] = [
     SERIES_HASH_COLUMN,
 ];
 
-static OTEL_METRICS_KNOWN_FIELDS: Lazy<HashSet<&'static str>> =
+static OTEL_METRICS_KNOWN_FIELDS: Lazy<FxHashSet<&'static str>> =
     Lazy::new(|| OTEL_METRICS_KNOWN_FIELD_LIST.iter().copied().collect());
 
 const SERVICE_NAME_ATTRIBUTE: &str = "service.name";
@@ -178,33 +176,52 @@ fn target_info_record(
 /// non-cryptographic) and feeds keys in sorted order so the hash
 /// doesn't depend on JSON Map iteration order.
 pub fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
-    let mut label_pairs: Vec<(&str, Cow<'_, str>)> = Vec::with_capacity(dp.len());
+    // Only references are collected: a non-string label is hashed as the text
+    // `Value` would print, not formatted into a string first (that allocated
+    // one string per non-string label of every data point).
+    let mut label_pairs: Vec<(&str, &Value)> = Vec::with_capacity(dp.len());
+    let mut metric_name: Option<&str> = None;
     for (key, value) in dp {
+        if key == "metric_name"
+            && let Value::String(name) = value
+        {
+            metric_name = Some(name.as_str());
+        }
         if OTEL_METRICS_KNOWN_FIELDS.contains(key.as_str()) {
             continue;
         }
         if key.starts_with("exemplars_") {
             continue;
         }
-        let value = match value {
-            Value::String(s) => Cow::Borrowed(s.as_str()),
-            other => Cow::Owned(other.to_string()),
-        };
         label_pairs.push((key.as_str(), value));
     }
-    label_pairs.sort_by(|a, b| a.0.cmp(b.0));
+    // Keys are unique, so an unstable sort leaves the same order
+    label_pairs.sort_unstable_by(|a, b| a.0.cmp(b.0));
 
     let mut hasher = FxHasher::default();
     // Include metric_name in the identity. Without it, two different
     // metrics with identical label sets would collide into one series.
-    if let Some(Value::String(name)) = dp.get("metric_name") {
+    if let Some(name) = metric_name {
         hasher.write(name.as_bytes());
         hasher.write(b"\0");
     }
+    let mut number = String::new();
     for (k, v) in &label_pairs {
         hasher.write(k.as_bytes());
         hasher.write(b"=");
-        hasher.write(v.as_bytes());
+        match v {
+            Value::String(s) => hasher.write(s.as_bytes()),
+            Value::Bool(b) => hasher.write(if *b { b"true" } else { b"false" }),
+            Value::Null => hasher.write(b"null"),
+            Value::Number(n) => {
+                // `Value` prints a number as this `Display` does
+                number.clear();
+                std::fmt::Write::write_fmt(&mut number, format_args!("{n}")).unwrap();
+                hasher.write(number.as_bytes());
+            }
+            // An array or object, as `Value` prints it
+            other => hasher.write(other.to_string().as_bytes()),
+        }
         hasher.write(b"\0");
     }
     hasher.finish()
