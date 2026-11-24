@@ -862,13 +862,23 @@ fn is_dataset_stats_schema_ready(schema: &Schema) -> bool {
         .all(|field| schema.field_with_name(field).is_ok())
 }
 
-async fn is_dataset_stats_stream_ready(tenant_id: &Option<String>) -> bool {
-    PARSEABLE
-        .check_or_load_stream(DATASET_STATS_STREAM_NAME, tenant_id)
-        .await
-        && PARSEABLE
+async fn is_dataset_stats_stream_ready(tenant_id: &Option<String>) -> Result<bool, QueryError> {
+    let schema_is_ready = || {
+        PARSEABLE
             .get_stream(DATASET_STATS_STREAM_NAME, tenant_id)
             .is_ok_and(|stream| is_dataset_stats_schema_ready(&stream.get_schema()))
+    };
+
+    if schema_is_ready() {
+        return Ok(true);
+    }
+
+    let stream_exists = PARSEABLE
+        .create_stream_and_schema_from_storage(DATASET_STATS_STREAM_NAME, tenant_id)
+        .await
+        .map_err(|error| QueryError::Anyhow(error.into()))?;
+
+    Ok(stream_exists && schema_is_ready())
 }
 
 /// API handler to get the field stats for a dataset
@@ -889,7 +899,7 @@ pub async fn get_dataset_stats(
         PARSEABLE.options.mode,
         Mode::All | Mode::Query | Mode::Prism
     ) && (!PARSEABLE.options.collect_dataset_stats
-        || !is_dataset_stats_stream_ready(&tenant_id).await)
+        || !is_dataset_stats_stream_ready(&tenant_id).await?)
     {
         return Ok(HttpResponse::Ok().json(HashMap::<String, FieldStats>::new()));
     }
@@ -1304,6 +1314,15 @@ mod tests {
         ])
     }
 
+    fn create_dataset_stats_query_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(
+            DATASET_STATS_QUERY_FIELDS
+                .iter()
+                .map(|name| Field::new(*name, DataType::Utf8, true))
+                .collect::<Vec<_>>(),
+        ))
+    }
+
     #[test]
     fn test_build_stats_sql_uses_file_ids_and_deduped_distinct_values() {
         let sql = build_stats_sql(
@@ -1328,12 +1347,7 @@ mod tests {
     fn test_dataset_stats_schema_readiness() {
         assert!(!is_dataset_stats_schema_ready(&Schema::empty()));
 
-        let ready_schema = Schema::new(
-            DATASET_STATS_QUERY_FIELDS
-                .iter()
-                .map(|name| Field::new(*name, DataType::Utf8, true))
-                .collect::<Vec<_>>(),
-        );
+        let ready_schema = create_dataset_stats_query_schema();
         assert!(is_dataset_stats_schema_ready(&ready_schema));
 
         let incomplete_schema = Schema::new(
