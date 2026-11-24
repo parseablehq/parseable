@@ -23,11 +23,16 @@
 
 use super::*;
 use crate::metadata::SchemaVersion;
+use crate::otel::sink::RowSink;
+use crate::utils::json::flatten::JsonFlattenError;
 use arrow_schema::Field;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ScopeLogs};
+use opentelemetry_proto::tonic::metrics::v1::{
+    Gauge, Metric, NumberDataPoint, ScopeMetrics, metric, number_data_point,
+};
 use opentelemetry_proto::tonic::resource::v1::Resource;
-use serde_json::json;
+use serde_json::{Map, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -221,4 +226,86 @@ fn a_type_change_between_chunks_lands_where_a_second_request_would_put_it() {
         assert_eq!(whole, one_batch);
         assert_eq!(chunked, two_chunks);
     }
+}
+
+/// Security review finding 2: the sizing pass charged the Prometheus `job` and
+/// `instance` labels at 32 bytes, but they hold copies of `service.name` and
+/// `service.instance.id`. There is no sizing pass any more: the running total is
+/// the `row_bytes` of every staged row, labels included at their real size, so a
+/// request whose labels are long is refused where its rows pass the cap.
+#[test]
+fn expansion_total_counts_the_prometheus_identity_labels_at_their_size() {
+    const LABEL: usize = 64 * 1024;
+    let label = LABEL;
+    let points = 13_000usize;
+    let resource_metrics = vec![ResourceMetrics {
+        resource: Some(Resource {
+            attributes: vec![kv("service.name", "n".repeat(label))],
+            ..Default::default()
+        }),
+        scope_metrics: vec![ScopeMetrics {
+            metrics: vec![Metric {
+                name: "m".into(),
+                data: Some(metric::Data::Gauge(Gauge {
+                    data_points: (0..points)
+                        .map(|i| NumberDataPoint {
+                            time_unix_nano: 1_700_000_000_000_000_000 + i as u64,
+                            start_time_unix_nano: 1_700_000_000_000_000_000,
+                            value: Some(number_data_point::Value::AsDouble(1.0)),
+                            ..Default::default()
+                        })
+                        .collect(),
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+
+    /// Keeps the `row_bytes` of the first row
+    #[derive(Default)]
+    struct First(Option<usize>);
+    impl RowSink for First {
+        type Error = JsonFlattenError;
+        fn row(&mut self, row: Map<String, Value>) -> Result<(), Self::Error> {
+            assert_eq!(row["job"], json!("n".repeat(LABEL)));
+            self.0.get_or_insert(crate::otel::sink::row_bytes(&row));
+            Err(JsonFlattenError::CannotFlatten)
+        }
+    }
+    let mut first = First::default();
+    let _ = flatten_metrics_into(&resource_metrics, false, &mut first);
+    let per_row = first.0.unwrap() as u64;
+
+    let max_expanded = 1u64 << 30;
+    let limits = StageLimits {
+        chunk: CHUNK_LIMITS,
+        max_expanded,
+        flatten: FlattenLimits::DEFAULT,
+    };
+    let mut staged_bytes = 0u64;
+    let (outcome, staged) = stage_otel_resources(
+        OtelResources::Metrics(&resource_metrics),
+        false,
+        limits,
+        |rows| {
+            staged_bytes += rows
+                .iter()
+                .map(|row| crate::otel::sink::row_bytes(row.as_object().unwrap()) as u64)
+                .sum::<u64>();
+            Ok(())
+        },
+    );
+    println!(
+        "REGRESSION identity labels: {per_row} row bytes per row ({label} B label twice), staged {} of {points} rows, {staged_bytes} B, cap {max_expanded} B, outcome {:?}",
+        staged.rows,
+        outcome.as_ref().map_err(|e| e.to_string())
+    );
+    // `service.name` and its copy in `job`, each at its real size
+    assert!(per_row > 2 * label as u64);
+    assert!(matches!(outcome, Ok(OtelIngested::Partial { .. })));
+    assert!(staged_bytes <= max_expanded);
+    // Stopped by the cap, not before it: one more chunk would have passed it
+    assert!(staged_bytes + CHUNK_LIMITS.bytes as u64 + per_row > max_expanded);
 }
