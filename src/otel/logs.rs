@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use super::otel_utils::attribute_capacity;
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
@@ -178,7 +179,10 @@ pub fn flatten_log_record(
     log_record: &LogRecord,
     budget: &mut FlattenBudget,
 ) -> Result<Map<String, Value>, JsonFlattenError> {
-    let mut log_record_json: Map<String, Value> = Map::new();
+    // Fixed fields plus the record attributes; body fields can add more, but
+    // one growth is cheaper than the four an empty map needs for these
+    let mut log_record_json: Map<String, Value> =
+        Map::with_capacity(16 + attribute_capacity(&log_record.attributes));
     log_record_json.insert(
         "time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -313,8 +317,13 @@ fn flatten_scope_log(
     scope_log: &ScopeLogs,
     budget: &mut FlattenBudget,
 ) -> Result<Vec<Map<String, Value>>, JsonFlattenError> {
-    let mut vec_scope_log_json = Vec::new();
-    let mut scope_log_json = Map::new();
+    let mut vec_scope_log_json = Vec::with_capacity(scope_log.log_records.len());
+    let mut scope_log_json = Map::with_capacity(
+        5 + scope_log
+            .scope
+            .as_ref()
+            .map_or(0, |scope| attribute_capacity(&scope.attributes)),
+    );
     if let Some(scope) = &scope_log.scope {
         scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
         scope_log_json.insert(
@@ -358,10 +367,13 @@ where
     let mut logs_collected: u64 = 0;
 
     for resource_log in resource_logs {
-        let mut resource_log_json = Map::new();
+        let resource = get_resource(resource_log);
+        let mut resource_log_json = Map::with_capacity(
+            4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes)),
+        );
 
         // Process resource attributes if present
-        if let Some(resource) = get_resource(resource_log) {
+        if let Some(resource) = resource {
             insert_attributes(&mut resource_log_json, &resource.attributes);
             resource_log_json.insert(
                 "resource_dropped_attributes_count".to_string(),
@@ -369,8 +381,13 @@ where
             );
         }
 
-        let mut vec_resource_logs_json = Vec::new();
         let scope_logs = get_scope_logs(resource_log);
+        let mut vec_resource_logs_json = Vec::with_capacity(
+            scope_logs
+                .iter()
+                .map(|scope_log| scope_log.log_records.len())
+                .sum(),
+        );
 
         for scope_log in scope_logs {
             vec_resource_logs_json.extend(flatten_scope_log(scope_log, budget)?);
@@ -382,9 +399,9 @@ where
             Value::String(get_schema_url(resource_log).to_string()),
         );
 
-        for resource_logs_json in &mut vec_resource_logs_json {
+        for mut resource_logs_json in vec_resource_logs_json {
             resource_logs_json.extend(resource_log_json.clone());
-            vec_otel_json.push(Value::Object(resource_logs_json.clone()));
+            vec_otel_json.push(Value::Object(resource_logs_json));
         }
     }
 
@@ -440,6 +457,65 @@ mod tests {
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, KeyValueList, any_value};
     use opentelemetry_proto::tonic::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
     use serde_json::json;
+
+    /// Resident memory of this process in bytes
+    #[cfg(target_os = "linux")]
+    fn resident_bytes() -> usize {
+        let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+        let pages: usize = statm.split_whitespace().nth(1).unwrap().parse().unwrap();
+        pages * 4096
+    }
+
+    // The scope map is cloned into every record's row, capacity included. Sized
+    // by the raw attribute count, 200k valueless scope attributes (two bytes
+    // each on the wire) made every one of 10k rows carry a map for 200k
+    // entries: a body of half a megabyte held about 3 GiB.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "measures the resident memory of the process; run it alone"]
+    fn valueless_scope_attributes_do_not_inflate_every_row() {
+        use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+
+        let logs = LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        attributes: vec![KeyValue::default(); 200_000],
+                        ..Default::default()
+                    }),
+                    log_records: (0..10_000u64)
+                        .map(|i| LogRecord {
+                            time_unix_nano: 1_700_000_000_000_000_000 + i,
+                            observed_time_unix_nano: 1_700_000_000_000_000_000 + i,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let before = resident_bytes();
+        let rows = flatten_otel_logs(
+            &logs,
+            "tenant",
+            &mut FlattenBudget::new(crate::utils::json::flatten::GENEROUS_LIMITS),
+        )
+        .unwrap();
+        let grown = resident_bytes().saturating_sub(before);
+        println!(
+            "{} rows hold {} MiB of resident memory",
+            rows.len(),
+            grown / (1024 * 1024)
+        );
+        assert_eq!(rows.len(), 10_000);
+        assert!(
+            grown < 256 * 1024 * 1024,
+            "{} MiB for 10k rows without attributes",
+            grown / (1024 * 1024)
+        );
+    }
 
     fn flatten_record(
         number: i32,
@@ -912,5 +988,207 @@ mod tests {
                 bytes: expected
             }
         );
+    }
+
+    // Release-profile micro-benchmarks. Run with a filter, for example:
+    //   cargo test --release --lib -- --ignored --exact otel::logs::tests::bench_flatten_otel_protobuf_logs --nocapture
+    // They never touch the PARSEABLE global: every timestamp is set, so the rows
+    // are deterministic, and the flatten budget is built from FlattenLimits::DEFAULT.
+    mod benches {
+        use super::super::flatten_otel_protobuf;
+        use crate::otel::bench;
+        use crate::utils::json::flatten::{FlattenBudget, FlattenLimits};
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{
+            AnyValue, ArrayValue, InstrumentationScope, KeyValue, any_value,
+        };
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        const RECORDS_PER_SCOPE: usize = 250;
+        const ITERS: usize = 20;
+
+        fn string_kv(key: &str, value: impl Into<String>) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(value.into())),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn int_kv(key: &str, value: i64) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::IntValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn bool_kv(key: &str, value: bool) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::BoolValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn array_kv(key: &str) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::ArrayValue(ArrayValue {
+                        values: vec![
+                            AnyValue {
+                                value: Some(any_value::Value::StringValue("keep-alive".into())),
+                            },
+                            AnyValue {
+                                value: Some(any_value::Value::StringValue("gzip".into())),
+                            },
+                            AnyValue {
+                                value: Some(any_value::Value::IntValue(3)),
+                            },
+                        ],
+                    })),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn record(i: usize) -> LogRecord {
+            // Every tenth body is a JSON object, which the log flattener parses and expands
+            let body = if i.is_multiple_of(10) {
+                format!(
+                    r#"{{"event":"checkout","user":{{"id":{i}}},"items":[{{"sku":"a","qty":1}},{{"sku":"b","qty":2}}],"ok":true}}"#
+                )
+            } else {
+                format!("request {i} completed in {} ms", i % 500)
+            };
+            LogRecord {
+                time_unix_nano: 1_700_000_000_000_000_000 + i as u64 * 1_000_000,
+                observed_time_unix_nano: 1_700_000_000_000_000_100 + i as u64 * 1_000_000,
+                severity_number: 9,
+                severity_text: "INFO".to_string(),
+                body: Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(body)),
+                }),
+                attributes: vec![
+                    string_kv("http.method", "GET"),
+                    int_kv("http.status_code", (i % 500) as i64),
+                    string_kv("http.target", format!("/api/v1/items/{i}")),
+                    string_kv("net.host.name", "checkout.example.com"),
+                    string_kv("user_agent.original", "Mozilla/5.0 (compatible; bench)"),
+                    bool_kv("cache.hit", i.is_multiple_of(3)),
+                    string_kv("http.request.header.x-request-id", format!("req-{i:016x}")),
+                    array_kv("http.request.header.accept-encoding"),
+                ],
+                dropped_attributes_count: 0,
+                flags: 1,
+                trace_id: vec![0xab; 16],
+                span_id: vec![0xcd; 8],
+                event_name: String::new(),
+            }
+        }
+
+        fn request() -> ExportLogsServiceRequest {
+            let resource_logs = (0..4)
+                .map(|resource_index| ResourceLogs {
+                    resource: Some(Resource {
+                        attributes: vec![
+                            string_kv("service.name", "checkout"),
+                            string_kv("service.version", "1.42.0"),
+                            string_kv("deployment.environment", "production"),
+                            string_kv("host.name", format!("checkout-{resource_index}")),
+                            int_kv("process.pid", 4242 + resource_index as i64),
+                        ],
+                        dropped_attributes_count: 0,
+                        entity_refs: vec![],
+                    }),
+                    scope_logs: (0..2)
+                        .map(|scope_index| ScopeLogs {
+                            scope: Some(InstrumentationScope {
+                                name: "io.opentelemetry.contrib.bench".to_string(),
+                                version: "0.31.0".to_string(),
+                                attributes: vec![
+                                    string_kv("scope.kind", "server"),
+                                    string_kv(
+                                        "scope.extra",
+                                        format!("{resource_index}-{scope_index}"),
+                                    ),
+                                    int_kv("scope.ordinal", scope_index),
+                                ],
+                                dropped_attributes_count: 0,
+                            }),
+                            log_records: (0..RECORDS_PER_SCOPE)
+                                .map(|record_index| {
+                                    record(
+                                        resource_index as usize * 1000
+                                            + scope_index as usize * 100
+                                            + record_index,
+                                    )
+                                })
+                                .collect(),
+                            schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                        })
+                        .collect(),
+                    schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                })
+                .collect();
+            ExportLogsServiceRequest { resource_logs }
+        }
+
+        fn flatten(request: &ExportLogsServiceRequest) -> Vec<serde_json::Value> {
+            let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
+            flatten_otel_protobuf(request, "perfbench", &mut budget)
+                .expect("benchmark rows flatten")
+        }
+
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_flatten_otel_protobuf_logs() {
+            let request = request();
+            bench::run("bench_flatten_otel_protobuf_logs", ITERS, || {
+                flatten(&request)
+            });
+        }
+
+        /// The rows of the benchmark request, pinned so that a refactor changing
+        /// them fails a normal `cargo test --lib` run. The digest is of
+        /// `serde_json::to_vec` of the rows; it was first recorded from the
+        /// unoptimised flatteners.
+        #[test]
+        fn benchmark_request_rows_are_stable() {
+            let rows = flatten(&request());
+            let bytes = serde_json::to_vec(&rows).unwrap();
+            use std::hash::Hasher;
+            let mut hasher = rustc_hash::FxHasher::default();
+            hasher.write(&bytes);
+            assert_eq!(rows.len(), 2000);
+            assert_eq!(
+                (bytes.len(), hasher.finish()),
+                (2_288_617, 0xa4ce_c43f_538f_d2cd),
+                "flattened rows of the benchmark request changed"
+            );
+        }
+
+        /// Cost of one flattened row clone, the per-record work the row
+        /// assembly in `process_resource_logs` repeats.
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_row_clone() {
+            let rows = flatten(&request());
+            let row = rows[0].as_object().expect("object row");
+            let mut sum = 0usize;
+            bench::time_calls("bench_row_clone", 200_000, |_| {
+                let clone = row.clone();
+                sum += clone.len();
+            });
+            assert!(sum > 0);
+        }
     }
 }
