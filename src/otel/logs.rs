@@ -18,7 +18,6 @@
 use super::otel_utils::attribute_capacity;
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
-use super::otel_utils::insert_attributes;
 use super::otel_utils::insert_attributes_fitted;
 use super::sink::{CHUNK_LIMITS, RowSink, VALUE_BYTES, heap_bytes};
 use crate::metrics::increment_logs_collected_by_date;
@@ -394,8 +393,23 @@ pub fn flatten_log_record(
 ) -> Result<Map<String, Value>, JsonFlattenError> {
     // Fixed fields plus the record attributes; body fields can add more, but
     // one growth is cheaper than the four an empty map needs for these
-    let mut log_record_json: Map<String, Value> =
-        Map::with_capacity(16 + attribute_capacity(&log_record.attributes));
+    let capacity = 16 + attribute_capacity(&log_record.attributes);
+    let mut log_record_json: Map<String, Value> = Map::with_capacity(capacity);
+    flatten_log_record_into(log_record, budget, &mut log_record_json, capacity)?;
+    Ok(log_record_json)
+}
+
+/// The fields of `flatten_log_record`, inserted into `log_record_json` (which is
+/// a finished row when the record is one of a scope). `capacity` is the room the
+/// map was created with, `attribute_capacity` of the record's attributes included:
+/// what repeated attribute keys did not use is given back, because the map is
+/// kept as the row.
+fn flatten_log_record_into(
+    log_record: &LogRecord,
+    budget: &mut FlattenBudget,
+    log_record_json: &mut Map<String, Value>,
+    capacity: usize,
+) -> Result<(), JsonFlattenError> {
     log_record_json.insert(
         "time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -488,7 +502,7 @@ pub fn flatten_log_record(
         }
     }
 
-    insert_attributes(&mut log_record_json, &log_record.attributes);
+    insert_attributes_fitted(log_record_json, &log_record.attributes, capacity);
 
     // Insert after attributes so a client-sent "p_log_category" cannot override
     log_record_json.insert(
@@ -513,7 +527,7 @@ pub fn flatten_log_record(
         Value::String(hex::encode(&log_record.trace_id)),
     );
 
-    Ok(log_record_json)
+    Ok(())
 }
 
 /// Fields every row of one `ScopeLogs` gets, before the record's own fields
@@ -568,13 +582,17 @@ pub fn log_record_row(
     resource_fields: &Map<String, Value>,
     budget: &mut FlattenBudget,
 ) -> Result<Map<String, Value>, JsonFlattenError> {
-    let log_record_json = flatten_log_record(log_record, budget)?;
-    // Sized so that the two merges below never have to grow the map: a growth
-    // rehashes every entry of the row.
-    let mut row =
-        Map::with_capacity(scope_fields.len() + log_record_json.len() + resource_fields.len());
+    // Sized so that the record inserts and the resource merge below never have to
+    // grow the map: a growth rehashes every entry of the row. The record's own
+    // fields go straight into the row instead of a scratch map that is hashed a
+    // second time when it is merged.
+    let capacity = scope_fields.len()
+        + resource_fields.len()
+        + 16
+        + attribute_capacity(&log_record.attributes);
+    let mut row = Map::with_capacity(capacity);
     row.extend(scope_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
-    row.extend(log_record_json);
+    flatten_log_record_into(log_record, budget, &mut row, capacity)?;
     row.extend(resource_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
     Ok(row)
 }
