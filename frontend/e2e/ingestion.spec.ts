@@ -128,7 +128,7 @@ test('demo switches source and signal, blocks incompatible datasets, and copies 
   await page.getByLabel('Destination dataset', { exact: true }).selectOption('demo_metrics');
   await expect(page.getByLabel('Ingestion command', { exact: true })).toContainText('/v1/metrics');
   await page.getByRole('radio', { name: /^OpenTelemetry Collector/ }).check();
-  await expect(page.getByLabel('collector.yaml', { exact: true })).toContainText('encoding: json');
+  await expect(page.getByLabel('collector.yaml', { exact: true })).toContainText('encoding: proto');
   await expect(page.getByLabel('collector.yaml', { exact: true })).toContainText(
     'X-P-Stream: "demo_metrics"',
   );

@@ -68,7 +68,7 @@ describe('configuration generation', () => {
     expect(code).not.toContain('/api/v1/ingest');
   });
   it.each(['logs', 'metrics', 'traces'] as const)(
-    'builds only the selected collector %s pipeline with JSON encoding',
+    'builds only the selected collector %s pipeline with protobuf encoding',
     (signal) => {
       const code = generateIngestionConfig({
         endpoint: 'https://example.com/base',
@@ -77,7 +77,7 @@ describe('configuration generation', () => {
         signal,
       });
       expect(code).toContain('otlp_http/parseable:');
-      expect(code).toContain('encoding: json');
+      expect(code).toContain('encoding: proto');
       expect(code).toContain('compression: none');
       expect(code).toContain('Authorization: "Bearer ${env:PARSEABLE_API_KEY}"');
       expect(code).toContain(`X-P-Stream: "otel_${signal}"`);

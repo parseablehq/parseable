@@ -176,7 +176,8 @@ export function generateIngestionConfig(options: IngestionOptions): string {
   const endpoint = options.endpoint.replace(/\/+$/, '');
   const signal = options.source === 'json' ? 'logs' : options.signal;
   if (options.source === 'collector') {
-    // Current collector exporter name; JSON is required by the OSS backend.
+    // Current collector exporter name. Protobuf is the exporter's default and
+    // costs the server less than JSON; the server this UI ships with accepts it.
     // Disable default gzip: this backend does not implement body decompression.
     return `receivers:
   otlp:
@@ -192,7 +193,7 @@ processors:
 exporters:
   otlp_http/parseable:
     endpoint: ${JSON.stringify(endpoint)}
-    encoding: json
+    encoding: proto
     compression: none
     headers:
       Authorization: "Bearer \${env:PARSEABLE_API_KEY}"

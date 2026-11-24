@@ -526,7 +526,7 @@ test('OTLP signal and destination compatibility gate configuration and collector
   await expect(page.locator('.ingestion-code-block pre')).toContainText('"resourceSpans"');
   await page.getByRole('radio', { name: /^OpenTelemetry Collector/ }).check();
   const collector = page.locator('pre[aria-label="collector.yaml"]');
-  await expect(collector).toContainText('encoding: json');
+  await expect(collector).toContainText('encoding: proto');
   await expect(collector).toContainText('compression: none');
   await expect(collector).toContainText('X-P-Stream: "otel_traces"');
   await expect(collector).toContainText('pipelines:\n    traces:');

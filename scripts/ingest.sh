@@ -52,12 +52,60 @@ print_parseable_banner() {
 
 print_setup_complete() {
     local stream_name="$1"
+    local encoding_label="OTLP JSON"
+
+    if [ "${2:-json}" = "proto" ]; then
+        encoding_label="OTLP protobuf"
+    fi
 
     echo ""
     echo -e "${OK}${BOLD}✓ You're all set!${NC}"
-    echo "Host metrics are now being sent to Parseable as OTLP JSON."
+    echo "Host metrics are now being sent to Parseable as ${encoding_label}."
     echo -e "Dataset: ${BOLD}${stream_name}${NC}"
     echo "Return to Parseable and click Continue to verify your data."
+}
+
+# Prints the exporter encoding to use: "proto" when the server accepts OTLP
+# protobuf, otherwise "json", which every Parseable version accepts.
+# PARSEABLE_OTLP_ENCODING=json|proto skips the check.
+detect_otlp_encoding() {
+    local endpoint="$1"
+    local stream_name="$2"
+    local api_key="$3"
+    local tenant_id="$4"
+    local status
+
+    case "${PARSEABLE_OTLP_ENCODING:-}" in
+        json|proto)
+            echo "$PARSEABLE_OTLP_ENCODING"
+            return 0
+            ;;
+    esac
+
+    # Header values go to curl on stdin, one per line, so a line break in one
+    # of them would add a header.
+    if ! command -v curl > /dev/null 2>&1 \
+        || [[ "$api_key$stream_name$tenant_id" == *[$'\r\n']* ]]; then
+        echo "json"
+        return 0
+    fi
+
+    # An empty body is a valid export request with nothing in it. Servers with
+    # protobuf support answer 200; older ones answer 400.
+    status=$({
+        printf 'Content-Type: application/x-protobuf\n'
+        printf 'X-API-Key: %s\n' "$api_key"
+        printf 'X-P-Stream: %s\n' "$stream_name"
+        if [ -n "$tenant_id" ]; then
+            printf 'X-P-Tenant: %s\n' "$tenant_id"
+        fi
+    } | curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 \
+        -X POST -H @- --data-binary '' "$endpoint/v1/metrics" 2> /dev/null) || status=""
+
+    case "$status" in
+        2??) echo "proto" ;;
+        *) echo "json" ;;
+    esac
 }
 
 is_running() {
@@ -312,6 +360,7 @@ setup_collector() {
     local scrapers
     local bracketed_host_pattern='^(\[[^]]+\])(:([0-9]+))?$'
     local temp_config
+    local otlp_encoding
 
     if [ -z "$ingestor_host" ] || [ -z "$stream_name" ] || [ -z "$api_key" ]; then
         print_error "Invalid setup parameters"
@@ -357,6 +406,14 @@ setup_collector() {
     fi
 
     install_collector
+
+    otlp_encoding=$(detect_otlp_encoding "${ingestor_scheme}://${ingestor_host}:${port}" \
+        "$stream_name" "$api_key" "$tenant_id")
+    if [ "$otlp_encoding" = "proto" ]; then
+        print_info "Server accepts OTLP protobuf"
+    else
+        print_info "Using OTLP JSON"
+    fi
 
     endpoint_yaml=$(yaml_escape "${ingestor_scheme}://${ingestor_host}:${port}")
     api_key_yaml=$(yaml_escape "$api_key")
@@ -404,7 +461,7 @@ processors:
 exporters:
   otlp_http/parseable:
     endpoint: '$endpoint_yaml'
-    encoding: json
+    encoding: $otlp_encoding
     compression: none
     headers:
       X-API-Key: '$api_key_yaml'
@@ -439,7 +496,7 @@ EOF
 
     echo ""
     start_collector
-    print_setup_complete "$stream_name"
+    print_setup_complete "$stream_name" "$otlp_encoding"
 }
 
 case "${1:-}" in
