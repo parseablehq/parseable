@@ -21,6 +21,9 @@ pub mod metrics;
 pub mod otel_utils;
 pub mod traces;
 
+#[cfg(test)]
+mod memory_tests;
+
 /// Shared driver for the release-profile micro-benchmarks. Each benchmark is an
 /// `#[ignore]`d test that never touches the `PARSEABLE` global, so it can be run
 /// with a test-name filter:
