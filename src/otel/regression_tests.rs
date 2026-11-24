@@ -30,7 +30,7 @@ use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 use opentelemetry_proto::tonic::metrics::v1::{Gauge, Metric, NumberDataPoint, metric};
 use opentelemetry_proto::tonic::resource::v1::Resource;
 use opentelemetry_proto::tonic::trace::v1::Span;
-use opentelemetry_proto::tonic::trace::v1::span::Event;
+use opentelemetry_proto::tonic::trace::v1::span::{Event, Link};
 use prost::Message as _;
 use serde_json::{Map, Value};
 
@@ -113,6 +113,12 @@ fn held_and_estimated(build: impl FnOnce(&mut Last)) -> (isize, usize) {
 /// capacity, so a row cloned from such a map held about 10x what `row_bytes`
 /// counts (a scope of 128 attributes with one key: 25,917 B against 2,613 B).
 /// Every shared map now holds no more than its entries need before it is cloned.
+///
+/// The same holds for a log record's own fields. Span event, span link and metric
+/// data point rows are still sized from their own attribute count, repeats
+/// included: their slack is bounded by the record's wire bytes and was left
+/// alone. They are held to what they measured when this was written (at
+/// `98ae3903`: 3.09, 3.25 and 5.03 held/estimated) so that it does not grow.
 #[test]
 fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
     let record = LogRecord {
@@ -135,11 +141,12 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
         }],
         ..span.clone()
     };
-    let gauge = |metadata: Vec<KeyValue>| Metric {
+    let gauge = |metadata: Vec<KeyValue>, attributes: Vec<KeyValue>| Metric {
         name: "m".into(),
         metadata,
         data: Some(metric::Data::Gauge(Gauge {
             data_points: vec![NumberDataPoint {
+                attributes,
                 time_unix_nano: 1_700_000_000_000_000_000,
                 ..Default::default()
             }],
@@ -180,6 +187,31 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
             }),
         ));
     }
+    // The record's own map is the row (or becomes it), so it must not keep the
+    // room its repeated keys were counted for either
+    let repeated_record = LogRecord {
+        attributes: repeated_keys(),
+        ..record.clone()
+    };
+    cases.push((
+        "logs, record",
+        Box::new(move |sink: &mut Last| {
+            let resource_fields = super::logs::resource_log_fields(
+                resource(vec![kv("service.name", "api")]).as_ref(),
+                "",
+            );
+            let scope_fields = super::logs::scope_log_fields(scope(vec![]).as_ref(), "");
+            let row = super::logs::log_record_row(
+                &repeated_record,
+                &scope_fields,
+                &resource_fields,
+                &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+            )
+            .unwrap();
+            drop((resource_fields, scope_fields));
+            sink.row(row).unwrap();
+        }),
+    ));
     for (name, resource_attributes, scope_attributes, span) in [
         ("traces, resource", repeated_keys(), vec![], span.clone()),
         ("traces, scope", vec![], repeated_keys(), span.clone()),
@@ -199,6 +231,34 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
             Span {
                 attributes: repeated_keys(),
                 ..span_with_event.clone()
+            },
+        ),
+        (
+            "traces, event",
+            vec![kv("service.name", "api")],
+            vec![],
+            Span {
+                attributes: vec![kv("http.method", "GET")],
+                events: vec![Event {
+                    attributes: repeated_keys(),
+                    ..span_with_event.events[0].clone()
+                }],
+                ..span.clone()
+            },
+        ),
+        (
+            "traces, link",
+            vec![kv("service.name", "api")],
+            vec![],
+            Span {
+                attributes: vec![kv("http.method", "GET")],
+                links: vec![Link {
+                    trace_id: vec![3; 16],
+                    span_id: vec![4; 8],
+                    attributes: repeated_keys(),
+                    ..Default::default()
+                }],
+                ..span.clone()
             },
         ),
     ] {
@@ -224,10 +284,11 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
             }),
         ));
     }
-    for (name, resource_attributes, scope_attributes, metadata, target_info) in [
+    for (name, resource_attributes, scope_attributes, metadata, point, target_info) in [
         (
             "metrics, resource",
             with_identity(repeated_keys()),
+            vec![],
             vec![],
             vec![],
             false,
@@ -237,12 +298,14 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
             with_identity(repeated_keys()),
             vec![],
             vec![],
+            vec![],
             true,
         ),
         (
             "metrics, scope",
             with_identity(vec![]),
             repeated_keys(),
+            vec![],
             vec![],
             false,
         ),
@@ -251,10 +314,19 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
             with_identity(vec![]),
             vec![],
             repeated_keys(),
+            vec![],
+            false,
+        ),
+        (
+            "metrics, data point",
+            with_identity(vec![]),
+            vec![],
+            vec![],
+            repeated_keys(),
             false,
         ),
     ] {
-        let metric = gauge(metadata);
+        let metric = gauge(metadata, point);
         cases.push((
             name,
             Box::new(move |sink: &mut Last| {
@@ -281,7 +353,13 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
         println!(
             "REGRESSION repeated keys, {name}: row holds {held} B, row_bytes {estimated} B, held/estimated {ratio:.2}"
         );
-        if ratio > 2.0 {
+        let bound = match *name {
+            "traces, event" => 3.2,
+            "traces, link" => 3.35,
+            "metrics, data point" => 5.15,
+            _ => 2.0,
+        };
+        if ratio > bound {
             failed.push(*name);
         }
     }
@@ -319,7 +397,10 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
         mb(allocated.peak),
         mb(PEAK_BOUND)
     );
-    assert!(failed.is_empty(), "rows hold over 2x row_bytes: {failed:?}");
+    assert!(
+        failed.is_empty(),
+        "rows hold more than their bound over row_bytes: {failed:?}"
+    );
     assert_eq!(rows, 1 << 16);
     assert!(
         allocated.peak <= PEAK_BOUND,
