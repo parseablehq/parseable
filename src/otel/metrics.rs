@@ -1483,4 +1483,211 @@ mod tests {
             );
         }
     }
+
+    // Release-profile micro-benchmarks. Run with a filter, for example:
+    //   cargo test --release --lib -- --ignored --exact otel::metrics::tests::benches::bench_flatten_otel_metrics_protobuf --nocapture
+    // They call `process_resource_metrics` directly with `flatten_exemplars`
+    // false, as the PROTOBUF entry point does, so they never read PARSEABLE.
+    mod benches {
+        use crate::otel::bench;
+        use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{
+            AnyValue, InstrumentationScope, KeyValue, any_value,
+        };
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Exemplar, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric,
+            number_data_point,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        use super::super::{compute_series_hash, process_resource_metrics};
+
+        const DATA_POINTS_PER_METRIC: usize = 10;
+        const METRICS_PER_SCOPE: usize = 50;
+        const ITERS: usize = 20;
+
+        fn string_kv(key: &str, value: impl Into<String>) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(value.into())),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn int_kv(key: &str, value: i64) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::IntValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn bool_kv(key: &str, value: bool) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::BoolValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn data_point(i: usize) -> NumberDataPoint {
+            let exemplars = if i.is_multiple_of(5) {
+                vec![Exemplar {
+                    filtered_attributes: vec![
+                        string_kv("exemplar.trace_id", format!("{i:032x}")),
+                        string_kv("exemplar.span_id", format!("{i:016x}")),
+                    ],
+                    time_unix_nano: 1_700_000_000_000_000_000 + i as u64 * 1_000,
+                    value: Some(
+                        opentelemetry_proto::tonic::metrics::v1::exemplar::Value::AsDouble(1.5),
+                    ),
+                    span_id: vec![0x11; 8],
+                    trace_id: vec![0x22; 16],
+                }]
+            } else {
+                Vec::new()
+            };
+            NumberDataPoint {
+                attributes: vec![
+                    string_kv("http.method", "GET"),
+                    string_kv("http.route", "/api/v1/items/:id"),
+                    string_kv("http.status_code", format!("{}", 200 + i % 5)),
+                    string_kv("net.peer.name", "checkout.internal"),
+                    int_kv("retry.count", (i % 3) as i64),
+                    bool_kv("cache.hit", i.is_multiple_of(2)),
+                ],
+                start_time_unix_nano: 1_700_000_000_000_000_000,
+                time_unix_nano: 1_700_000_000_000_000_000 + i as u64 * 1_000_000,
+                exemplars,
+                flags: 0,
+                value: Some(number_data_point::Value::AsDouble(i as f64 / 7.0)),
+            }
+        }
+
+        fn metric(metric_index: usize, resource_index: usize) -> Metric {
+            Metric {
+                name: format!("http.server.request.duration.{metric_index}"),
+                description: "Duration of HTTP server requests".to_string(),
+                unit: "s".to_string(),
+                data: Some(metric::Data::Gauge(Gauge {
+                    data_points: (0..DATA_POINTS_PER_METRIC)
+                        .map(|i| data_point(resource_index * 1000 + metric_index * 10 + i))
+                        .collect(),
+                })),
+                metadata: vec![
+                    string_kv("otel.scope.name", "bench"),
+                    string_kv("otel.scope.version", "1.2.3"),
+                ],
+            }
+        }
+
+        fn request() -> ExportMetricsServiceRequest {
+            let resource_metrics = (0..2)
+                .map(|resource_index| ResourceMetrics {
+                    resource: Some(Resource {
+                        attributes: vec![
+                            string_kv("service.name", "checkout"),
+                            string_kv("service.namespace", "shop"),
+                            string_kv("service.instance.id", format!("checkout-{resource_index}")),
+                            string_kv("deployment.environment", "production"),
+                            int_kv("process.pid", 4242 + resource_index as i64),
+                        ],
+                        dropped_attributes_count: 0,
+                        entity_refs: vec![],
+                    }),
+                    scope_metrics: (0..2)
+                        .map(|scope_index| ScopeMetrics {
+                            scope: Some(InstrumentationScope {
+                                name: "io.opentelemetry.contrib.bench".to_string(),
+                                version: "0.31.0".to_string(),
+                                attributes: vec![
+                                    string_kv("scope.kind", "server"),
+                                    string_kv(
+                                        "scope.extra",
+                                        format!("{resource_index}-{scope_index}"),
+                                    ),
+                                    int_kv("scope.ordinal", scope_index),
+                                ],
+                                dropped_attributes_count: 0,
+                            }),
+                            metrics: (0..METRICS_PER_SCOPE)
+                                .map(|metric_index| {
+                                    metric(
+                                        metric_index,
+                                        resource_index as usize * 10 + scope_index as usize,
+                                    )
+                                })
+                                .collect(),
+                            schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                        })
+                        .collect(),
+                    schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                })
+                .collect();
+            ExportMetricsServiceRequest { resource_metrics }
+        }
+
+        fn flatten(request: &ExportMetricsServiceRequest) -> Vec<serde_json::Value> {
+            process_resource_metrics(
+                &request.resource_metrics,
+                |record| record.resource.as_ref(),
+                |record| &record.scope_metrics,
+                |record| &record.schema_url,
+                |scope_metric| scope_metric.scope.as_ref(),
+                |scope_metric| &scope_metric.schema_url,
+                |scope_metric| &scope_metric.metrics,
+                |metric| metric,
+                "perfbench",
+                false,
+            )
+        }
+
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_flatten_otel_metrics_protobuf() {
+            let request = request();
+            bench::run("bench_flatten_otel_metrics_protobuf", ITERS, || {
+                flatten(&request)
+            });
+        }
+
+        /// The rows of the benchmark request, pinned so that a refactor changing
+        /// them fails a normal `cargo test --lib` run. The digest is of
+        /// `serde_json::to_vec` of the rows; it was first recorded from the
+        /// unoptimised flatteners.
+        #[test]
+        fn benchmark_request_rows_are_stable() {
+            let rows = flatten(&request());
+            let bytes = serde_json::to_vec(&rows).unwrap();
+            use std::hash::Hasher;
+            let mut hasher = rustc_hash::FxHasher::default();
+            hasher.write(&bytes);
+            // 2000 data points plus one target_info sample per resource
+            assert_eq!(rows.len(), 2002);
+            assert_eq!(
+                (bytes.len(), hasher.finish()),
+                (2_357_124, 0xf123_85b9_f510_100b),
+                "flattened rows of the benchmark request changed"
+            );
+        }
+
+        /// Cost of the per-data-point series hash over a typical flattened row.
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_compute_series_hash() {
+            let rows = flatten(&request());
+            let row = rows[0].as_object().expect("object row");
+            let mut sum = 0u64;
+            bench::time_calls("bench_compute_series_hash", 200_000, |_| {
+                sum = sum.wrapping_add(compute_series_hash(row));
+            });
+            assert_ne!(sum, 0);
+        }
+    }
 }

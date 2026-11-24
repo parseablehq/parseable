@@ -20,3 +20,82 @@ pub mod logs;
 pub mod metrics;
 pub mod otel_utils;
 pub mod traces;
+
+/// Shared driver for the release-profile micro-benchmarks. Each benchmark is an
+/// `#[ignore]`d test that never touches the `PARSEABLE` global, so it can be run
+/// with a test-name filter:
+///
+/// ```text
+/// cargo test --release --lib -- --ignored --exact otel::logs::tests::bench_flatten_otel_protobuf_logs --nocapture
+/// ```
+///
+/// Every iteration must flatten the same input to the same rows, so a digest of
+/// the rows is printed (and, with `OTEL_BENCH_DUMP=<dir>`, written out) next to
+/// the per-row wall time for `perf stat` to turn into instruction counts.
+#[cfg(test)]
+pub(crate) mod bench {
+    use std::time::Instant;
+
+    /// Runs `body` `iters` times, requiring identical output every time, and
+    /// prints the rows, their digest and the nanoseconds spent per row.
+    pub fn run<F>(name: &str, iters: usize, mut body: F)
+    where
+        F: FnMut() -> Vec<serde_json::Value>,
+    {
+        // Serialising the rows costs more than flattening them, so the digest is
+        // taken before and after the timed loop, never inside it.
+        let first = body();
+        let rows = first.len();
+        let expected = rows_digest(&first);
+        if let Some(dir) = dump_dir() {
+            std::fs::write(
+                format!("{dir}/{name}.json"),
+                serde_json::to_vec(&first).expect("benchmark rows serialise"),
+            )
+            .expect("benchmark rows dump");
+        }
+
+        let start = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(body());
+        }
+        let elapsed = start.elapsed();
+
+        let last = body();
+        assert_eq!(
+            rows_digest(&last),
+            expected,
+            "{name}: repeated iterations produced different rows"
+        );
+        println!(
+            "{name}: rows={rows} iters={iters} ns_per_row={:.1} bytes={} digest={:016x}",
+            elapsed.as_secs_f64() * 1e9 / (rows * iters) as f64,
+            expected.0,
+            expected.1
+        );
+    }
+
+    fn rows_digest(rows: &[serde_json::Value]) -> (usize, u64) {
+        use std::hash::Hasher;
+        let bytes = serde_json::to_vec(rows).expect("benchmark rows serialise");
+        let mut hasher = rustc_hash::FxHasher::default();
+        hasher.write(&bytes);
+        (bytes.len(), hasher.finish())
+    }
+
+    /// Times `iters` repetitions of `body` and prints the nanoseconds per call.
+    pub fn time_calls<F: FnMut(usize)>(name: &str, iters: usize, mut body: F) {
+        let start = Instant::now();
+        for i in 0..iters {
+            body(i);
+        }
+        println!(
+            "{name}: iters={iters} ns_per_call={:.1}",
+            start.elapsed().as_secs_f64() * 1e9 / iters as f64
+        );
+    }
+
+    fn dump_dir() -> Option<String> {
+        std::env::var("OTEL_BENCH_DUMP").ok()
+    }
+}
