@@ -85,6 +85,7 @@ fn flatten_json_body_inner(
         time_partition_limit,
         custom_partition,
         validation_required,
+        budget,
     )?;
     Ok(nested_value)
 }
@@ -121,6 +122,7 @@ pub fn apply_generic_flattening_for_partition(
             time_partition_limit,
             custom_partition,
             true,
+            budget,
         )?;
         Ok(vec![nested_value])
     } else {
@@ -135,6 +137,7 @@ pub fn apply_generic_flattening_for_partition(
                 time_partition_limit,
                 custom_partition,
                 true,
+                budget,
             )?;
             result.push(processed_item);
         }
@@ -169,6 +172,7 @@ fn process_partitioned_element(
             time_partition_limit,
             custom_partition,
             true,
+            budget,
         )?;
         Ok(vec![nested_value])
     }

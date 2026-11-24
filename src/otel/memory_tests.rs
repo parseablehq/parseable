@@ -311,16 +311,23 @@ fn exemplar_column_tables_are_bounded() {
         })),
         ..Default::default()
     });
-    let mut rows =
-        crate::otel::metrics::flatten_otel_metrics_protobuf_with_options(&request, "t", false);
+    let mut rows = Vec::new();
+    crate::otel::metrics::flatten_metrics_into(&request.resource_metrics, false, &mut rows)
+        .unwrap();
     let mut row = rows.pop().unwrap();
-    let (result, allocated) =
-        measure(|| crate::utils::json::flatten::flatten(&mut row, "_", None, None, None, false));
+    let estimate = row_bytes(row.as_object().unwrap());
+    let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
+    let (result, allocated) = measure(|| {
+        crate::utils::json::flatten::flatten(&mut row, "_", None, None, None, false, &mut budget)
+    });
     println!(
-        "MEMORY exemplar table: {:?}, peak {:.1} MiB",
+        "MEMORY exemplar table: {:?}, estimate {:.1} MiB, peak {:.1} MiB",
         result.as_ref().map_err(ToString::to_string),
+        mb(estimate),
         mb(allocated.peak)
     );
+    // The chunk estimate counts the table, so such a row fills a chunk on its own
+    assert!(estimate > 3_600 * 3_600 * 72);
     assert!(result.is_err());
     assert!(allocated.peak < PEAK_BOUND, "peak {} B", allocated.peak);
 }

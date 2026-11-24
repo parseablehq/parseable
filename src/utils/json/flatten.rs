@@ -147,6 +147,7 @@ pub fn flatten(
     time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
     validation_required: bool,
+    budget: &mut FlattenBudget,
 ) -> Result<(), JsonFlattenError> {
     match nested_value {
         Value::Object(nested_dict) => {
@@ -161,7 +162,7 @@ pub fn flatten(
             }
             let original = std::mem::take(nested_dict);
             let mut map = Map::with_capacity(original.len());
-            flatten_object(&mut map, None, original, separator)?;
+            flatten_object(&mut map, None, original, separator, budget)?;
             *nested_dict = map;
         }
         Value::Array(arr) => {
@@ -174,6 +175,7 @@ pub fn flatten(
                     time_partition_limit,
                     custom_partition,
                     validation_required,
+                    budget,
                 )?;
             }
         }
@@ -316,6 +318,7 @@ fn flatten_object(
     parent_key: Option<&str>,
     nested_map: Map<String, Value>,
     separator: &str,
+    budget: &mut FlattenBudget,
 ) -> Result<(), JsonFlattenError> {
     for (key, mut value) in nested_map {
         let new_key = match parent_key {
@@ -326,10 +329,10 @@ fn flatten_object(
         match &mut value {
             Value::Object(obj) => {
                 let obj = std::mem::take(obj);
-                flatten_object(output_map, Some(&new_key), obj, separator)?;
+                flatten_object(output_map, Some(&new_key), obj, separator, budget)?;
             }
             Value::Array(arr) if arr.iter().any(Value::is_object) => {
-                flatten_array_objects(output_map, &new_key, arr, separator)?;
+                flatten_array_objects(output_map, &new_key, arr, separator, budget)?;
             }
             _ => {
                 output_map.insert(new_key, value);
@@ -339,21 +342,58 @@ fn flatten_object(
     Ok(())
 }
 
-// Flattens a nested JSON Array into the parent Map
+// Flattens a nested JSON Array into the parent Map: one column (array) per distinct key of
+// its objects, with a cell for every element, null where an element lacks the key. Every
+// null cell is a `Value` of its own, so the cells added are charged to `budget` at that
+// size before the columns are built: 3,600 objects with one distinct key each would
+// otherwise hold 13 million cells, about 900 MiB.
 pub fn flatten_array_objects(
     output_map: &mut Map<String, Value>,
     parent_key: &str,
     arr: &mut [Value],
     separator: &str,
+    budget: &mut FlattenBudget,
 ) -> Result<(), JsonFlattenError> {
-    let mut columns: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-
-    for (index, value) in arr.iter_mut().enumerate() {
+    // Each element flattened on its own first, to count the cells of the table
+    let mut elements: Vec<Option<Map<String, Value>>> = Vec::with_capacity(arr.len());
+    let mut keys: BTreeMap<&str, ()> = BTreeMap::new();
+    let mut present = 0usize;
+    for value in arr.iter_mut() {
         match value {
             Value::Object(nested_object) => {
                 let mut output_map = Map::new();
                 let nested_object = std::mem::take(nested_object);
-                flatten_object(&mut output_map, Some(parent_key), nested_object, separator)?;
+                flatten_object(
+                    &mut output_map,
+                    Some(parent_key),
+                    nested_object,
+                    separator,
+                    budget,
+                )?;
+                present += output_map.len();
+                elements.push(Some(output_map));
+            }
+            Value::Null => elements.push(None),
+            _ => return Err(JsonFlattenError::NonObjectInArray),
+        }
+    }
+    for element in elements.iter().flatten() {
+        keys.extend(element.keys().map(|key| (key.as_str(), ())));
+    }
+    let nulls = keys
+        .len()
+        .saturating_mul(elements.len())
+        .saturating_sub(present);
+    budget.charge_event(FlattenCost {
+        rows: 0,
+        bytes: nulls.saturating_mul(std::mem::size_of::<Value>()),
+    })?;
+    drop(keys);
+
+    let mut columns: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for (index, element) in elements.into_iter().enumerate() {
+        match element {
+            Some(output_map) => {
                 for (key, value) in output_map {
                     let column = columns
                         .entry(key)
@@ -361,12 +401,11 @@ pub fn flatten_array_objects(
                     column.push(value);
                 }
             }
-            Value::Null => {
+            None => {
                 for column in columns.values_mut() {
                     column.push(Value::Null);
                 }
             }
-            _ => return Err(JsonFlattenError::NonObjectInArray),
         }
 
         // Ensure all columns are extended with null values if they weren't updated in this iteration
@@ -1528,7 +1567,10 @@ mod tests {
                 Some(&key),
                 std::num::NonZeroU32::new(1),
                 None,
-                true
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
             ),
             Err(JsonFlattenError::TimestampTooOld(_, 1, _))
         ));
@@ -1540,6 +1582,9 @@ mod tests {
             std::num::NonZeroU32::new(1),
             None,
             true,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
         )
         .unwrap();
         let mut old = json!({"ts": (now - chrono::Duration::hours(4)).to_rfc3339()});
@@ -1550,7 +1595,10 @@ mod tests {
                 Some(&key),
                 std::num::NonZeroU32::new(1),
                 None,
-                true
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
             ),
             Err(JsonFlattenError::TimestampTooOldRelative(_, 3, _, _))
         ));
@@ -1580,6 +1628,9 @@ mod tests {
                 None,
                 custom_partition,
                 validation_required,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS,
+                ),
             )
         };
         result
@@ -1843,7 +1894,18 @@ mod tests {
             (json!({"a": {"b": 2}, "a_b": 1}), json!({"a_b": 1})),
         ] {
             let mut obj = input.clone();
-            flatten(&mut obj, "_", None, None, None, false).unwrap();
+            flatten(
+                &mut obj,
+                "_",
+                None,
+                None,
+                None,
+                false,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS,
+                ),
+            )
+            .unwrap();
             if preserves_order {
                 assert_eq!(obj, expected);
             }
@@ -1857,7 +1919,18 @@ mod tests {
     #[test]
     fn flatten_drops_nested_empty_object() {
         let mut obj = json!({"a": {}, "b": {"c": {}}, "d": 1});
-        flatten(&mut obj, "_", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            "_",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, json!({"d": 1}));
     }
 
@@ -1865,17 +1938,47 @@ mod tests {
     fn flatten_flat_object_still_validates() {
         let mut obj = json!({"a": "x.y", "b": 1});
         assert!(matches!(
-            flatten(&mut obj, "_", None, None, Some(&"a".to_owned()), true),
+            flatten(
+                &mut obj,
+                "_",
+                None,
+                None,
+                Some(&"a".to_owned()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            ),
             Err(JsonFlattenError::FieldContainsPeriod(_))
         ));
         let mut obj = json!({"b": 1});
         assert!(matches!(
-            flatten(&mut obj, "_", None, None, Some(&"a".to_owned()), true),
+            flatten(
+                &mut obj,
+                "_",
+                None,
+                None,
+                Some(&"a".to_owned()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            ),
             Err(JsonFlattenError::FieldNotPartOfLog(_))
         ));
         let mut obj = json!(1);
         assert!(matches!(
-            flatten(&mut obj, "_", None, None, None, false),
+            flatten(
+                &mut obj,
+                "_",
+                None,
+                None,
+                None,
+                false,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            ),
             Err(JsonFlattenError::CannotFlatten)
         ));
     }
@@ -1884,7 +1987,18 @@ mod tests {
     fn flatten_single_key_string() {
         let mut obj = json!({"key": "value"});
         let expected = obj.clone();
-        flatten(&mut obj, "_", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            "_",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1892,7 +2006,18 @@ mod tests {
     fn flatten_single_key_int() {
         let mut obj = json!({"key": 1});
         let expected = obj.clone();
-        flatten(&mut obj, "_", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            "_",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1900,7 +2025,18 @@ mod tests {
     fn flatten_multiple_key_value() {
         let mut obj = json!({"key1": 1, "key2": "value2"});
         let expected = obj.clone();
-        flatten(&mut obj, "_", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            "_",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1908,7 +2044,18 @@ mod tests {
     fn flatten_nested_single_key_value() {
         let mut obj = json!({"key": "value", "nested_key": {"key":"value"}});
         let expected = json!({"key": "value", "nested_key.key": "value"});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            ".",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1917,7 +2064,18 @@ mod tests {
         let mut obj = json!({"key": "value", "nested_key": {"key1":"value1", "key2": "value2"}});
         let expected =
             json!({"key": "value", "nested_key.key1": "value1", "nested_key.key2": "value2"});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            ".",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1925,7 +2083,18 @@ mod tests {
     fn nested_key_value_with_array() {
         let mut obj = json!({"key": "value", "nested_key": {"key1":[1,2,3]}});
         let expected = json!({"key": "value", "nested_key.key1": [1,2,3]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            ".",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1933,7 +2102,18 @@ mod tests {
     fn nested_obj_array() {
         let mut obj = json!({"key": [{"a": "value0"}, {"a": "value1"}]});
         let expected = json!({"key.a": ["value0", "value1"]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            ".",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1941,7 +2121,18 @@ mod tests {
     fn nested_obj_array_nulls() {
         let mut obj = json!({"key": [{"a": "value0"}, {"a": "value1", "b": "value1"}]});
         let expected = json!({"key.a": ["value0", "value1"], "key.b": [null, "value1"]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            ".",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1949,7 +2140,18 @@ mod tests {
     fn nested_obj_array_nulls_reversed() {
         let mut obj = json!({"key": [{"a": "value0", "b": "value0"}, {"a": "value1"}]});
         let expected = json!({"key.a": ["value0", "value1"], "key.b": ["value0", null]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            ".",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1957,7 +2159,18 @@ mod tests {
     fn nested_obj_array_nested_obj() {
         let mut obj = json!({"key": [{"a": {"p": 0}, "b": "value0"}, {"b": "value1"}]});
         let expected = json!({"key.a.p": [0, null], "key.b": ["value0", "value1"]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            ".",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
@@ -1965,14 +2178,38 @@ mod tests {
     fn nested_obj_array_nested_obj_array() {
         let mut obj = json!({"key": [{"a": [{"p": "value0", "q": "value0"}, {"p": "value1", "q": null}], "b": "value0"}, {"b": "value1"}]});
         let expected = json!({"key.a.p": [["value0", "value1"], null], "key.a.q": [["value0", null], null], "key.b": ["value0", "value1"]});
-        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        flatten(
+            &mut obj,
+            ".",
+            None,
+            None,
+            None,
+            false,
+            &mut crate::utils::json::flatten::FlattenBudget::new(
+                crate::utils::json::flatten::GENEROUS_LIMITS,
+            ),
+        )
+        .unwrap();
         assert_eq!(obj, expected);
     }
 
     #[test]
     fn flatten_mixed_object() {
         let mut obj = json!({"a": 42, "arr": ["1", {"key": "2"}, {"key": {"nested": "3"}}]});
-        assert!(flatten(&mut obj, ".", None, None, None, false).is_err());
+        assert!(
+            flatten(
+                &mut obj,
+                ".",
+                None,
+                None,
+                None,
+                false,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1986,7 +2223,14 @@ mod tests {
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
+        flatten_array_objects(
+            &mut map,
+            "key",
+            &mut arr,
+            ".",
+            &mut FlattenBudget::new(GENEROUS_LIMITS),
+        )
+        .unwrap();
 
         assert_eq!(map.len(), 2);
         assert_eq!(map.get("key.p").unwrap(), &json!([null, 2, null]));
@@ -2000,7 +2244,14 @@ mod tests {
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
+        flatten_array_objects(
+            &mut map,
+            "key",
+            &mut arr,
+            ".",
+            &mut FlattenBudget::new(GENEROUS_LIMITS),
+        )
+        .unwrap();
 
         assert_eq!(map.len(), 2);
         assert_eq!(map.get("key.a").unwrap(), &json!([1, 2, null]));
@@ -2014,7 +2265,14 @@ mod tests {
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
+        flatten_array_objects(
+            &mut map,
+            "key",
+            &mut arr,
+            ".",
+            &mut FlattenBudget::new(GENEROUS_LIMITS),
+        )
+        .unwrap();
 
         assert_eq!(map.len(), 3);
         assert_eq!(map.get("key.a").unwrap(), &json!([1, null, 3]));
@@ -2033,7 +2291,14 @@ mod tests {
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
+        flatten_array_objects(
+            &mut map,
+            "key",
+            &mut arr,
+            ".",
+            &mut FlattenBudget::new(GENEROUS_LIMITS),
+        )
+        .unwrap();
 
         assert_eq!(map.len(), 3);
         assert_eq!(map.get("key.p").unwrap(), &json!([1, null, 3]));
@@ -2052,7 +2317,14 @@ mod tests {
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
+        flatten_array_objects(
+            &mut map,
+            "key",
+            &mut arr,
+            ".",
+            &mut FlattenBudget::new(GENEROUS_LIMITS),
+        )
+        .unwrap();
 
         assert_eq!(map.len(), 3);
         assert_eq!(map.get("key.p").unwrap(), &json!([1, null, 3]));
@@ -2065,22 +2337,74 @@ mod tests {
         let mut value = json!({
             "a": 1,
         });
-        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
+        assert!(
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .is_ok()
+        );
 
         let mut value = json!({
             "a": true,
         });
-        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
+        assert!(
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .is_ok()
+        );
 
         let mut value = json!({
             "a": "yes",
         });
-        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
+        assert!(
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .is_ok()
+        );
 
         let mut value = json!({
             "a": -1,
         });
-        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
+        assert!(
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -2089,7 +2413,18 @@ mod tests {
             "a": null,
         });
         matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .unwrap_err(),
             JsonFlattenError::FieldEmptyOrNull(_)
         );
 
@@ -2097,7 +2432,18 @@ mod tests {
             "a": "",
         });
         matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .unwrap_err(),
             JsonFlattenError::FieldEmptyOrNull(_)
         );
 
@@ -2105,7 +2451,18 @@ mod tests {
             "a": {"b": 1},
         });
         matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .unwrap_err(),
             JsonFlattenError::FieldIsObject(_)
         );
 
@@ -2113,7 +2470,18 @@ mod tests {
             "a": ["b", "c"],
         });
         matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .unwrap_err(),
             JsonFlattenError::FieldIsArray(_)
         );
 
@@ -2121,7 +2489,18 @@ mod tests {
             "a": "b.c",
         });
         matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .unwrap_err(),
             JsonFlattenError::FieldContainsPeriod(_)
         );
 
@@ -2129,7 +2508,18 @@ mod tests {
             "a": 1.0,
         });
         matches!(
-            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            flatten(
+                &mut value,
+                "_",
+                None,
+                None,
+                Some(&"a".to_string()),
+                true,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS
+                )
+            )
+            .unwrap_err(),
             JsonFlattenError::FieldContainsPeriod(_)
         );
     }
@@ -2445,7 +2835,18 @@ mod tests {
         for row in rows {
             let mut row = row.clone();
             if let Value::Object(_) = row {
-                flatten(&mut row, "_", None, None, None, false).unwrap();
+                flatten(
+                    &mut row,
+                    "_",
+                    None,
+                    None,
+                    None,
+                    false,
+                    &mut crate::utils::json::flatten::FlattenBudget::new(
+                        crate::utils::json::flatten::GENEROUS_LIMITS,
+                    ),
+                )
+                .unwrap();
                 fields += row.as_object().unwrap().len();
             }
             bytes += serde_json::to_vec(&row).unwrap().len();
@@ -2556,7 +2957,18 @@ mod tests {
         ] {
             let built = generic_flattening_with_limits(&value, GENEROUS_LIMITS).unwrap();
             let mut flattened = Value::Array(built.clone());
-            flatten(&mut flattened, "_", None, None, None, false).unwrap();
+            flatten(
+                &mut flattened,
+                "_",
+                None,
+                None,
+                None,
+                false,
+                &mut crate::utils::json::flatten::FlattenBudget::new(
+                    crate::utils::json::flatten::GENEROUS_LIMITS,
+                ),
+            )
+            .unwrap();
             assert_eq!(flattened, expected, "input: {value}");
             let cost = flatten_pipeline_cost(&value, &GENEROUS_LIMITS).unwrap();
             let expected = expected.as_array().unwrap();
