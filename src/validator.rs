@@ -76,6 +76,17 @@ pub fn stream_name(
     Ok(())
 }
 
+/// Names the server itself ingests into. A user-created stream with one of
+/// these names would capture those internal writes into a caller-owned
+/// stream, so `new_stream_name` refuses to create one. Existing streams with
+/// these names still load (see `stream_name`), keeping old deployments
+/// startable; the stream-metadata migration classifies `pmeta` as internal.
+const INTERNAL_STREAM_NAMES: &[&str] = &[
+    crate::handlers::http::cluster::PMETA_STREAM_NAME,
+    crate::handlers::http::cluster::BILLING_METRICS_STREAM_NAME,
+    crate::storage::field_stats::DATASET_STATS_STREAM_NAME,
+];
+
 /// Validates the name of a stream being created. On top of [`stream_name`],
 /// it must be ASCII: object stores percent-encode other characters in keys,
 /// and the storage layer doesn't handle the encoded form everywhere, so such
@@ -88,6 +99,10 @@ pub fn new_stream_name(
     stream_name(name, stream_type)?;
     if !name.is_ascii() {
         return Err(StreamNameValidationError::NonAsciiName(name.to_owned()));
+    }
+    // Creation only: never let a user stream shadow an internal one.
+    if stream_type != StreamType::Internal && INTERNAL_STREAM_NAMES.contains(&name) {
+        return Err(StreamNameValidationError::ReservedName(name.to_owned()));
     }
     Ok(())
 }
@@ -280,5 +295,28 @@ mod tests {
         assert!(
             matches!(err, StreamNameValidationError::ReservedName(name) if name == DEFAULT_TENANT)
         );
+    }
+
+    /// The server writes its own bookkeeping into the internal streams; a user
+    /// creating a stream with the same name would capture those writes, and
+    /// the internal machinery would then run on a user-owned stream.
+    #[test]
+    fn new_stream_names_cannot_shadow_internal_streams() {
+        for name in [
+            crate::handlers::http::cluster::PMETA_STREAM_NAME,
+            crate::handlers::http::cluster::BILLING_METRICS_STREAM_NAME,
+            crate::storage::field_stats::DATASET_STATS_STREAM_NAME,
+        ] {
+            assert!(
+                matches!(
+                    new_stream_name(name, StreamType::UserDefined),
+                    Err(StreamNameValidationError::ReservedName(rejected)) if rejected == name
+                ),
+                "creating a user stream named {name} must be refused"
+            );
+            // A stream that already exists under such a name still loads;
+            // refusing it here would make the server unstartable.
+            assert!(stream_name(name, StreamType::UserDefined).is_ok(), "{name}");
+        }
     }
 }

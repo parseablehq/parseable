@@ -157,6 +157,39 @@ fn resolve_telemetry_type(
 #[cfg(test)]
 pub(crate) static CONTRACT_PARSEABLE_FACTORY: OnceCell<fn() -> Parseable> = OnceCell::new();
 
+/// Test-only: install a factory-backed `PARSEABLE` backed by a temporary
+/// local store, so tests can exercise code that reads the global without the
+/// process command line being parsed. A factory installed by another test
+/// wins (the cell is set once), which is fine: the tests that use this only
+/// need *a* server context, never a specific one.
+#[cfg(test)]
+pub(crate) fn install_default_test_parseable() {
+    fn factory() -> Parseable {
+        use crate::storage::object_storage::ObjectStorageProvider;
+        // Kept for the life of the test process: the global outlives every test
+        let root = tempfile::tempdir().expect("a temporary directory").keep();
+        let provider = Arc::new(crate::storage::FSConfig { root });
+        let storage = provider.construct_client();
+        let metastore = Arc::new(
+            crate::metastore::metastores::object_store_metastore::ObjectStoreMetastore {
+                storage: storage.clone(),
+            },
+        );
+        Parseable::new(
+            crate::cli::Options::default(),
+            #[cfg(feature = "kafka")]
+            <crate::connectors::kafka::config::KafkaConfig as clap::Parser>::parse_from([
+                "contract",
+            ]),
+            provider,
+            metastore,
+            storage,
+        )
+    }
+    let _ = CONTRACT_PARSEABLE_FACTORY.set(factory);
+    Lazy::force(&PARSEABLE);
+}
+
 /// Shared state of the Parseable server.
 pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
     #[cfg(test)]

@@ -293,7 +293,8 @@ impl Server {
     }
 
     pub fn get_demo_data_webscope() -> Scope {
-        web::scope("/demodata").service(web::resource("").route(web::get().to(get_demo_data)))
+        web::scope("/demodata")
+            .service(web::resource("").route(web::get().to(get_demo_data).authenticate()))
     }
 
     pub fn get_otel_generator_webscope() -> Scope {
