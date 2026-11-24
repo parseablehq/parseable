@@ -468,6 +468,15 @@ impl StageLimits {
 /// counted against `limits.max_expanded` as they go: the chunk that would pass
 /// it is refused with `expansion_error`, like any other chunk `stage` refuses.
 /// Stops at the first error. Needs no server state.
+///
+/// Each chunk is staged as an event of its own, so its column types are inferred
+/// against the schema the stream has then, which includes what the chunk before
+/// it committed. When the type of a value changes between the records of a
+/// request cut into several chunks, the value can land in a differently named
+/// column than if the request were staged as one batch: `{"x": true}` then
+/// `{"x": "on"}` give `x` (Boolean) and `x_utf8` in two chunks, but `x` (Utf8)
+/// and `x_bool` in one. That is exactly what two separate requests give. A
+/// request that fits in one chunk is staged as one batch.
 fn stage_otel_rows(
     limits: StageLimits,
     flatten: impl FnOnce(

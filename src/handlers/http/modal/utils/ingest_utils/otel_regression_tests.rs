@@ -22,9 +22,14 @@
 //! ones that need the server are in `otel_server_state_tests`.
 
 use super::*;
+use crate::metadata::SchemaVersion;
+use arrow_schema::Field;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ScopeLogs};
 use opentelemetry_proto::tonic::resource::v1::Resource;
+use serde_json::json;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 const MIB: usize = 1024 * 1024;
 
@@ -128,4 +133,92 @@ fn a_small_body_expanding_past_4096_times_its_length_is_refused() {
         "{outcome:?}"
     );
     assert!(staged_bytes <= limits.max_expanded);
+}
+
+/// Columns staged for `rows`, as one batch or in chunks of `chunk` rows, each
+/// chunk typed against the schema the chunks before it committed, as a stream's
+/// schema is
+fn staged_columns(rows: &[Value], chunk: usize) -> Vec<(String, String, Vec<String>)> {
+    use crate::event::format::{EventFormat as _, json as json_format};
+    let mut storage: HashMap<String, Arc<Field>> = HashMap::new();
+    let mut cells: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+    for part in rows.chunks(chunk) {
+        let (rb, _) = json_format::Event {
+            json: Value::Array(part.to_vec()),
+            p_timestamp: chrono::Utc::now(),
+        }
+        .into_recordbatch(
+            &storage,
+            false,
+            None,
+            SchemaVersion::V1,
+            &HashMap::new(),
+            true,
+        )
+        .unwrap();
+        for (i, field) in rb.schema().fields().iter().enumerate() {
+            if field.name() == "p_timestamp" {
+                continue;
+            }
+            storage.insert(field.name().clone(), field.clone());
+            let column = rb.column(i);
+            let entry = cells
+                .entry(field.name().clone())
+                .or_insert_with(|| (format!("{:?}", field.data_type()), Vec::new()));
+            for row in 0..rb.num_rows() {
+                entry.1.push(
+                    arrow::util::display::array_value_to_string(column, row).unwrap_or_default(),
+                );
+            }
+        }
+    }
+    cells
+        .into_iter()
+        .map(|(name, (ty, values))| (name, ty, values))
+        .collect()
+}
+
+/// Review finding 3, kept as documented behaviour: each chunk of a request is
+/// typed against the schema the chunk before it committed, so a value whose type
+/// changes between the records of a request that is cut into chunks can land in
+/// a differently named column than one batch would put it in, exactly as two
+/// separate requests would. Requests that fit in one chunk are not affected.
+#[test]
+fn a_type_change_between_chunks_lands_where_a_second_request_would_put_it() {
+    let columns = |columns: &[(String, String, Vec<String>)]| {
+        columns
+            .iter()
+            .map(|(name, ty, values)| format!("{name}:{ty}:{}", values.join("|")))
+            .collect::<Vec<_>>()
+    };
+    let cases = [
+        (
+            vec![json!({"x": true, "n": 1}), json!({"x": "on", "n": 2})],
+            ["n:Float64:1.0|2.0", "x:Utf8:|on", "x_bool:Boolean:true|"],
+            ["n:Float64:1.0|2.0", "x:Boolean:true", "x_utf8:Utf8:on"],
+        ),
+        (
+            vec![
+                json!({"http_status_code": 200, "n": 1}),
+                json!({"http_status_code": "OK", "n": 2}),
+            ],
+            [
+                "http_status_code:Utf8:|OK",
+                "http_status_code_int64:Float64:200.0|",
+                "n:Float64:1.0|2.0",
+            ],
+            [
+                "http_status_code:Float64:200.0",
+                "http_status_code_utf8:Utf8:OK",
+                "n:Float64:1.0|2.0",
+            ],
+        ),
+    ];
+    for (rows, one_batch, two_chunks) in cases {
+        let whole = columns(&staged_columns(&rows, rows.len()));
+        let chunked = columns(&staged_columns(&rows, 1));
+        println!("REGRESSION type change: one batch {whole:?}, two chunks {chunked:?}");
+        assert_eq!(whole, one_batch);
+        assert_eq!(chunked, two_chunks);
+    }
 }
