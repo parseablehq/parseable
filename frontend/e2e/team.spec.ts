@@ -386,7 +386,7 @@ test('OIDC groups map exact role names and have a search empty state', async ({ 
   await expect(page.getByRole('button', { name: /Add (group|role)/ })).toHaveCount(0);
 });
 
-test('API keys are created once, copied through GET, masked in the table and deleted by name', async ({
+test('API keys are shown once at creation, masked in the table and deleted by name', async ({
   page,
   context,
 }) => {
@@ -401,7 +401,9 @@ test('API keys are created once, copied through GET, masked in the table and del
   const key = await sheet.getByLabel('API key', { exact: true }).inputValue();
   expect(key).toBeTruthy();
   await expect(
-    sheet.getByText('Store this key securely. Admins can copy it again from the API keys list.'),
+    sheet.getByText(
+      'This is the only time you can see this key. Store it securely; if it is lost, delete it and create another.',
+    ),
   ).toBeVisible();
   await sheet.getByRole('button', { name: 'Copy API key', exact: true }).click();
   await expect(sheet.getByRole('status')).toHaveText('API key copied to clipboard');
@@ -413,9 +415,8 @@ test('API keys are created once, copied through GET, masked in the table and del
   const row = namedRow(page, 'automation-key');
   await expect(row).toContainText(`****${key.slice(-4)}`);
   await expect(page.getByText(key, { exact: true })).toHaveCount(0);
-  await row.getByRole('button', { name: 'Copy API key for automation-key' }).click();
-  await expect(row.getByRole('status')).toHaveText('API key copied to clipboard');
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(key);
+  // The key cannot be read back: the list has no copy action
+  await expect(row.getByRole('button', { name: /^Copy API key/ })).toHaveCount(0);
   await row.getByRole('button', { name: 'Delete API key automation-key' }).click();
   const remove = page.getByRole('dialog', { name: 'Delete API key', exact: true });
   await expect(remove.locator('[data-dialog-confirm]')).toBeDisabled();
