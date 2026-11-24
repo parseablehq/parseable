@@ -1412,9 +1412,7 @@ fn verify_dataset_fields_count(
 ) -> Result<(), PostError> {
     let fields_count = PARSEABLE
         .get_stream(stream_name, tenant_id)?
-        .get_schema()
-        .fields()
-        .len();
+        .get_schema_len();
     let dataset_fields_warn_threshold = 0.8 * PARSEABLE.options.dataset_fields_allowed_limit as f64;
     // Check if the fields count exceeds the warn threshold
     if fields_count > dataset_fields_warn_threshold as usize {
@@ -2099,6 +2097,173 @@ mod tests {
         assert!(!custom_fields.contains_key(FORMAT_KEY));
         assert!(!custom_fields.contains_key(DEFAULT_TIMESTAMP_KEY));
         assert_eq!(custom_fields.get("team").unwrap(), "payments");
+    }
+
+    // Micro-benchmarks and equivalence proofs for the shared ingest path.
+    // The benches are `#[ignore]`d release-profile loops that
+    // construct the objects the handlers read, so they never touch `PARSEABLE`
+    // and are safe to run through a test-name filter. Each bench runs one of
+    // two sections per process, selected by `HUNT_BENCH_SECTION`:
+    //   old - the per-request work before the change
+    //   new - the per-request work after it
+    // Compare them under perf, e.g.
+    //   HUNT_BENCH_SECTION=old sudo -n perf stat -e instructions:u \
+    //     <release test binary> bench_json_byte_size --exact --ignored --nocapture
+    mod request_overhead {
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        use crate::{
+            cli::Options,
+            metadata::LogStreamMetadata,
+            parseable::{DEFAULT_TENANT, Stream, Streams},
+            storage::StreamType,
+        };
+
+        fn bench_iters(default: usize) -> usize {
+            std::env::var("HUNT_BENCH_ITERS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(default)
+        }
+
+        fn bench_section_is_old() -> bool {
+            !matches!(std::env::var("HUNT_BENCH_SECTION").as_deref(), Ok("new"))
+        }
+
+        fn bench_report(name: &str, old: bool, iters: usize, checksum: u64, start: Instant) {
+            let section = if old { "old" } else { "new" };
+            println!(
+                "{name} section={section} iters={iters} checksum={checksum} elapsed={:?}",
+                start.elapsed()
+            );
+        }
+
+        // --- internal-stream check (ingest / post_event) ---
+
+        /// The single-stream lookup `ingest` and `post_event` now perform,
+        /// mirroring `PARSEABLE.get_stream` minus the discarded error values.
+        fn single_stream_lookup(streams: &Streams, tenant: &Option<String>, name: &str) -> bool {
+            let tenant = tenant.as_deref().unwrap_or(DEFAULT_TENANT);
+            streams
+                .read()
+                .expect("test map")
+                .get(tenant)
+                .and_then(|tenant_streams| tenant_streams.get(name))
+                .cloned()
+                .is_some_and(|stream| stream.get_stream_type() == StreamType::Internal)
+        }
+
+        #[test]
+        fn internal_stream_check_matches_the_internal_stream_list() {
+            let streams = Streams::default();
+            let options = Arc::new(Options::default());
+            let add = |tenant: &str, name: &str, stream_type: StreamType| {
+                let metadata = LogStreamMetadata {
+                    stream_type,
+                    ..Default::default()
+                };
+                let stream = Stream::new(
+                    options.clone(),
+                    name,
+                    metadata,
+                    None,
+                    &Some(tenant.to_owned()),
+                );
+                streams
+                    .write()
+                    .expect("test map")
+                    .entry(tenant.to_owned())
+                    .or_default()
+                    .insert(name.to_owned(), stream);
+            };
+            // Two tenants with internal and user-defined streams, one of them
+            // sharing a name across tenants, plus an unknown tenant.
+            for (tenant, name) in [
+                ("tenant", "i1"),
+                ("tenant", "i2"),
+                ("tenant", "u1"),
+                ("tenant", "u2"),
+                ("other", "i1"),
+                ("other", "u1"),
+            ] {
+                let stream_type = if name.starts_with('i') {
+                    StreamType::Internal
+                } else {
+                    StreamType::UserDefined
+                };
+                add(tenant, name, stream_type);
+            }
+
+            for tenant in [
+                None,
+                Some("tenant".to_owned()),
+                Some("other".to_owned()),
+                Some("missing".to_owned()),
+            ] {
+                for name in ["i1", "i2", "u1", "u2", "missing"] {
+                    assert_eq!(
+                        streams
+                            .list_internal_streams(&tenant)
+                            .contains(&name.to_owned()),
+                        single_stream_lookup(&streams, &tenant, name),
+                        "tenant {tenant:?} stream {name}"
+                    );
+                }
+            }
+        }
+
+        /// Per-request internal-stream check of the plain JSON handlers:
+        /// listing every internal stream name of the tenant against looking up
+        /// only the named stream.
+        #[ignore = "release-profile microbenchmark; select the section with HUNT_BENCH_SECTION"]
+        #[test]
+        fn bench_internal_stream_check() {
+            let iters = bench_iters(200_000);
+            let old = bench_section_is_old();
+            let streams = Streams::default();
+            let options = Arc::new(Options::default());
+            let tenant = Some("tenant".to_owned());
+            for index in 0..64u32 {
+                let metadata = LogStreamMetadata {
+                    stream_type: if index.is_multiple_of(16) {
+                        StreamType::Internal
+                    } else {
+                        StreamType::UserDefined
+                    },
+                    ..Default::default()
+                };
+                let stream = Stream::new(
+                    options.clone(),
+                    format!("s{index}"),
+                    metadata,
+                    None,
+                    &tenant,
+                );
+                streams
+                    .write()
+                    .expect("test map")
+                    .entry(tenant.clone().unwrap())
+                    .or_default()
+                    .insert(format!("s{index}"), stream);
+            }
+            // The common case: an existing user-defined stream.
+            let needle = "s17".to_owned();
+
+            let mut checksum = 0u64;
+            let start = Instant::now();
+            for _ in 0..iters {
+                if old {
+                    checksum = checksum.wrapping_add(u64::from(
+                        streams.list_internal_streams(&tenant).contains(&needle),
+                    ));
+                } else {
+                    checksum = checksum
+                        .wrapping_add(u64::from(single_stream_lookup(&streams, &tenant, &needle)));
+                }
+            }
+            bench_report("bench_internal_stream_check", old, iters, checksum, start);
+        }
     }
 }
 

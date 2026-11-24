@@ -3338,6 +3338,11 @@ impl Stream {
         Arc::new(Schema::new(fields))
     }
 
+    /// Field count of the stored schema, without sorting it into a `Schema`
+    pub fn get_schema_len(&self) -> usize {
+        self.metadata.read().expect(LOCK_EXPECT).schema.len()
+    }
+
     pub fn get_schema_raw(&self) -> HashMap<String, Arc<Field>> {
         self.metadata.read().expect(LOCK_EXPECT).schema.clone()
     }

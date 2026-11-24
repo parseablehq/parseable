@@ -37,9 +37,7 @@ use tracing::{error, info_span};
 
 use super::EventFormat;
 use super::{detect_schema_conflicts, rename_conflicting_fields_in_json};
-use crate::{
-    handlers::TelemetryType, metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field,
-};
+use crate::{handlers::TelemetryType, metadata::SchemaVersion, storage::StreamType};
 
 pub struct Event {
     pub json: Value,
@@ -547,10 +545,18 @@ fn to_data_full(
         }
     };
 
-    if let Some(mismatch) = value_arr
-        .iter()
-        .find_map(|value| fields_mismatch(&schema, value, schema_version, static_schema_flag))
-    {
+    // One lookup table for the whole batch instead of a linear scan of the
+    // schema per field of every row.
+    let mut schema_by_name: HashMap<&str, &Field> = HashMap::with_capacity(schema.len());
+    for field in &schema {
+        // The first field of a name wins, as in the scan this replaces
+        schema_by_name
+            .entry(field.name().as_str())
+            .or_insert(field.as_ref());
+    }
+    if let Some(mismatch) = value_arr.iter().find_map(|value| {
+        fields_mismatch(&schema_by_name, value, schema_version, static_schema_flag)
+    }) {
         return Err(anyhow!(
             "Could not process this event due to mismatch in datatype: {mismatch}"
         ));
@@ -765,7 +771,7 @@ fn rename_json_keys(values: Vec<Value>) -> Result<Vec<Value>, anyhow::Error> {
 /// `reason` names the offending field and includes the expected vs. actual
 /// types so the caller can surface it in the error message.
 fn fields_mismatch(
-    schema: &[Arc<Field>],
+    schema: &HashMap<&str, &Field>,
     body: &Value,
     schema_version: SchemaVersion,
     static_schema_flag: bool,
@@ -774,7 +780,7 @@ fn fields_mismatch(
         if val.is_null() {
             continue;
         }
-        let Some(field) = get_field(schema, name) else {
+        let Some(field) = schema.get(name.as_str()).copied() else {
             return Some(format!(
                 "field '{name}' not present in stream schema (got {})",
                 json_value_kind(val)
@@ -789,6 +795,41 @@ fn fields_mismatch(
         }
     }
     None
+}
+
+/// The schema scan `fields_mismatch` used before the per-batch lookup table,
+/// kept as a differential oracle for tests and benchmarks.
+#[cfg(test)]
+pub(crate) mod fields_mismatch_legacy {
+    use super::*;
+    use crate::utils::arrow::get_field;
+
+    pub fn fields_mismatch(
+        schema: &[Arc<Field>],
+        body: &Value,
+        schema_version: SchemaVersion,
+        static_schema_flag: bool,
+    ) -> Option<String> {
+        for (name, val) in body.as_object().expect("body is of object variant") {
+            if val.is_null() {
+                continue;
+            }
+            let Some(field) = get_field(schema, name) else {
+                return Some(format!(
+                    "field '{name}' not present in stream schema (got {})",
+                    json_value_kind(val)
+                ));
+            };
+            if !valid_type(field, val, schema_version, static_schema_flag) {
+                return Some(format!(
+                    "field '{name}' expected {:?} but got {} value",
+                    field.data_type(),
+                    json_value_kind(val),
+                ));
+            }
+        }
+        None
+    }
 }
 
 fn json_value_kind(value: &Value) -> &'static str {
@@ -2119,5 +2160,139 @@ mod partition_batching_tests {
                 }
             }
         }
+    }
+
+    // --- fields_mismatch lookup table ---
+
+    #[test]
+    fn fields_mismatch_lookup_table_matches_the_linear_scan() {
+        let schema: Vec<Arc<Field>> = [
+            ("a", DataType::Utf8),
+            ("s", DataType::Utf8),
+            ("n", DataType::Int64),
+            ("u", DataType::UInt64),
+            ("f", DataType::Float64),
+            ("b", DataType::Boolean),
+            (
+                "ts",
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+            ),
+            ("d", DataType::Date32),
+            (
+                "lst",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            ),
+            (
+                "st",
+                DataType::Struct(vec![Field::new("x", DataType::Utf8, true)].into()),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, ty)| Arc::new(Field::new(name, ty, true)))
+        .collect();
+        let by_name: HashMap<&str, &Field> = schema
+            .iter()
+            .map(|field| (field.name().as_str(), field.as_ref()))
+            .collect();
+
+        let rows = [
+            json!({}),
+            json!({"a": "x", "n": 1, "b": true}),
+            json!({"missing": "x"}),
+            json!({"missing": null, "a": "x"}),
+            json!({"a": null}),
+            json!({"n": "x"}),
+            json!({"f": "not a number"}),
+            json!({"b": 1}),
+            json!({"ts": 1714557600000i64}),
+            json!({"ts": "2024-05-01T10:00:00Z"}),
+            json!({"d": "2024-05-01"}),
+            json!({"d": "nope"}),
+            json!({"lst": ["x", 1]}),
+            json!({"lst": ["x", null]}),
+            json!({"st": {"x": "y"}}),
+            json!({"st": {"x": 1}}),
+            json!({"st": {"missing": 1}}),
+            // the first mismatch stays the row's first offending field
+            json!({"n": "x", "a": 1, "b": 2}),
+            json!({"a": 1, "n": "x"}),
+            json!({"ünïcode": 1, "a": 1}),
+        ];
+        for schema_version in [SchemaVersion::V0, SchemaVersion::V1] {
+            for static_schema_flag in [false, true] {
+                for row in &rows {
+                    assert_eq!(
+                        fields_mismatch(&by_name, row, schema_version, static_schema_flag),
+                        fields_mismatch_legacy::fields_mismatch(
+                            &schema,
+                            row,
+                            schema_version,
+                            static_schema_flag
+                        ),
+                        "row {row} version {schema_version:?} static {static_schema_flag}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The per-batch schema validation of `to_data_full`: a linear scan of
+    /// the schema per field of every row, against one lookup table per
+    /// batch, over a wide batch (100 fields, 400 rows).
+    #[ignore = "release-profile microbenchmark; select the section with HUNT_BENCH_SECTION"]
+    #[test]
+    fn bench_fields_mismatch() {
+        let iters: usize = std::env::var("HUNT_BENCH_ITERS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(200);
+        let old = !matches!(std::env::var("HUNT_BENCH_SECTION").as_deref(), Ok("new"));
+
+        let schema: Vec<Arc<Field>> = (0..100)
+            .map(|index| {
+                Arc::new(Field::new(
+                    format!("field_{index:03}"),
+                    DataType::Utf8,
+                    true,
+                ))
+            })
+            .collect();
+        let rows: Vec<Value> = (0..400)
+            .map(|row| {
+                let mut object = serde_json::Map::new();
+                for index in 0..100u32 {
+                    object.insert(
+                        format!("field_{index:03}"),
+                        json!(format!("value {row}-{index}")),
+                    );
+                }
+                Value::Object(object)
+            })
+            .collect();
+
+        let mut checksum = 0u64;
+        let start = std::time::Instant::now();
+        for _ in 0..iters {
+            if old {
+                let mismatch = rows.iter().find_map(|row| {
+                    fields_mismatch_legacy::fields_mismatch(&schema, row, SchemaVersion::V1, false)
+                });
+                checksum = checksum.wrapping_add(u64::from(mismatch.is_some()));
+            } else {
+                let by_name: HashMap<&str, &Field> = schema
+                    .iter()
+                    .map(|field| (field.name().as_str(), field.as_ref()))
+                    .collect();
+                let mismatch = rows
+                    .iter()
+                    .find_map(|row| fields_mismatch(&by_name, row, SchemaVersion::V1, false));
+                checksum = checksum.wrapping_add(u64::from(mismatch.is_some()));
+            }
+        }
+        let section = if old { "old" } else { "new" };
+        println!(
+            "bench_fields_mismatch section={section} iters={iters} checksum={checksum} elapsed={:?}",
+            start.elapsed()
+        );
     }
 }
