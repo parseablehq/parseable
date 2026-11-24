@@ -553,3 +553,133 @@ fn row_estimate_tracks_allocated_memory() {
         );
     }
 }
+
+/// Resident and peak resident memory of this process in bytes, from
+/// `/proc/self/statm` and `VmHWM`
+#[cfg(target_os = "linux")]
+fn resident() -> (usize, usize) {
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+    let pages: usize = statm.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let hwm: usize = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .and_then(|kb| kb.trim().trim_end_matches(" kB").trim().parse().ok())
+        .unwrap();
+    (pages * 4096, hwm * 1024)
+}
+
+/// Resident memory of decoding a request and handing its rows over in chunks.
+/// Release build, run alone:
+/// `cargo test --release --lib -- --ignored --exact otel::memory_tests::resident_memory_of_requests --nocapture`
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore = "measures the resident memory of the process; run it alone"]
+fn resident_memory_of_requests() {
+    use prost::Message;
+
+    fn measure_case(name: &str, signal: &str, body: &[u8]) {
+        // VmHWM is reset to the current resident size
+        std::fs::write("/proc/self/clear_refs", "5").unwrap();
+        let (before, _) = resident();
+        let mut rows = 0usize;
+        let mut stage = |chunk: Vec<Value>| {
+            rows += chunk.len();
+            Ok::<_, JsonFlattenError>(())
+        };
+        let mut chunker = Chunker::new(CHUNK_LIMITS, &mut stage);
+        let (decoded, after_decode) = match signal {
+            "logs" => {
+                let request = ExportLogsServiceRequest::decode(body).unwrap();
+                let decoded = resident().0;
+                crate::otel::logs::flatten_logs_into(
+                    &request.resource_logs,
+                    &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+                    &mut chunker,
+                )
+                .unwrap();
+                (decoded, resident().0)
+            }
+            "traces" => {
+                let request = ExportTraceServiceRequest::decode(body).unwrap();
+                let decoded = resident().0;
+                crate::otel::traces::flatten_traces_into(&request.resource_spans, &mut chunker)
+                    .unwrap();
+                (decoded, resident().0)
+            }
+            _ => {
+                let request = ExportMetricsServiceRequest::decode(body).unwrap();
+                let decoded = resident().0;
+                crate::otel::metrics::flatten_metrics_into(
+                    &request.resource_metrics,
+                    false,
+                    &mut chunker,
+                )
+                .unwrap();
+                (decoded, resident().0)
+            }
+        };
+        chunker.finish().unwrap();
+        drop(chunker);
+        let (_, hwm) = resident();
+        println!(
+            "RESIDENT {name}: body {:.1} MiB, {rows} rows, decoded +{:.0} MiB, peak +{:.0} MiB over the {:.0} MiB before (decode included), {:.0} MiB at the end",
+            mb(body.len()),
+            mb(decoded.saturating_sub(before)),
+            mb(hwm.saturating_sub(before)),
+            mb(before),
+            mb(after_decode)
+        );
+    }
+
+    // One case per process, so that memory freed by an earlier case does not hide
+    // what a later one takes: `RESIDENT_CASE` is `events`, `tiny`, or
+    // `<signal>:<path of a protobuf body>` (see `dump_realistic_bodies`)
+    let case = std::env::var("RESIDENT_CASE").expect("RESIDENT_CASE");
+    match case.split_once(':') {
+        // The two worst cases of the review: 2,097,152 empty events of one span
+        // (4 MiB), and 1000 tiny resource attributes copied into 5000 rows
+        None if case == "events" => {
+            let body = one_span(Span {
+                events: vec![Event::default(); 1 << 21],
+                ..Default::default()
+            })
+            .encode_to_vec();
+            measure_case("2,097,152 empty events of one span", "traces", &body);
+        }
+        None if case == "tiny" => {
+            let body = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource {
+                        attributes: (0..1000)
+                            .map(|i| kv(format!("k{i:03}"), any_value::Value::IntValue(0)))
+                            .collect(),
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        log_records: (0..5000u64)
+                            .map(|i| LogRecord {
+                                time_unix_nano: 1_700_000_000_000_000_000 + i,
+                                observed_time_unix_nano: 1_700_000_000_000_000_000,
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }
+            .encode_to_vec();
+            measure_case(
+                "1000 tiny resource attributes x 5000 records",
+                "logs",
+                &body,
+            );
+        }
+        Some((signal, path)) => {
+            let body = std::fs::read(path).unwrap();
+            measure_case(path, signal, &body);
+        }
+        None => panic!("unknown RESIDENT_CASE {case}"),
+    }
+}
