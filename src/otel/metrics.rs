@@ -776,6 +776,12 @@ impl ResourceMetricFields {
         envelope
     }
 
+    /// Whether the rows of this resource get Prometheus `job` and `instance`
+    /// labels, and the resource a `target_info` row
+    pub fn has_target_identity(&self) -> bool {
+        self.target_identity.is_some()
+    }
+
     /// The `target_info` row of this resource, at the latest data point
     /// timestamp of its rows, if it has a Prometheus target identity
     pub fn target_info(&self, latest: Option<String>) -> Option<Map<String, Value>> {
@@ -1702,9 +1708,13 @@ mod tests {
             ExportMetricsServiceRequest { resource_metrics }
         }
 
-        /// What ingestion does with a decoded request before staging: the rows
-        /// handed over in chunks (collected here)
+        /// What ingestion does with a decoded request before staging: the sizing
+        /// pass, then the rows handed over in chunks (collected here)
         fn flatten(request: &ExportMetricsServiceRequest) -> Vec<serde_json::Value> {
+            std::hint::black_box(crate::otel::expansion::metrics_size(
+                &request.resource_metrics,
+                false,
+            ));
             bench::chunked(|chunker| {
                 super::super::flatten_metrics_into(&request.resource_metrics, false, chunker)
             })

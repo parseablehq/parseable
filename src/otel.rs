@@ -16,6 +16,7 @@
  *
  */
 
+pub mod expansion;
 pub mod logs;
 pub mod metrics;
 pub mod otel_utils;

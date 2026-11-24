@@ -527,14 +527,22 @@ fn row_estimate_tracks_allocated_memory() {
             .iter()
             .map(|row| row_bytes(row.as_object().unwrap()))
             .sum();
+        let sizing = crate::otel::expansion::logs_size(&request.resource_logs);
         let ratio = allocated.retained as f64 / estimate as f64;
         println!(
-            "MEMORY row estimate, {name}: {} rows, allocated {} B, estimated {} B, allocated/estimated {:.2}",
+            "MEMORY row estimate, {name}: {} rows, allocated {} B, estimated {} B, allocated/estimated {:.2}, sizing pass {} B ({:.2} of estimated)",
             rows.len(),
             allocated.retained,
             estimate,
             ratio,
+            sizing.bytes,
+            sizing.bytes as f64 / estimate as f64
         );
         assert!((0.5..=2.0).contains(&ratio), "{name}: {ratio:.2}");
+        let sizing_ratio = sizing.bytes as f64 / estimate as f64;
+        assert!(
+            (0.5..=2.0).contains(&sizing_ratio),
+            "{name}: {sizing_ratio:.2}"
+        );
     }
 }

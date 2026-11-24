@@ -41,10 +41,13 @@
 //! - `DST_SEED`, `DST_ITERS`: first seed and number of seeds of the DST scenario
 
 use super::*;
+use crate::otel::logs::flatten_otel_logs;
 use crate::otel::metrics::{
     flatten_otel_metrics_protobuf_with_options, flatten_otel_metrics_with_options,
 };
 use crate::otel::otel_utils::flatten_attributes;
+use crate::otel::sink::{ChunkLimits, Chunker};
+use crate::otel::traces::flatten_otel_traces;
 use crate::utils::json::flatten::FlattenCost;
 use opentelemetry_proto::tonic::common::v1::{
     AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
@@ -1453,6 +1456,151 @@ fn otel_pb_wild_requests_flatten_and_agree_where_json_can_carry_them() {
 }
 
 // ---------------------------------------------------------------------------
+// Chunked staging
+// ---------------------------------------------------------------------------
+
+impl Req {
+    fn resources(&self) -> OtelResources<'_> {
+        match self {
+            Self::Logs(data) => OtelResources::Logs(&data.resource_logs),
+            Self::Metrics(data) => OtelResources::Metrics(&data.resource_metrics),
+            Self::Traces(data) => OtelResources::Traces(&data.resource_spans),
+        }
+    }
+
+    fn resource_count(&self) -> usize {
+        match self {
+            Self::Logs(data) => data.resource_logs.len(),
+            Self::Metrics(data) => data.resource_metrics.len(),
+            Self::Traces(data) => data.resource_spans.len(),
+        }
+    }
+}
+
+/// The request decoded from `body` in `encoding`, as ingestion decodes it
+fn decode_as(request: &Req, protobuf: bool) -> Req {
+    let source = request.source();
+    if protobuf {
+        Req::from_decoded(OtelProtobufRequest::decode(&request.encode_pb(), &source).unwrap())
+    } else {
+        let json: Value = serde_json::from_slice(&request.encode_json()).unwrap();
+        match request {
+            Req::Logs(_) => Req::Logs(deserialize_otel_json(json, false).unwrap()),
+            Req::Metrics(_) => Req::Metrics(deserialize_otel_json(json, false).unwrap()),
+            Req::Traces(_) => Req::Traces(deserialize_otel_json(json, false).unwrap()),
+        }
+    }
+}
+
+/// Chunks of at most `rows` rows (and a byte limit small enough to cut chunks of a
+/// row or two) give the same rows in the same order as one chunk, for both
+/// encodings, and count every record and data point as staged. The sizing pass
+/// counts the same records and data points, and the rows up to one `target_info`
+/// row per resource.
+fn chunking_keeps_rows(
+    mut request: Req,
+    rows: usize,
+    bytes: usize,
+    flatten_exemplars: bool,
+) -> TestCaseResult {
+    fill_unset_timestamps(&mut request);
+    prop_assume!(json_representable(&request));
+    let limits = ChunkLimits { rows, bytes };
+    for protobuf in [true, false] {
+        let decoded = decode_as(&request, protobuf);
+        let resources = decoded.resources();
+        let mut whole = Vec::new();
+        resources
+            .flatten_into(
+                &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+                flatten_exemplars,
+                &mut whole,
+            )
+            .unwrap();
+        let mut chunks: Vec<Vec<Value>> = Vec::new();
+        let mut chunker = Chunker::new(limits, |rows| {
+            chunks.push(rows);
+            Ok::<_, JsonFlattenError>(())
+        });
+        resources
+            .flatten_into(
+                &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+                flatten_exemplars,
+                &mut chunker,
+            )
+            .unwrap();
+        chunker.finish().unwrap();
+        let staged = chunker.staged();
+        drop(chunker);
+
+        prop_assert!(
+            chunks
+                .iter()
+                .all(|chunk| !chunk.is_empty() && chunk.len() <= rows)
+        );
+        prop_assert_eq!(staged.chunks as usize, chunks.len());
+        let chunked: Vec<Value> = chunks.into_iter().flatten().collect();
+        prop_assert_eq!(
+            serde_json::to_vec(&chunked).unwrap(),
+            serde_json::to_vec(&whole).unwrap(),
+            "chunked rows differ (protobuf: {})",
+            protobuf
+        );
+        let size = resources.size(flatten_exemplars);
+        prop_assert_eq!(staged.rows as usize, whole.len());
+        prop_assert_eq!(staged.records, size.records);
+        prop_assert_eq!(staged.points, size.points);
+        prop_assert!(
+            size.rows as usize >= whole.len()
+                && size.rows as usize <= whole.len() + decoded.resource_count(),
+            "sizing pass counted {} rows for {}",
+            size.rows,
+            whole.len()
+        );
+    }
+    Ok(())
+}
+
+fn chunk_limits() -> impl Strategy<Value = (usize, usize)> {
+    (
+        1usize..5,
+        prop_oneof![Just(1usize), Just(4096), Just(usize::MAX)],
+    )
+}
+
+#[test]
+fn otel_chunked_rows_match_one_chunk_logs() {
+    check(
+        "otel_chunked_rows_match_one_chunk_logs",
+        64,
+        (logs_data(false), chunk_limits()),
+        |(logs, (rows, bytes))| chunking_keeps_rows(Req::Logs(logs), rows, bytes, false),
+    );
+}
+
+#[test]
+fn otel_chunked_rows_match_one_chunk_traces() {
+    check(
+        "otel_chunked_rows_match_one_chunk_traces",
+        64,
+        (traces_data(false), chunk_limits()),
+        |(traces, (rows, bytes))| chunking_keeps_rows(Req::Traces(traces), rows, bytes, false),
+    );
+}
+
+#[test]
+fn otel_chunked_rows_match_one_chunk_metrics() {
+    check(
+        "otel_chunked_rows_match_one_chunk_metrics",
+        64,
+        (metrics_data(false), chunk_limits(), any::<bool>()),
+        |(metrics, (rows, bytes), flatten_exemplars)| {
+            chunking_keeps_rows(Req::Metrics(metrics), rows, bytes, flatten_exemplars)
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 2. Robustness of the decoder
 // ---------------------------------------------------------------------------
 
@@ -1503,11 +1651,13 @@ fn decode_is_total(
             // Returns before the dataset field check, the first use of `PARSEABLE`
             let refused = flatten_and_push_otel_protobuf(
                 body,
-                "otel_pb_props",
-                source,
-                &HashMap::new(),
-                telemetry_type,
-                &None,
+                &OtelTarget {
+                    stream_name: "otel_pb_props",
+                    log_source: source,
+                    p_custom_fields: &HashMap::new(),
+                    telemetry_type,
+                    tenant_id: &None,
+                },
             )
             .expect_err("a body that does not decode is refused");
             prop_assert!(matches!(refused, PostError::Invalid(_)), "{refused:?}");
@@ -2377,11 +2527,13 @@ fn run_scenario(seed: u64) -> Result<Scenario, (String, Vec<String>)> {
                 if encoding == Encoding::Protobuf {
                     let refused = flatten_and_push_otel_protobuf(
                         &body,
-                        "dst",
-                        &source,
-                        &HashMap::new(),
-                        request.telemetry_type(),
-                        &None,
+                        &OtelTarget {
+                            stream_name: "dst",
+                            log_source: &source,
+                            p_custom_fields: &HashMap::new(),
+                            telemetry_type: request.telemetry_type(),
+                            tenant_id: &None,
+                        },
                     );
                     if !matches!(&refused, Err(PostError::Invalid(e)) if e.to_string().ends_with(error.as_str()))
                     {

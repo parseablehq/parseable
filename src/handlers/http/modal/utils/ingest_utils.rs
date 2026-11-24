@@ -25,7 +25,9 @@ use opentelemetry_proto::tonic::collector::{
     trace::v1::ExportTraceServiceRequest,
 };
 use opentelemetry_proto::tonic::{
-    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
+    logs::v1::{LogsData, ResourceLogs},
+    metrics::v1::{MetricsData, ResourceMetrics},
+    trace::v1::{ResourceSpans, TracesData},
 };
 use prost::Message as _;
 use rayon::prelude::*;
@@ -48,13 +50,19 @@ use crate::{
             kinesis::{Message, flatten_kinesis_logs},
         },
     },
-    otel::{
-        logs::{flatten_otel_logs, flatten_otel_protobuf as flatten_otel_logs_protobuf},
-        metrics::{flatten_otel_metrics, flatten_otel_metrics_protobuf},
-        otel_utils::deserialize_otel_json,
-        traces::{flatten_otel_traces, flatten_otel_traces_protobuf},
+    metrics::{
+        increment_logs_collected_by_date, increment_metrics_collected_by_date,
+        increment_traces_collected_by_date,
     },
-    parseable::{DEFAULT_TENANT, PARSEABLE},
+    otel::{
+        expansion::{RequestSize, logs_size, metrics_size, traces_size},
+        logs::flatten_logs_into,
+        metrics::flatten_metrics_into,
+        otel_utils::deserialize_otel_json,
+        sink::{CHUNK_LIMITS, Chunker, RowSink, Staged},
+        traces::flatten_traces_into,
+    },
+    parseable::{DEFAULT_TENANT, PARSEABLE, Stream},
     storage::StreamType,
     utils::{
         get_tenant_id_from_request,
@@ -101,7 +109,7 @@ pub async fn process_otel_content(
     stream_name: &str,
     log_source: &LogSource,
     telemetry_type: TelemetryType,
-) -> Result<(), PostError> {
+) -> Result<OtelIngested, PostError> {
     let p_custom_fields = get_otel_custom_fields_from_header(req, log_source);
     let content_type = req
         .headers()
@@ -126,18 +134,35 @@ pub async fn process_otel_content(
         let _ = s.send(r);
     });
 
-    if let Err(e) = r.await.map_err(|e| PostError::CustomError(e.to_string()))? {
-        Err(e)
-    } else {
-        Ok(())
-    }
+    r.await.map_err(|e| PostError::CustomError(e.to_string()))?
 }
 
-/// Response for an OTEL export request that was ingested in full. OTLP/HTTP
+/// How an OTEL export request that was not refused was ingested
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OtelIngested {
+    /// Every record was staged
+    Full,
+    /// Only some records were staged: a client error stopped the request after
+    /// at least one chunk of its rows was staged
+    Partial {
+        /// Log records, data points or spans not staged
+        rejected: i64,
+        /// Why the rest was not staged
+        message: String,
+    },
+}
+
+/// Response for an OTEL export request that was not refused. OTLP/HTTP
 /// answers in the encoding of the request: for protobuf that is an
 /// `Export*ServiceResponse`, whose full-success form encodes to zero bytes.
-/// JSON requests keep the empty response they always had.
-pub fn otel_success_response(req: &HttpRequest) -> HttpResponse {
+/// JSON requests keep the empty response they always had when ingested in
+/// full. A partial success sets `partial_success` (OTLP/HTTP requires status
+/// 200 for it), in the request's own encoding.
+pub fn otel_response(
+    req: &HttpRequest,
+    telemetry_type: TelemetryType,
+    ingested: &OtelIngested,
+) -> HttpResponse {
     let protobuf = req
         .headers()
         .get(CONTENT_TYPE)
@@ -148,7 +173,71 @@ pub fn otel_success_response(req: &HttpRequest) -> HttpResponse {
     if protobuf {
         response.content_type(CONTENT_TYPE_PROTOBUF);
     }
-    response.finish()
+    match ingested {
+        OtelIngested::Full => response.finish(),
+        OtelIngested::Partial { rejected, message } => {
+            if !protobuf {
+                response.content_type(CONTENT_TYPE_JSON);
+            }
+            response.body(partial_success_body(
+                telemetry_type,
+                *rejected,
+                message,
+                protobuf,
+            ))
+        }
+    }
+}
+
+/// The `Export*ServiceResponse` of a partial success, encoded
+fn partial_success_body(
+    telemetry_type: TelemetryType,
+    rejected: i64,
+    message: &str,
+    protobuf: bool,
+) -> Vec<u8> {
+    use opentelemetry_proto::tonic::collector::{
+        logs::v1::{ExportLogsPartialSuccess, ExportLogsServiceResponse},
+        metrics::v1::{ExportMetricsPartialSuccess, ExportMetricsServiceResponse},
+        trace::v1::{ExportTracePartialSuccess, ExportTraceServiceResponse},
+    };
+    fn encode<M: prost::Message + serde::Serialize>(message: M, protobuf: bool) -> Vec<u8> {
+        if protobuf {
+            message.encode_to_vec()
+        } else {
+            serde_json::to_vec(&message).expect("OTLP responses serialise")
+        }
+    }
+    let error_message = message.to_string();
+    match telemetry_type {
+        TelemetryType::Metrics => encode(
+            ExportMetricsServiceResponse {
+                partial_success: Some(ExportMetricsPartialSuccess {
+                    rejected_data_points: rejected,
+                    error_message,
+                }),
+            },
+            protobuf,
+        ),
+        TelemetryType::Traces => encode(
+            ExportTraceServiceResponse {
+                partial_success: Some(ExportTracePartialSuccess {
+                    rejected_spans: rejected,
+                    error_message,
+                }),
+            },
+            protobuf,
+        ),
+        _ => encode(
+            ExportLogsServiceResponse {
+                partial_success: Some(ExportLogsPartialSuccess {
+                    rejected_log_records: rejected,
+                    error_message,
+                }),
+            },
+            protobuf,
+        ),
+    }
 }
 
 /// Payload encodings accepted by the OTEL HTTP endpoints.
@@ -187,7 +276,14 @@ fn handle_otel_ingestion(
     telemetry_type: TelemetryType,
     content_type: Option<String>,
     tenant_id: Option<String>,
-) -> Result<(), PostError> {
+) -> Result<OtelIngested, PostError> {
+    let target = OtelTarget {
+        stream_name: &stream_name,
+        log_source: &log_source,
+        p_custom_fields: &p_custom_fields,
+        telemetry_type,
+        tenant_id: &tenant_id,
+    };
     match content_type {
         Some(content_type) => match classify_otel_content_type(&content_type) {
             Some(OtelContentType::Json) => {
@@ -200,51 +296,182 @@ fn handle_otel_ingestion(
                         return Err(PostError::SerdeError(e));
                     }
                 };
-                if let Err(e) = flatten_and_push_logs(
-                    json,
-                    &stream_name,
-                    &log_source,
-                    &p_custom_fields,
-                    None,
-                    telemetry_type,
-                    &tenant_id,
-                ) {
+                ingest_otel_json(json, &target).inspect_err(|e| {
                     error!("Ingestion failed for stream {stream_name}: {e}");
-                    return Err(e);
-                }
+                })
             }
-            Some(OtelContentType::Protobuf) => {
-                if let Err(e) = flatten_and_push_otel_protobuf(
-                    &body,
-                    &stream_name,
-                    &log_source,
-                    &p_custom_fields,
-                    telemetry_type,
-                    &tenant_id,
-                ) {
+            Some(OtelContentType::Protobuf) => flatten_and_push_otel_protobuf(&body, &target)
+                .inspect_err(|e| {
                     error!("Ingestion failed for stream {stream_name}: {e}");
-                    return Err(e);
-                }
-            }
+                }),
             None => {
                 error!(
                     "Ingestion failed for stream {stream_name}: Unsupported Content-Type: {content_type}. Expected application/json or application/x-protobuf"
                 );
-                return Err(PostError::Invalid(anyhow::anyhow!(
+                Err(PostError::Invalid(anyhow::anyhow!(
                     "Ingestion failed for stream {stream_name}: Unsupported Content-Type: {content_type}. Expected application/json or application/x-protobuf"
-                )));
+                )))
             }
         },
         None => {
             error!(
                 "Ingestion failed for stream {stream_name}: Missing Content-Type header. Expected application/json or application/x-protobuf"
             );
-            return Err(PostError::Invalid(anyhow::anyhow!(
+            Err(PostError::Invalid(anyhow::anyhow!(
                 "Ingestion failed for stream {stream_name}: Missing Content-Type header. Expected application/json or application/x-protobuf"
-            )));
+            )))
         }
     }
-    Ok(())
+}
+
+/// Where the rows of one OTEL request are staged
+struct OtelTarget<'a> {
+    stream_name: &'a str,
+    log_source: &'a LogSource,
+    p_custom_fields: &'a HashMap<String, String>,
+    telemetry_type: TelemetryType,
+    tenant_id: &'a Option<String>,
+}
+
+/// The resources of a decoded OTLP request, from either encoding
+#[derive(Debug, Clone, Copy)]
+enum OtelResources<'a> {
+    Logs(&'a [ResourceLogs]),
+    Metrics(&'a [ResourceMetrics]),
+    Traces(&'a [ResourceSpans]),
+}
+
+impl OtelResources<'_> {
+    /// Rows, row bytes and records of the request, without building a row
+    fn size(&self, flatten_exemplars: bool) -> RequestSize {
+        match self {
+            Self::Logs(resources) => logs_size(resources),
+            Self::Metrics(resources) => metrics_size(resources, flatten_exemplars),
+            Self::Traces(resources) => traces_size(resources),
+        }
+    }
+
+    /// Hands the rows of the request to `sink`, one at a time
+    fn flatten_into<S: RowSink>(
+        &self,
+        budget: &mut FlattenBudget,
+        flatten_exemplars: bool,
+        sink: &mut S,
+    ) -> Result<(), S::Error> {
+        match self {
+            Self::Logs(resources) => flatten_logs_into(resources, budget, sink),
+            Self::Metrics(resources) => flatten_metrics_into(resources, flatten_exemplars, sink),
+            Self::Traces(resources) => flatten_traces_into(resources, sink),
+        }
+    }
+
+    /// The records a partial success reports as rejected: log records, data
+    /// points or spans that were not staged in full
+    fn rejected(&self, size: &RequestSize, staged: &Staged) -> i64 {
+        let (total, staged) = match self {
+            Self::Metrics(_) => (size.points, staged.points),
+            Self::Logs(_) | Self::Traces(_) => (size.records, staged.records),
+        };
+        total.saturating_sub(staged) as i64
+    }
+
+    /// Counts for `tenant_id` the leaf records (log records, spans, metrics)
+    /// whose rows were all staged
+    fn count_collected(&self, records: u64, tenant_id: &str) {
+        if records == 0 {
+            return;
+        }
+        let date = Utc::now().date_naive().to_string();
+        match self {
+            Self::Logs(_) => increment_logs_collected_by_date(records, &date, tenant_id),
+            Self::Metrics(_) => increment_metrics_collected_by_date(records, &date, tenant_id),
+            Self::Traces(_) => increment_traces_collected_by_date(records, &date, tenant_id),
+        }
+    }
+}
+
+/// Stages the rows of one decoded OTEL request in chunks (see `Chunker`), so
+/// that its rows are never all held at once.
+///
+/// Before any chunk is staged, errors are returned as they are. Once at least
+/// one chunk is staged, the request stops at the first failing chunk:
+/// - a client error (status 4xx, such as a schema conflict, the field count
+///   limit or a flatten limit) becomes a partial success that reports every
+///   record not staged in full as rejected, answered with status 200 as
+///   OTLP/HTTP requires;
+/// - a server error keeps its 5xx status. The exporter then retries the whole
+///   request, so the rows of the chunks already staged are staged twice.
+fn ingest_otel_resources(
+    resources: OtelResources<'_>,
+    target: &OtelTarget<'_>,
+) -> Result<OtelIngested, PostError> {
+    let tenant_str = target.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    // Verify the dataset fields count
+    verify_dataset_fields_count(target.stream_name, target.tenant_id)?;
+    let flatten_exemplars = PARSEABLE.options.otel_flatten_exemplars;
+    let size = resources.size(flatten_exemplars);
+
+    // The JSON log bodies of every record of the request share one budget
+    let mut budget = FlattenBudget::new(FlattenLimits::from_config());
+    let mut staging = Staging::new(target.stream_name, target.tenant_id)?;
+    let mut chunker = Chunker::new(CHUNK_LIMITS, |rows: Vec<Value>| {
+        staging.push(
+            Value::Array(rows),
+            target.log_source,
+            target.p_custom_fields,
+            None,
+            target.telemetry_type,
+        )
+    });
+    let result = resources
+        .flatten_into(&mut budget, flatten_exemplars, &mut chunker)
+        .and_then(|()| chunker.finish());
+    let staged = chunker.staged();
+    drop(chunker);
+
+    if result.is_ok() || staged.chunks > 0 {
+        resources.count_collected(staged.records, tenant_str);
+    }
+    match result {
+        Ok(()) => Ok(OtelIngested::Full),
+        Err(error)
+            if staged.chunks > 0
+                && actix_web::ResponseError::status_code(&error).is_client_error() =>
+        {
+            let rejected = resources.rejected(&size, &staged);
+            warn!(
+                "Ingestion into stream {} stopped after {} rows: {error}. {rejected} records rejected",
+                target.stream_name, staged.rows
+            );
+            Ok(OtelIngested::Partial {
+                rejected,
+                message: error.to_string(),
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// The OTEL arms of `handle_otel_ingestion` for a JSON body
+fn ingest_otel_json(json: Value, target: &OtelTarget<'_>) -> Result<OtelIngested, PostError> {
+    let normalise = PARSEABLE.options.normalise_otel_payload;
+    match target.log_source {
+        LogSource::OtelLogs => {
+            let logs: LogsData = deserialize_otel_json(json, normalise)?;
+            ingest_otel_resources(OtelResources::Logs(&logs.resource_logs), target)
+        }
+        LogSource::OtelMetrics => {
+            let metrics: MetricsData = deserialize_otel_json(json, normalise)?;
+            ingest_otel_resources(OtelResources::Metrics(&metrics.resource_metrics), target)
+        }
+        LogSource::OtelTraces => {
+            let traces: TracesData = deserialize_otel_json(json, normalise)?;
+            ingest_otel_resources(OtelResources::Traces(&traces.resource_spans), target)
+        }
+        other => Err(PostError::Invalid(anyhow::anyhow!(
+            "OTLP ingestion requires an OTLP log source, got {other}"
+        ))),
+    }
 }
 
 /// An OTLP/HTTP export request decoded from its protobuf encoding.
@@ -279,56 +506,53 @@ impl OtelProtobufRequest {
         }
     }
 
-    /// Flattens into the same rows the JSON encoding of this request produces.
+    /// The resources of the request, which flatten into the same rows the JSON
+    /// encoding of this request produces
+    fn resources(&self) -> OtelResources<'_> {
+        match self {
+            Self::Logs(message) => OtelResources::Logs(&message.resource_logs),
+            Self::Metrics(message) => OtelResources::Metrics(&message.resource_metrics),
+            Self::Traces(message) => OtelResources::Traces(&message.resource_spans),
+        }
+    }
+
+    /// Flattens into the same rows the JSON encoding of this request produces,
+    /// all at once
+    #[cfg(test)]
     fn flatten(
         &self,
         tenant_id: &str,
         budget: &mut FlattenBudget,
     ) -> Result<Vec<Value>, JsonFlattenError> {
         match self {
-            Self::Logs(message) => flatten_otel_logs_protobuf(message, tenant_id, budget),
-            Self::Metrics(message) => Ok(flatten_otel_metrics_protobuf(message, tenant_id)),
-            Self::Traces(message) => Ok(flatten_otel_traces_protobuf(message, tenant_id)),
+            Self::Logs(message) => {
+                crate::otel::logs::flatten_otel_protobuf(message, tenant_id, budget)
+            }
+            Self::Metrics(message) => Ok(crate::otel::metrics::flatten_otel_metrics_protobuf(
+                message, tenant_id,
+            )),
+            Self::Traces(message) => Ok(crate::otel::traces::flatten_otel_traces_protobuf(
+                message, tenant_id,
+            )),
         }
     }
 }
 
-/// Protobuf counterpart of the OTEL arms of `flatten_and_push_logs`: the typed
-/// request is decoded straight from the body instead of going through a JSON
-/// value tree, then shares flattening limits and the staging path with JSON.
+/// Protobuf counterpart of `ingest_otel_json`: the typed request is decoded
+/// straight from the body instead of going through a JSON value tree, then
+/// shares flattening limits and the staging path with JSON.
 /// The body size is capped by the `PayloadConfig` of the OTEL routes.
 fn flatten_and_push_otel_protobuf(
     body: &[u8],
-    stream_name: &str,
-    log_source: &LogSource,
-    p_custom_fields: &HashMap<String, String>,
-    telemetry_type: TelemetryType,
-    tenant_id: &Option<String>,
-) -> Result<(), PostError> {
-    let request = OtelProtobufRequest::decode(body, log_source).map_err(|e| {
+    target: &OtelTarget<'_>,
+) -> Result<OtelIngested, PostError> {
+    let request = OtelProtobufRequest::decode(body, target.log_source).map_err(|e| {
         PostError::Invalid(anyhow::anyhow!(
-            "Ingestion failed for stream {stream_name}: {e}"
+            "Ingestion failed for stream {}: {e}",
+            target.stream_name
         ))
     })?;
-    let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    // Verify the dataset fields count
-    verify_dataset_fields_count(stream_name, tenant_id)?;
-    // Shared by every record of this request
-    let mut budget = FlattenBudget::new(FlattenLimits::from_config());
-    let records = request.flatten(tenant_str, &mut budget)?;
-    if !records.is_empty() {
-        push_logs(
-            stream_name,
-            Value::Array(records),
-            log_source,
-            p_custom_fields,
-            None,
-            telemetry_type,
-            tenant_id,
-            &mut budget,
-        )?;
-    }
-    Ok(())
+    ingest_otel_resources(request.resources(), target)
 }
 
 #[instrument(
@@ -353,9 +577,13 @@ pub fn flatten_and_push_logs(
     telemetry_type: TelemetryType,
     tenant_id: &Option<String>,
 ) -> Result<(), PostError> {
-    let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    // Verify the dataset fields count
-    verify_dataset_fields_count(stream_name, tenant_id)?;
+    if !matches!(
+        log_source,
+        LogSource::OtelLogs | LogSource::OtelTraces | LogSource::OtelMetrics
+    ) {
+        // Verify the dataset fields count (the OTEL arms do it themselves)
+        verify_dataset_fields_count(stream_name, tenant_id)?;
+    }
     // Shared by every event of this request
     let mut budget = FlattenBudget::new(FlattenLimits::from_config());
 
@@ -376,55 +604,18 @@ pub fn flatten_and_push_logs(
                 &mut budget,
             )?;
         }
-        LogSource::OtelLogs => {
-            let logs: LogsData =
-                deserialize_otel_json(json, PARSEABLE.options.normalise_otel_payload)?;
-            let records = flatten_otel_logs(&logs, tenant_str, &mut budget)?;
-            if !records.is_empty() {
-                push_logs(
-                    stream_name,
-                    Value::Array(records),
-                    log_source,
-                    p_custom_fields,
-                    None,
-                    telemetry_type,
-                    tenant_id,
-                    &mut budget,
-                )?;
-            }
-        }
-        LogSource::OtelTraces => {
-            let traces: TracesData =
-                deserialize_otel_json(json, PARSEABLE.options.normalise_otel_payload)?;
-            let records = flatten_otel_traces(&traces, tenant_str);
-            if !records.is_empty() {
-                push_logs(
-                    stream_name,
-                    Value::Array(records),
-                    log_source,
-                    p_custom_fields,
-                    None,
-                    telemetry_type,
-                    tenant_id,
-                    &mut budget,
-                )?;
-            }
-        }
-        LogSource::OtelMetrics => {
-            let metrics: MetricsData =
-                deserialize_otel_json(json, PARSEABLE.options.normalise_otel_payload)?;
-            let records = flatten_otel_metrics(metrics, tenant_str);
-            if !records.is_empty() {
-                push_logs(
-                    stream_name,
-                    Value::Array(records),
-                    log_source,
-                    p_custom_fields,
-                    None,
-                    telemetry_type,
-                    tenant_id,
-                    &mut budget,
-                )?;
+        // Only reached through `handle_otel_ingestion`, which answers partial
+        // successes itself; here they fail the request
+        LogSource::OtelLogs | LogSource::OtelTraces | LogSource::OtelMetrics => {
+            let target = OtelTarget {
+                stream_name,
+                log_source,
+                p_custom_fields,
+                telemetry_type,
+                tenant_id,
+            };
+            if let OtelIngested::Partial { message, .. } = ingest_otel_json(json, &target)? {
+                return Err(PostError::Invalid(anyhow::Error::msg(message)));
             }
         }
         _ => push_logs(
@@ -469,22 +660,146 @@ pub fn push_logs(
     tenant_id: &Option<String>,
     budget: &mut FlattenBudget,
 ) -> Result<(), PostError> {
-    // Snapshot at request entry. A subscriber attaching later receives ordered
-    // single-row slices from the grouped path.
-    let grouped = use_partitioned_ingest_batching(
-        PARSEABLE.options.partitioned_ingest_batching,
-        PARSEABLE.options.mode,
-        &crate::livetail::LIVETAIL,
+    Staging::new(stream_name, tenant_id)?.push_with_budget(
+        json,
+        log_source,
+        p_custom_fields,
+        time_partition,
+        telemetry_type,
+        budget,
+    )
+}
+
+/// The stream one request is staged into, looked up once, and what every part of
+/// the request shares: its ingestion time (`p_timestamp`) and whether it uses the
+/// grouped path. A request can be staged in several parts (chunks); each part
+/// reads the stream's current schema, so it sees the fields the parts before it
+/// added, as a later request would.
+pub struct Staging<'a> {
+    stream_name: &'a str,
+    tenant_id: &'a Option<String>,
+    stream: std::sync::Arc<Stream>,
+    grouped: bool,
+    p_timestamp: chrono::DateTime<Utc>,
+    /// Flattening budget of the parts, shared by all of them
+    budget: FlattenBudget,
+}
+
+impl<'a> Staging<'a> {
+    pub fn new(stream_name: &'a str, tenant_id: &'a Option<String>) -> Result<Self, PostError> {
+        // Snapshot at request entry. A subscriber attaching later receives ordered
+        // single-row slices from the grouped path.
+        let grouped = use_partitioned_ingest_batching(
+            PARSEABLE.options.partitioned_ingest_batching,
+            PARSEABLE.options.mode,
+            &crate::livetail::LIVETAIL,
+            stream_name,
+        );
+        let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
+        Ok(Self {
+            stream_name,
+            tenant_id,
+            stream,
+            grouped,
+            p_timestamp: Utc::now(),
+            budget: FlattenBudget::new(FlattenLimits::from_config()),
+        })
+    }
+
+    /// Stages one part of the request, charging its flattening to the budget
+    /// all parts share
+    pub fn push(
+        &mut self,
+        json: Value,
+        log_source: &LogSource,
+        p_custom_fields: &HashMap<String, String>,
+        time_partition: Option<String>,
+        telemetry_type: TelemetryType,
+    ) -> Result<(), PostError> {
+        let Self {
+            stream_name,
+            tenant_id,
+            stream,
+            grouped,
+            p_timestamp,
+            budget,
+        } = self;
+        stage_json(
+            StageInto {
+                stream_name,
+                tenant_id,
+                stream,
+                grouped: *grouped,
+                p_timestamp: *p_timestamp,
+            },
+            json,
+            log_source,
+            p_custom_fields,
+            time_partition,
+            telemetry_type,
+            budget,
+        )
+    }
+
+    fn push_with_budget(
+        self,
+        json: Value,
+        log_source: &LogSource,
+        p_custom_fields: &HashMap<String, String>,
+        time_partition: Option<String>,
+        telemetry_type: TelemetryType,
+        budget: &mut FlattenBudget,
+    ) -> Result<(), PostError> {
+        stage_json(
+            StageInto {
+                stream_name: self.stream_name,
+                tenant_id: self.tenant_id,
+                stream: &self.stream,
+                grouped: self.grouped,
+                p_timestamp: self.p_timestamp,
+            },
+            json,
+            log_source,
+            p_custom_fields,
+            time_partition,
+            telemetry_type,
+            budget,
+        )
+    }
+}
+
+/// What `stage_json` takes from a `Staging`
+struct StageInto<'a> {
+    stream_name: &'a str,
+    tenant_id: &'a Option<String>,
+    stream: &'a Stream,
+    grouped: bool,
+    p_timestamp: chrono::DateTime<Utc>,
+}
+
+/// Stages one part of a request
+fn stage_json(
+    into: StageInto<'_>,
+    json: Value,
+    log_source: &LogSource,
+    p_custom_fields: &HashMap<String, String>,
+    time_partition: Option<String>,
+    telemetry_type: TelemetryType,
+    budget: &mut FlattenBudget,
+) -> Result<(), PostError> {
+    let StageInto {
         stream_name,
-    );
-    let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
+        tenant_id,
+        stream,
+        grouped,
+        p_timestamp,
+    } = into;
     let time_partition_limit = stream.get_time_partition_limit();
     let static_schema_flag = stream.get_static_schema_flag();
     let custom_partition = stream.get_custom_partition();
     let schema_version = stream.get_schema_version();
     let schema = stream.get_schema_raw();
     let infer_timestamp = stream.get_infer_timestamp();
-    let p_timestamp = Utc::now();
 
     let data = convert_array_to_object(
         json,
@@ -815,6 +1130,7 @@ pub fn validate_stream_for_ingestion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otel::{logs::flatten_otel_logs, traces::flatten_otel_traces};
     use actix_web::test::TestRequest;
 
     #[test]
@@ -1152,7 +1468,7 @@ mod tests {
     }
 
     #[test]
-    fn otel_success_response_answers_in_the_request_encoding() {
+    fn otel_full_success_response_answers_in_the_request_encoding() {
         use actix_web::http::header::CONTENT_TYPE;
 
         for (request_type, response_type) in [
@@ -1171,7 +1487,11 @@ mod tests {
             if let Some(value) = request_type {
                 req = req.insert_header((CONTENT_TYPE, value));
             }
-            let resp = otel_success_response(&req.to_http_request());
+            let resp = otel_response(
+                &req.to_http_request(),
+                TelemetryType::Logs,
+                &OtelIngested::Full,
+            );
             assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
             assert_eq!(
                 resp.headers()
@@ -1181,6 +1501,68 @@ mod tests {
                 "request content type {request_type:?}"
             );
         }
+    }
+
+    #[actix_web::test]
+    async fn otel_partial_success_is_answered_in_the_request_encoding() {
+        use actix_web::body::MessageBody;
+        use actix_web::http::header::CONTENT_TYPE;
+        use opentelemetry_proto::tonic::collector::{
+            logs::v1::ExportLogsServiceResponse, metrics::v1::ExportMetricsServiceResponse,
+            trace::v1::ExportTraceServiceResponse,
+        };
+
+        let partial = OtelIngested::Partial {
+            rejected: 7,
+            message: "schema conflict".to_string(),
+        };
+        let body = |request_type: &str, telemetry_type| {
+            let req = TestRequest::default()
+                .insert_header((CONTENT_TYPE, request_type))
+                .to_http_request();
+            let resp = otel_response(&req, telemetry_type, &partial);
+            assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+            let content_type = resp
+                .headers()
+                .get(CONTENT_TYPE)
+                .map(|v| v.to_str().unwrap().to_string());
+            (
+                content_type,
+                resp.into_body().try_into_bytes().ok().unwrap(),
+            )
+        };
+
+        let (content_type, bytes) = body("application/x-protobuf", TelemetryType::Logs);
+        assert_eq!(content_type.as_deref(), Some("application/x-protobuf"));
+        let partial_success = ExportLogsServiceResponse::decode(bytes)
+            .unwrap()
+            .partial_success
+            .unwrap();
+        assert_eq!(partial_success.rejected_log_records, 7);
+        assert_eq!(partial_success.error_message, "schema conflict");
+
+        let (_, bytes) = body("application/x-protobuf", TelemetryType::Metrics);
+        let partial_success = ExportMetricsServiceResponse::decode(bytes)
+            .unwrap()
+            .partial_success
+            .unwrap();
+        assert_eq!(partial_success.rejected_data_points, 7);
+
+        let (_, bytes) = body("application/x-protobuf", TelemetryType::Traces);
+        let partial_success = ExportTraceServiceResponse::decode(bytes)
+            .unwrap()
+            .partial_success
+            .unwrap();
+        assert_eq!(partial_success.rejected_spans, 7);
+
+        let (content_type, bytes) = body("application/json", TelemetryType::Traces);
+        assert_eq!(content_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            serde_json::json!({
+                "partialSuccess": { "rejectedSpans": 7, "errorMessage": "schema conflict" }
+            })
+        );
     }
 
     #[test]

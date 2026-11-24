@@ -1336,9 +1336,10 @@ mod tests {
             ExportTraceServiceRequest { resource_spans }
         }
 
-        /// What ingestion does with a decoded request before staging: the rows
-        /// handed over in chunks (collected here)
+        /// What ingestion does with a decoded request before staging: the sizing
+        /// pass, then the rows handed over in chunks (collected here)
         fn flatten(request: &ExportTraceServiceRequest) -> Vec<serde_json::Value> {
+            std::hint::black_box(crate::otel::expansion::traces_size(&request.resource_spans));
             bench::chunked(|chunker| {
                 super::super::flatten_traces_into(&request.resource_spans, chunker)
             })
