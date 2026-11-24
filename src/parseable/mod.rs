@@ -157,6 +157,39 @@ fn resolve_telemetry_type(
 #[cfg(test)]
 pub(crate) static CONTRACT_PARSEABLE_FACTORY: OnceCell<fn() -> Parseable> = OnceCell::new();
 
+/// Test-only: install a factory-backed `PARSEABLE` backed by a temporary
+/// local store, so tests can exercise code that reads the global without the
+/// process command line being parsed. A factory installed by another test
+/// wins (the cell is set once), which is fine: the tests that use this only
+/// need *a* server context, never a specific one.
+#[cfg(test)]
+pub(crate) fn install_default_test_parseable() {
+    fn factory() -> Parseable {
+        use crate::storage::object_storage::ObjectStorageProvider;
+        // Kept for the life of the test process: the global outlives every test
+        let root = tempfile::tempdir().expect("a temporary directory").keep();
+        let provider = Arc::new(crate::storage::FSConfig { root });
+        let storage = provider.construct_client();
+        let metastore = Arc::new(
+            crate::metastore::metastores::object_store_metastore::ObjectStoreMetastore {
+                storage: storage.clone(),
+            },
+        );
+        Parseable::new(
+            crate::cli::Options::default(),
+            #[cfg(feature = "kafka")]
+            <crate::connectors::kafka::config::KafkaConfig as clap::Parser>::parse_from([
+                "contract",
+            ]),
+            provider,
+            metastore,
+            storage,
+        )
+    }
+    let _ = CONTRACT_PARSEABLE_FACTORY.set(factory);
+    Lazy::force(&PARSEABLE);
+}
+
 /// Shared state of the Parseable server.
 pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
     #[cfg(test)]
@@ -1295,6 +1328,40 @@ impl Parseable {
                 // check if tenantID is valid
                 validate_tenant_id(&tenant_id).map_err(|e| anyhow::anyhow!(e))?;
                 let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
+
+                // An API key stored before keys were hashed was hashed by reading
+                // it. Write the metadata back, to storage and to this node's
+                // staging copy, so that the key itself leaves both now, not at
+                // the tenant's next change. The nodes that write the default
+                // tenant's metadata at every start (see
+                // `resolve_parseable_metadata`) do this for theirs; the key keeps
+                // working either way, so a failure here only delays it.
+                //
+                // This runs only where `validate_multi_tenancy` is called at
+                // start, which this repository's own `main` does not do: there a
+                // tenant's keys are hashed in storage at its next metadata write.
+                if crate::rbac::user::stores_unhashed_api_key(&meta) {
+                    let tenant = Some(tenant_id.clone());
+                    if matches!(self.options.mode, Mode::All | Mode::Query)
+                        && let Err(error) = self
+                            .metastore
+                            .put_parseable_metadata(&metadata, &tenant)
+                            .await
+                    {
+                        tracing::warn!(
+                            %tenant_id,
+                            %error,
+                            "Could not rewrite tenant metadata with its API keys hashed"
+                        );
+                    }
+                    if let Err(error) = crate::storage::put_staging_metadata(&metadata, &tenant) {
+                        tracing::warn!(
+                            %tenant_id,
+                            %error,
+                            "Could not rewrite the staging copy of tenant metadata with its API keys hashed"
+                        );
+                    }
+                }
 
                 TENANT_METADATA.insert_tenant(tenant_id.clone(), metadata.clone());
                 recognized_tenants.push(tenant_id);

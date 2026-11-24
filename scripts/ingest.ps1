@@ -79,14 +79,19 @@ function Write-ParseableBanner {
 }
 
 function Write-SetupComplete {
-    param([string]$StreamName)
+    param(
+        [string]$StreamName,
+        [string]$Encoding = "json"
+    )
+
+    $encodingLabel = if ($Encoding -eq "proto") { "OTLP protobuf" } else { "OTLP JSON" }
 
     $accent = "$([char]27)[38;2;158;158;240m"
     $ok = "$([char]27)[38;2;52;211;153m"
     $reset = "$([char]27)[0m"
     Write-Host ""
     Write-Host "${ok}[OK] You're all set!${reset}"
-    Write-Host "Host metrics are now being sent to Parseable as OTLP JSON."
+    Write-Host "Host metrics are now being sent to Parseable as ${encodingLabel}."
     Write-Host "Dataset: " -NoNewline
     Write-Host "${accent}${StreamName}${reset}"
     Write-Host "Return to Parseable and click Continue to verify your data."
@@ -341,6 +346,42 @@ function ConvertTo-YamlSingleQuoted {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+# Returns the exporter encoding to use: "proto" when the server accepts OTLP
+# protobuf, otherwise "json", which every Parseable version accepts.
+# $env:PARSEABLE_OTLP_ENCODING = "json" or "proto" skips the check.
+function Get-OtlpEncoding {
+    param(
+        [string]$Endpoint,
+        [string]$StreamName,
+        [string]$ApiKey,
+        [string]$TenantId
+    )
+
+    if ($env:PARSEABLE_OTLP_ENCODING -ceq "json" -or $env:PARSEABLE_OTLP_ENCODING -ceq "proto") {
+        return $env:PARSEABLE_OTLP_ENCODING
+    }
+
+    try {
+        $headers = @{ "X-API-Key" = $ApiKey; "X-P-Stream" = $StreamName }
+        if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+            $headers["X-P-Tenant"] = $TenantId
+        }
+
+        # An empty body is a valid export request with nothing in it. Servers
+        # with protobuf support answer 200; older ones answer 400, which throws.
+        $response = Invoke-WebRequest -Uri "$Endpoint/v1/metrics" -Method Post -Headers $headers `
+            -ContentType "application/x-protobuf" -Body ([byte[]]@()) -TimeoutSec 15 -UseBasicParsing
+        if ([int]$response.StatusCode -ge 200 -and [int]$response.StatusCode -lt 300) {
+            return "proto"
+        }
+    }
+    catch {
+        # Fall through to JSON
+    }
+
+    return "json"
+}
+
 function Setup-Collector {
     param(
         [string]$IngestorHost,
@@ -400,6 +441,15 @@ function Setup-Collector {
 
     Install-Collector
 
+    $otlpEncoding = Get-OtlpEncoding -Endpoint "${ingestorScheme}://${IngestorHost}:${Port}" `
+        -StreamName $StreamName -ApiKey $ApiKey -TenantId $TenantId
+    if ($otlpEncoding -eq "proto") {
+        Write-Info "Server accepts OTLP protobuf"
+    }
+    else {
+        Write-Info "Using OTLP JSON"
+    }
+
     $endpoint = ConvertTo-YamlSingleQuoted "${ingestorScheme}://${IngestorHost}:${Port}"
     $apiKeyValue = ConvertTo-YamlSingleQuoted $ApiKey
     $streamNameValue = ConvertTo-YamlSingleQuoted $StreamName
@@ -430,7 +480,7 @@ function Setup-Collector {
         "exporters:",
         "  otlp_http/parseable:",
         "    endpoint: $endpoint",
-        "    encoding: json",
+        "    encoding: $otlpEncoding",
         "    compression: none",
         "    headers:",
         "      X-API-Key: $apiKeyValue",
@@ -503,7 +553,7 @@ function Setup-Collector {
 
     Write-Host ""
     if (Start-Collector) {
-        Write-SetupComplete -StreamName $StreamName
+        Write-SetupComplete -StreamName $StreamName -Encoding $otlpEncoding
     }
 }
 

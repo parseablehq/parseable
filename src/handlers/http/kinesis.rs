@@ -376,8 +376,18 @@ mod tests {
             .iter()
             .map(|row| {
                 let mut row = row.clone();
-                crate::utils::json::flatten::flatten(&mut row, "_", None, None, None, false)
-                    .unwrap();
+                crate::utils::json::flatten::flatten(
+                    &mut row,
+                    "_",
+                    None,
+                    None,
+                    None,
+                    false,
+                    &mut crate::utils::json::flatten::FlattenBudget::new(
+                        crate::utils::json::flatten::GENEROUS_LIMITS,
+                    ),
+                )
+                .unwrap();
                 serde_json::to_vec(&row).unwrap().len()
             })
             .sum();

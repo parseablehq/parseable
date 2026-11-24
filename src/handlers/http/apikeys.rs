@@ -16,7 +16,7 @@ use crate::{
         Users,
         map::{read_user_groups, roles, users},
         role::model::{DefaultPrivilege, Role, RoleType},
-        user::{User, UserType},
+        user::{User, UserType, hash_api_key},
     },
     utils::{get_user_and_tenant_from_request, is_admin},
 };
@@ -41,12 +41,14 @@ fn generate_api_key_value() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// Serialisable shape returned by create / get.
+/// Serialisable shape returned by create and get. `api_key` is the key itself
+/// only in the response to create, the one time the server has it; get returns it
+/// masked, as list does.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiKeyResponse<'a> {
     key_id: Ulid,
-    api_key: &'a str,
+    api_key: String,
     key_name: &'a str,
     roles: &'a HashSet<String>,
     created_by: &'a str,
@@ -55,16 +57,25 @@ struct ApiKeyResponse<'a> {
     expires_at: Option<DateTime<Utc>>,
 }
 
-impl<'a> TryFrom<&'a User> for ApiKeyResponse<'a> {
-    type Error = ApiKeyError;
+impl<'a> ApiKeyResponse<'a> {
+    /// The response to creating `user` with the key `created_key`, which is
+    /// returned this once
+    fn created(user: &'a User, created_key: String) -> Result<Self, ApiKeyError> {
+        Self::new(user, Some(created_key))
+    }
 
-    fn try_from(user: &'a User) -> Result<Self, Self::Error> {
+    /// The details of `user`, with its key masked
+    fn masked(user: &'a User) -> Result<Self, ApiKeyError> {
+        Self::new(user, None)
+    }
+
+    fn new(user: &'a User, created_key: Option<String>) -> Result<Self, ApiKeyError> {
         let api_key = user
             .as_api_key()
             .ok_or_else(|| ApiKeyError::KeyNotFound(user.userid().to_string()))?;
         Ok(Self {
             key_id: api_key.key_id,
-            api_key: &api_key.api_key,
+            api_key: created_key.unwrap_or_else(|| api_key.masked_key()),
             key_name: &api_key.key_name,
             roles: &user.roles,
             created_by: &api_key.created_by,
@@ -203,15 +214,9 @@ fn tenant_entries(
 impl ApiKeyListEntry {
     fn from_user(user: &User) -> Option<Self> {
         let api_key = user.as_api_key()?;
-        let masked = if api_key.api_key.len() >= 4 {
-            let last4 = &api_key.api_key[api_key.api_key.len() - 4..];
-            format!("****{last4}")
-        } else {
-            "****".to_string()
-        };
         Some(Self {
             key_id: api_key.key_id,
-            api_key: masked,
+            api_key: api_key.masked_key(),
             key_name: api_key.key_name.clone(),
             roles: user.roles.clone(),
             created_by: api_key.created_by.clone(),
@@ -305,10 +310,11 @@ pub async fn create_api_key(
     }
 
     let key_id = Ulid::new();
+    // The key is kept only until the response is written: the user holds its hash
     let api_key_value = generate_api_key_value();
     let mut user = User::new_api_key(
         key_id,
-        api_key_value,
+        api_key_value.clone(),
         body.key_name,
         body.roles,
         created_by,
@@ -351,7 +357,7 @@ pub async fn create_api_key(
         tracing::error!("Failed to sync API-key user creation: {e}");
     }
 
-    let response = ApiKeyResponse::try_from(&user)?;
+    let response = ApiKeyResponse::created(&user, api_key_value)?;
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -442,17 +448,20 @@ pub async fn validate_api_key(
     let (_, tenant_id) = get_user_and_tenant_from_request(&req)
         .map_err(|_| ApiKeyError::Unauthorized("Missing user identity".into()))?;
     let now = Utc::now();
+    let hash = hash_api_key(&body.api_key);
     let valid = collect_tenant_api_keys(&tenant_id)
         .iter()
         .filter_map(|u| u.as_api_key())
-        .any(|k| k.matches_active_key(&body.api_key, now));
+        .any(|k| k.matches_active_hash(&hash, now));
 
     Ok(HttpResponse::Ok().json(ValidateApiKeyResponse { valid }))
 }
 
 /// GET /api/prism/v1/apikeys/{key_id}
 ///
-/// Get a specific API key (full key visible). Only admins can get keys.
+/// Get a specific API key. Only admins can get keys. The key itself is not
+/// kept, so `apiKey` is masked here as it is in the list: the key is returned
+/// once, by the request that creates it.
 pub async fn get_api_key(
     req: HttpRequest,
     path: web::Path<String>,
@@ -467,7 +476,7 @@ pub async fn get_api_key(
         .find(|u| u.as_api_key().map(|k| k.key_id == key_id).unwrap_or(false))
         .ok_or_else(|| ApiKeyError::KeyNotFound(key_id.to_string()))?;
 
-    let response = ApiKeyResponse::try_from(&user)?;
+    let response = ApiKeyResponse::masked(&user)?;
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -508,12 +517,50 @@ mod tests {
         };
         key.expires_at = Some(expiry);
         assert!(!key.matches_active_key("test-secret", expiry));
-        let detail = serde_json::to_value(ApiKeyResponse::try_from(&user).unwrap()).unwrap();
+        let detail = serde_json::to_value(ApiKeyResponse::masked(&user).unwrap()).unwrap();
         let entry = serde_json::to_value(ApiKeyListEntry::from_user(&user).unwrap()).unwrap();
         assert_eq!(detail["expiresAt"], serde_json::to_value(expiry).unwrap());
         assert_eq!(entry["expiresAt"], detail["expiresAt"]);
         assert_eq!(entry["apiKey"], "****cret");
-        assert_eq!(detail["apiKey"], "test-secret");
+        assert_eq!(detail["apiKey"], "****cret");
+    }
+
+    /// The key is in the response to create and nowhere after it: get and list
+    /// return the mask, and neither they nor the stored user hold the key or
+    /// its hash where a response could show it.
+    #[test]
+    fn key_is_returned_by_create_only() {
+        let key = generate_api_key_value();
+        let user = User::new_api_key(
+            Ulid::new(),
+            key.clone(),
+            "test".into(),
+            HashSet::new(),
+            "admin".into(),
+            None,
+        );
+        let created =
+            serde_json::to_value(ApiKeyResponse::created(&user, key.clone()).unwrap()).unwrap();
+        assert_eq!(created["apiKey"], key.as_str());
+
+        let masked = format!("****{}", &key[key.len() - 4..]);
+        let detail = serde_json::to_string(&ApiKeyResponse::masked(&user).unwrap()).unwrap();
+        let entry = serde_json::to_string(&ApiKeyListEntry::from_user(&user).unwrap()).unwrap();
+        let hash = hash_api_key(&key);
+        for response in [&detail, &entry] {
+            let value: serde_json::Value = serde_json::from_str(response).unwrap();
+            assert_eq!(value["apiKey"], masked.as_str());
+            assert!(!response.contains(&key), "{response}");
+            assert!(!response.contains(&hash), "{response}");
+            assert!(value.get("keyHash").is_none(), "{response}");
+        }
+        // The same fields as the response to create, so clients read both alike
+        let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+        assert_eq!(
+            detail.as_object().unwrap().keys().collect::<Vec<_>>(),
+            created.as_object().unwrap().keys().collect::<Vec<_>>()
+        );
+        assert!(!serde_json::to_string(&user).unwrap().contains(&key));
     }
 
     #[test]
@@ -526,7 +573,7 @@ mod tests {
             "admin".into(),
             None,
         );
-        let detail = serde_json::to_value(ApiKeyResponse::try_from(&user).unwrap()).unwrap();
+        let detail = serde_json::to_value(ApiKeyResponse::masked(&user).unwrap()).unwrap();
         let entry = serde_json::to_value(ApiKeyListEntry::from_user(&user).unwrap()).unwrap();
         assert!(detail.get("expiresAt").unwrap().is_null());
         assert!(entry.get("expiresAt").unwrap().is_null());

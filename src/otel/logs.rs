@@ -15,19 +15,23 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use super::otel_utils::attribute_capacity;
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
-use super::otel_utils::insert_attributes;
+use super::otel_utils::insert_attributes_fitted;
+use super::sink::{CHUNK_LIMITS, RowSink, VALUE_BYTES, heap_bytes};
 use crate::metrics::increment_logs_collected_by_date;
 use crate::utils::json::flatten::{
     FlattenBudget, FlattenCost, JsonFlattenError, expand_generic_flattening, flatten_pipeline_cost,
     string_json_len,
 };
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
-use opentelemetry_proto::tonic::logs::v1::ScopeLogs;
+use opentelemetry_proto::tonic::logs::v1::ResourceLogs;
 use opentelemetry_proto::tonic::logs::v1::SeverityNumber;
+use opentelemetry_proto::tonic::resource::v1::Resource;
 use serde_json::Map;
 use serde_json::Value;
 
@@ -114,20 +118,6 @@ fn severity_number_from_text(severity_text: &str) -> Option<i32> {
     }
 }
 
-/// Add the normalized severity fields to the flattened JSON.
-fn flatten_severity(severity_number: i32, severity_text: &str) -> Map<String, Value> {
-    let mut severity_json: Map<String, Value> = Map::new();
-    severity_json.insert(
-        "severity_number".to_string(),
-        Value::Number(severity_number.into()),
-    );
-    severity_json.insert(
-        "severity_text".to_string(),
-        Value::String(severity_text.to_string()),
-    );
-    severity_json
-}
-
 /// Maps OTel severity_number (0–24) to a log category.
 /// See https://opentelemetry.io/docs/specs/otel/logs/data-model/#severity-fields
 fn category_from_severity(severity_number: i32) -> Option<&'static str> {
@@ -170,6 +160,215 @@ fn category_from_body(body_str: &str) -> &'static str {
         .map_or("UNSPECIFIED", |(_, label)| *label)
 }
 
+/// Most memory the JSON text bodies of one log record may be parsed into: one
+/// chunk of rows. JSON text of typical logs parses into about 8 bytes per byte,
+/// so a body of a MiB or two of such text is parsed. A body that would take more
+/// is kept as its text, like text that is not JSON.
+pub const MAX_PARSED_BODY_BYTES: usize = CHUNK_LIMITS.bytes;
+
+/// Most bytes one byte of JSON text parses into, at the peak of parsing it: each
+/// level of arrays nested in arrays (`[` and `]`, two bytes) is a `Vec` of four
+/// 72 byte `Value`s, which is the most any two bytes of text make (see
+/// `json_object_text_bytes`)
+const PARSED_BYTES_PER_TEXT_BYTE: usize = 2 * VALUE_BYTES;
+
+/// Parses every body that is the JSON text of an object, as the fields of the
+/// record are extracted from those only. Bodies are measured before they are
+/// parsed: a body whose text could parse into more than what is left of
+/// `MAX_PARSED_BODY_BYTES` is first scanned without allocating, which finds its
+/// type and the memory parsing it takes. A body that would take more than is left
+/// is not parsed, and neither is text that is not an object: those are kept as
+/// their text.
+fn parse_json_object_bodies(body_json: &Map<String, Value>) -> Vec<Option<Value>> {
+    let mut held = 0usize;
+    let mut parsed = Vec::with_capacity(body_json.len());
+    for value in body_json.values() {
+        let Value::String(text) = value else {
+            parsed.push(None);
+            continue;
+        };
+        let most = text.len().saturating_mul(PARSED_BYTES_PER_TEXT_BYTE);
+        if held.saturating_add(most) > MAX_PARSED_BODY_BYTES {
+            match json_object_text_bytes(text) {
+                Some(bytes) if held.saturating_add(bytes) <= MAX_PARSED_BODY_BYTES => {
+                    held += bytes;
+                }
+                // Not the JSON text of an object, or too large to parse: kept as text
+                _ => {
+                    parsed.push(None);
+                    continue;
+                }
+            }
+        } else {
+            held += most;
+        }
+        parsed.push(
+            serde_json::from_str::<Value>(text)
+                .ok()
+                .filter(Value::is_object),
+        );
+    }
+    parsed
+}
+
+/// Size of one `serde_json::Map` entry (an `IndexMap` bucket): the hash, the key
+/// and the value
+const MAP_ENTRY_BYTES: usize =
+    std::mem::size_of::<usize>() + std::mem::size_of::<String>() + VALUE_BYTES;
+
+/// Most memory `serde_json::from_str::<Value>(text)` holds at once while parsing
+/// `text`, when it is the JSON text of an object, found without allocating; `None`
+/// for any other text.
+///
+/// Containers are counted at the capacity they grow to while their elements are
+/// pushed one at a time: a `Vec` to at least 4 elements and then by doubling, a
+/// map's hash table by doubling its buckets (3, 7, 14, 28... entries fit) and its
+/// entries to what the table fits. The old block of the last growth is counted as
+/// well, as a reallocation holds both. So is the scratch buffer strings with escapes
+/// are unescaped into, at three times the longest string. Repeated keys are counted
+/// as distinct ones. The most any two bytes of text make is one more level of
+/// arrays nested in arrays: a `Vec` of four `Value`s, `2 * VALUE_BYTES` per byte,
+/// which `PARSED_BYTES_PER_TEXT_BYTE` is.
+fn json_object_text_bytes(text: &str) -> Option<usize> {
+    use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+
+    /// Heap bytes of one parsed value, whether it is an object, and the longest
+    /// string in it
+    struct Parsed {
+        bytes: usize,
+        object: bool,
+        longest: usize,
+    }
+
+    impl Parsed {
+        fn scalar() -> Self {
+            Self {
+                bytes: 0,
+                object: false,
+                longest: 0,
+            }
+        }
+    }
+
+    /// Bytes of a `Vec` of `len` values pushed one at a time, at the peak of its
+    /// last growth
+    fn vec_bytes(len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        let capacity = len.next_power_of_two().max(4);
+        let previous = if len > 4 { capacity / 2 } else { 0 };
+        heap_bytes(capacity.saturating_mul(VALUE_BYTES))
+            .saturating_add(heap_bytes(previous.saturating_mul(VALUE_BYTES)))
+    }
+
+    /// Bytes of a map of `len` entries inserted one at a time, at the peak of its
+    /// last growth: the hash table of `usize` indices (8 bytes and a control byte
+    /// per bucket, and one group of control bytes), and the entries, which grow to
+    /// what the table fits
+    fn map_bytes(len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        let fits = |buckets: usize| {
+            if buckets < 8 {
+                buckets - 1
+            } else {
+                buckets / 8 * 7
+            }
+        };
+        let mut buckets = 4usize;
+        while fits(buckets) < len {
+            buckets = buckets.saturating_mul(2);
+        }
+        let table = heap_bytes(buckets.saturating_mul(9).saturating_add(16));
+        let entries = heap_bytes(fits(buckets).saturating_mul(MAP_ENTRY_BYTES));
+        let previous = if buckets > 4 {
+            heap_bytes(fits(buckets / 2).saturating_mul(MAP_ENTRY_BYTES))
+        } else {
+            0
+        };
+        table.saturating_add(entries).saturating_add(previous)
+    }
+
+    impl<'de> Deserialize<'de> for Parsed {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_any(ParsedVisitor)
+        }
+    }
+
+    struct ParsedVisitor;
+
+    impl<'de> Visitor<'de> for ParsedVisitor {
+        type Value = Parsed;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("any JSON value")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<Parsed, E> {
+            Ok(Parsed::scalar())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<Parsed, E> {
+            Ok(Parsed::scalar())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<Parsed, E> {
+            Ok(Parsed::scalar())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<Parsed, E> {
+            Ok(Parsed::scalar())
+        }
+        fn visit_unit<E>(self) -> Result<Parsed, E> {
+            Ok(Parsed::scalar())
+        }
+        fn visit_str<E>(self, s: &str) -> Result<Parsed, E> {
+            Ok(Parsed {
+                bytes: heap_bytes(s.len()),
+                object: false,
+                longest: s.len(),
+            })
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Parsed, A::Error> {
+            let mut len = 0usize;
+            let mut bytes = 0usize;
+            let mut longest = 0usize;
+            while let Some(element) = seq.next_element::<Parsed>()? {
+                len += 1;
+                bytes = bytes.saturating_add(element.bytes);
+                longest = longest.max(element.longest);
+            }
+            Ok(Parsed {
+                bytes: bytes.saturating_add(vec_bytes(len)),
+                object: false,
+                longest,
+            })
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Parsed, A::Error> {
+            let mut len = 0usize;
+            let mut bytes = 0usize;
+            let mut longest = 0usize;
+            while let Some(key) = map.next_key::<Parsed>()? {
+                let value = map.next_value::<Parsed>()?;
+                len += 1;
+                bytes = bytes.saturating_add(key.bytes).saturating_add(value.bytes);
+                longest = longest.max(key.longest).max(value.longest);
+            }
+            Ok(Parsed {
+                bytes: bytes.saturating_add(map_bytes(len)),
+                object: true,
+                longest,
+            })
+        }
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let parsed = Parsed::deserialize(&mut deserializer).ok()?;
+    deserializer.end().ok()?;
+    let scratch = heap_bytes(parsed.longest.saturating_mul(3));
+    parsed
+        .object
+        .then_some(parsed.bytes.saturating_add(scratch))
+}
+
 /// this function flattens the `LogRecord` object
 /// and returns a `Map` of the flattened json
 /// this function is called recursively for each log record object in the otel logs
@@ -178,7 +377,25 @@ pub fn flatten_log_record(
     log_record: &LogRecord,
     budget: &mut FlattenBudget,
 ) -> Result<Map<String, Value>, JsonFlattenError> {
-    let mut log_record_json: Map<String, Value> = Map::new();
+    // Fixed fields plus the record attributes; body fields can add more, but
+    // one growth is cheaper than the four an empty map needs for these
+    let capacity = 16 + attribute_capacity(&log_record.attributes);
+    let mut log_record_json: Map<String, Value> = Map::with_capacity(capacity);
+    flatten_log_record_into(log_record, budget, &mut log_record_json, capacity)?;
+    Ok(log_record_json)
+}
+
+/// The fields of `flatten_log_record`, inserted into `log_record_json` (which is
+/// a finished row when the record is one of a scope). `capacity` is the room the
+/// map was created with, `attribute_capacity` of the record's attributes included:
+/// what repeated attribute keys did not use is given back, because the map is
+/// kept as the row.
+fn flatten_log_record_into(
+    log_record: &LogRecord,
+    budget: &mut FlattenBudget,
+    log_record_json: &mut Map<String, Value>,
+    capacity: usize,
+) -> Result<(), JsonFlattenError> {
     log_record_json.insert(
         "time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -194,7 +411,11 @@ pub fn flatten_log_record(
 
     let (severity_number, severity_text) =
         normalize_severity(log_record.severity_number, &log_record.severity_text);
-    log_record_json.extend(flatten_severity(severity_number, &severity_text));
+    log_record_json.insert(
+        "severity_number".to_string(),
+        Value::Number(severity_number.into()),
+    );
+    log_record_json.insert("severity_text".to_string(), Value::String(severity_text));
 
     // Primary: derive category from the normalized severity_number
     let mut log_category = category_from_severity(severity_number);
@@ -203,15 +424,7 @@ pub fn flatten_log_record(
         let body = &log_record.body;
         let body_json = collect_json_from_values(body, "body");
         // Values that are strings which can be parsed as JSON objects get their fields extracted
-        let parsed_bodies: Vec<Option<Value>> = body_json
-            .values()
-            .map(|value| match value {
-                Value::String(s) => serde_json::from_str::<Value>(s)
-                    .ok()
-                    .filter(Value::is_object),
-                _ => None,
-            })
-            .collect();
+        let parsed_bodies = parse_json_object_bodies(&body_json);
         // The rows of every parsed body are merged into this record, but they are all built
         // first, so charge all of them before building any
         let limits = budget.limits();
@@ -279,7 +492,7 @@ pub fn flatten_log_record(
         }
     }
 
-    insert_attributes(&mut log_record_json, &log_record.attributes);
+    insert_attributes_fitted(log_record_json, &log_record.attributes, capacity);
 
     // Insert after attributes so a client-sent "p_log_category" cannot override
     log_record_json.insert(
@@ -304,24 +517,23 @@ pub fn flatten_log_record(
         Value::String(hex::encode(&log_record.trace_id)),
     );
 
-    Ok(log_record_json)
+    Ok(())
 }
 
-/// this function flattens the `ScopeLogs` object
-/// and returns a `Vec` of `Map` of the flattened json
-fn flatten_scope_log(
-    scope_log: &ScopeLogs,
-    budget: &mut FlattenBudget,
-) -> Result<Vec<Map<String, Value>>, JsonFlattenError> {
-    let mut vec_scope_log_json = Vec::new();
-    let mut scope_log_json = Map::new();
-    if let Some(scope) = &scope_log.scope {
+/// Fields every row of one `ScopeLogs` gets, before the record's own fields
+pub fn scope_log_fields(
+    scope: Option<&InstrumentationScope>,
+    schema_url: &str,
+) -> Map<String, Value> {
+    let capacity = 5 + scope.map_or(0, |scope| attribute_capacity(&scope.attributes));
+    let mut scope_log_json = Map::with_capacity(capacity);
+    if let Some(scope) = scope {
         scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
         scope_log_json.insert(
             "scope_version".to_string(),
             Value::String(scope.version.clone()),
         );
-        insert_attributes(&mut scope_log_json, &scope.attributes);
+        insert_attributes_fitted(&mut scope_log_json, &scope.attributes, capacity);
         scope_log_json.insert(
             "scope_dropped_attributes_count".to_string(),
             Value::Number(scope.dropped_attributes_count.into()),
@@ -329,70 +541,91 @@ fn flatten_scope_log(
     }
     scope_log_json.insert(
         "scope_log_schema_url".to_string(),
-        Value::String(scope_log.schema_url.clone()),
+        Value::String(schema_url.to_string()),
     );
-
-    for log_record in &scope_log.log_records {
-        let log_record_json = flatten_log_record(log_record, budget)?;
-        let mut combined_json = scope_log_json.clone();
-        combined_json.extend(log_record_json);
-        vec_scope_log_json.push(combined_json);
-    }
-
-    Ok(vec_scope_log_json)
+    scope_log_json
 }
 
-/// Common function to process resource logs and merge resource-level fields
-fn process_resource_logs<T>(
-    resource_logs: &[T],
-    get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
-    get_scope_logs: fn(&T) -> &[ScopeLogs],
-    get_schema_url: fn(&T) -> &str,
-    tenant_id: &str,
-    budget: &mut FlattenBudget,
-) -> Result<Vec<Value>, JsonFlattenError>
-where
-    T: std::fmt::Debug,
-{
-    let mut vec_otel_json = Vec::new();
-    let mut logs_collected: u64 = 0;
-
-    for resource_log in resource_logs {
-        let mut resource_log_json = Map::new();
-
-        // Process resource attributes if present
-        if let Some(resource) = get_resource(resource_log) {
-            insert_attributes(&mut resource_log_json, &resource.attributes);
-            resource_log_json.insert(
-                "resource_dropped_attributes_count".to_string(),
-                Value::Number(resource.dropped_attributes_count.into()),
-            );
-        }
-
-        let mut vec_resource_logs_json = Vec::new();
-        let scope_logs = get_scope_logs(resource_log);
-
-        for scope_log in scope_logs {
-            vec_resource_logs_json.extend(flatten_scope_log(scope_log, budget)?);
-            logs_collected += scope_log.log_records.len() as u64;
-        }
-
+/// Fields every row of one `ResourceLogs` gets, after the record's own fields
+pub fn resource_log_fields(resource: Option<&Resource>, schema_url: &str) -> Map<String, Value> {
+    let capacity = 4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes));
+    let mut resource_log_json = Map::with_capacity(capacity);
+    if let Some(resource) = resource {
+        insert_attributes_fitted(&mut resource_log_json, &resource.attributes, capacity);
         resource_log_json.insert(
-            "schema_url".to_string(),
-            Value::String(get_schema_url(resource_log).to_string()),
+            "resource_dropped_attributes_count".to_string(),
+            Value::Number(resource.dropped_attributes_count.into()),
         );
+    }
+    resource_log_json.insert(
+        "schema_url".to_string(),
+        Value::String(schema_url.to_string()),
+    );
+    resource_log_json
+}
 
-        for resource_logs_json in &mut vec_resource_logs_json {
-            resource_logs_json.extend(resource_log_json.clone());
-            vec_otel_json.push(Value::Object(resource_logs_json.clone()));
+/// The row of one log record: the scope fields, the record's own fields over them,
+/// then the resource fields over both
+pub fn log_record_row(
+    log_record: &LogRecord,
+    scope_fields: &Map<String, Value>,
+    resource_fields: &Map<String, Value>,
+    budget: &mut FlattenBudget,
+) -> Result<Map<String, Value>, JsonFlattenError> {
+    // Sized so that the record inserts and the resource merge below never have to
+    // grow the map: a growth rehashes every entry of the row. The record's own
+    // fields go straight into the row instead of a scratch map that is hashed a
+    // second time when it is merged.
+    let capacity = scope_fields.len()
+        + resource_fields.len()
+        + 16
+        + attribute_capacity(&log_record.attributes);
+    let mut row = Map::with_capacity(capacity);
+    row.extend(scope_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+    flatten_log_record_into(log_record, budget, &mut row, capacity)?;
+    row.extend(resource_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+    Ok(row)
+}
+
+/// Hands the row of every log record of `resource_logs` to `sink`, one at a time.
+/// The JSON bodies of every record are charged to `budget`, which all records of the
+/// request share, before their rows are built.
+pub fn flatten_logs_into<S: RowSink + ?Sized>(
+    resource_logs: &[ResourceLogs],
+    budget: &mut FlattenBudget,
+    sink: &mut S,
+) -> Result<(), S::Error> {
+    for resource_log in resource_logs {
+        let resource_fields =
+            resource_log_fields(resource_log.resource.as_ref(), &resource_log.schema_url);
+        for scope_log in &resource_log.scope_logs {
+            let scope_fields = scope_log_fields(scope_log.scope.as_ref(), &scope_log.schema_url);
+            for log_record in &scope_log.log_records {
+                sink.row(log_record_row(
+                    log_record,
+                    &scope_fields,
+                    &resource_fields,
+                    budget,
+                )?)?;
+                sink.record_end();
+            }
         }
     }
+    Ok(())
+}
 
-    // Only count the logs of a request that was converted in full
+/// All rows of `resource_logs` at once. Counts the records for `tenant_id` once
+/// every one was converted. Ingestion streams the rows instead, see `flatten_logs_into`.
+fn collect_resource_logs(
+    resource_logs: &[ResourceLogs],
+    tenant_id: &str,
+    budget: &mut FlattenBudget,
+) -> Result<Vec<Value>, JsonFlattenError> {
+    let mut rows = Vec::new();
+    flatten_logs_into(resource_logs, budget, &mut rows)?;
     let date = chrono::Utc::now().date_naive().to_string();
-    increment_logs_collected_by_date(logs_collected, &date, tenant_id);
-
-    Ok(vec_otel_json)
+    increment_logs_collected_by_date(rows.len() as u64, &date, tenant_id);
+    Ok(rows)
 }
 
 /// Same as `flatten_otel_logs`, for the protobuf request
@@ -401,14 +634,7 @@ pub fn flatten_otel_protobuf(
     tenant_id: &str,
     budget: &mut FlattenBudget,
 ) -> Result<Vec<Value>, JsonFlattenError> {
-    process_resource_logs(
-        &message.resource_logs,
-        |record| record.resource.as_ref(),
-        |record| &record.scope_logs,
-        |record| &record.schema_url,
-        tenant_id,
-        budget,
-    )
+    collect_resource_logs(&message.resource_logs, tenant_id, budget)
 }
 
 /// this function performs the custom flattening of the otel logs
@@ -421,14 +647,7 @@ pub fn flatten_otel_logs(
     tenant_id: &str,
     budget: &mut FlattenBudget,
 ) -> Result<Vec<Value>, JsonFlattenError> {
-    process_resource_logs(
-        &message.resource_logs,
-        |record| record.resource.as_ref(),
-        |record| &record.scope_logs,
-        |record| &record.schema_url,
-        tenant_id,
-        budget,
-    )
+    collect_resource_logs(&message.resource_logs, tenant_id, budget)
 }
 
 #[cfg(test)]
@@ -440,6 +659,65 @@ mod tests {
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, KeyValueList, any_value};
     use opentelemetry_proto::tonic::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
     use serde_json::json;
+
+    /// Resident memory of this process in bytes
+    #[cfg(target_os = "linux")]
+    fn resident_bytes() -> usize {
+        let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+        let pages: usize = statm.split_whitespace().nth(1).unwrap().parse().unwrap();
+        pages * 4096
+    }
+
+    // The scope map is cloned into every record's row, capacity included. Sized
+    // by the raw attribute count, 200k valueless scope attributes (two bytes
+    // each on the wire) made every one of 10k rows carry a map for 200k
+    // entries: a body of half a megabyte held about 3 GiB.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "measures the resident memory of the process; run it alone"]
+    fn valueless_scope_attributes_do_not_inflate_every_row() {
+        use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+
+        let logs = LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        attributes: vec![KeyValue::default(); 200_000],
+                        ..Default::default()
+                    }),
+                    log_records: (0..10_000u64)
+                        .map(|i| LogRecord {
+                            time_unix_nano: 1_700_000_000_000_000_000 + i,
+                            observed_time_unix_nano: 1_700_000_000_000_000_000 + i,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let before = resident_bytes();
+        let rows = flatten_otel_logs(
+            &logs,
+            "tenant",
+            &mut FlattenBudget::new(crate::utils::json::flatten::GENEROUS_LIMITS),
+        )
+        .unwrap();
+        let grown = resident_bytes().saturating_sub(before);
+        println!(
+            "{} rows hold {} MiB of resident memory",
+            rows.len(),
+            grown / (1024 * 1024)
+        );
+        assert_eq!(rows.len(), 10_000);
+        assert!(
+            grown < 256 * 1024 * 1024,
+            "{} MiB for 10k rows without attributes",
+            grown / (1024 * 1024)
+        );
+    }
 
     fn flatten_record(
         number: i32,
@@ -870,8 +1148,18 @@ mod tests {
                         .map(|(field, value)| (format!("{key}_{field}"), value.clone()))
                         .collect(),
                 );
-                crate::utils::json::flatten::flatten(&mut prefixed, "_", None, None, None, false)
-                    .unwrap();
+                crate::utils::json::flatten::flatten(
+                    &mut prefixed,
+                    "_",
+                    None,
+                    None,
+                    None,
+                    false,
+                    &mut crate::utils::json::flatten::FlattenBudget::new(
+                        crate::utils::json::flatten::GENEROUS_LIMITS,
+                    ),
+                )
+                .unwrap();
                 serde_json::to_vec(&prefixed).unwrap().len()
             })
             .sum()
@@ -912,5 +1200,344 @@ mod tests {
                 bytes: expected
             }
         );
+    }
+
+    const MIB: usize = 1024 * 1024;
+
+    /// A JSON object of `fields` fields `"f0000000":0`, the reviewer's shape
+    fn many_fields(fields: usize) -> String {
+        let mut text = String::from("{");
+        for i in 0..fields {
+            if i > 0 {
+                text.push(',');
+            }
+            text.push_str(&format!("\"f{i:07}\":0"));
+        }
+        text.push('}');
+        text
+    }
+
+    fn timed_record(body: String) -> LogRecord {
+        LogRecord {
+            time_unix_nano: 1_700_000_000_000_000_000,
+            observed_time_unix_nano: 1_700_000_000_000_000_000,
+            body: string_body(&body),
+            ..Default::default()
+        }
+    }
+
+    /// Review findings 2 and 6: a JSON text body was parsed when its parse was
+    /// estimated under 64 MiB (a 3 MiB body of 241,980 fields was accepted and
+    /// peaked at 180 MiB), and a body estimated over it refused its record with
+    /// `LogBodyTooLarge` (450,000 fields, 5.6 MiB, which `b8c7d979` accepted). Now
+    /// at most one chunk's worth (16 MiB) of parsed memory is allowed, and a body
+    /// over it is kept as its text, as text that is not JSON is: never refused.
+    #[test]
+    fn json_text_body_over_one_chunk_of_parsed_memory_is_kept_as_text() {
+        let mut measured = Vec::new();
+        for fields in [241_980usize, 400_000, 450_000] {
+            let text = many_fields(fields);
+            let record = timed_record(text.clone());
+            let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
+            let (flattened, allocated) =
+                crate::test_alloc::measure(|| flatten_log_record(&record, &mut budget));
+            println!(
+                "REGRESSION JSON text body of {fields} fields: text {:.2} MiB, {}, peak {:.1} MiB",
+                text.len() as f64 / MIB as f64,
+                match &flattened {
+                    Ok(row) => format!("{} fields", row.len()),
+                    Err(e) => format!("refused: {e}"),
+                },
+                allocated.peak as f64 / MIB as f64,
+            );
+            measured.push((fields, text, flattened, allocated.peak));
+        }
+        for (fields, text, flattened, peak) in measured {
+            let row = flattened.expect("the record is not refused");
+            assert_eq!(row["body"], json!(text));
+            assert!(
+                !row.keys().any(|key| key.starts_with("body_")),
+                "{fields} fields: the body was parsed"
+            );
+            // Copies of the text: the body field, its copy in the row, and the
+            // text the category is looked for in (severity is unset)
+            assert!(peak < 5 * text.len() + MIB, "{fields} fields");
+        }
+        // A body whose parse fits in one chunk is still parsed
+        let text = many_fields(40_000);
+        let row = flatten_log_record(
+            &timed_record(text),
+            &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+        )
+        .unwrap();
+        assert_eq!(row["body_f0039999"], json!(0));
+    }
+
+    /// Review finding 6: the scan before parsing estimated under 64 MiB for an
+    /// object of 400,000 fields whose parse held 74.5 MiB. The estimate counts the
+    /// table and entries an `IndexMap` grows to, a `Vec` the capacity it doubles
+    /// to, and the old block of the last growth, which a reallocation holds too.
+    #[test]
+    fn parsed_body_estimate_covers_what_parsing_holds() {
+        let mut shapes: Vec<(String, String)> =
+            [1usize, 3, 4, 7, 8, 15, 100, 1000, 100_000, 400_000]
+                .into_iter()
+                .map(|n| (format!("object of {n} fields"), many_fields(n)))
+                .collect();
+        for n in [1usize, 4, 5, 1000, 262_145] {
+            let numbers = vec!["0"; n].join(",");
+            shapes.push((format!("{n} numbers"), format!(r#"{{"a":[{numbers}]}}"#)));
+            let singles = vec!["[0]"; n].join(",");
+            shapes.push((
+                format!("{n} one-number arrays"),
+                format!(r#"{{"a":[{singles}]}}"#),
+            ));
+            let objects = vec![r#"{"k":"v","n":1}"#; n].join(",");
+            shapes.push((
+                format!("{n} small objects"),
+                format!(r#"{{"a":[{objects}]}}"#),
+            ));
+        }
+        for n in [1000usize, 1_000_000] {
+            // Escapes are unescaped into a scratch buffer while parsing
+            shapes.push((
+                format!("escaped string of {n} bytes"),
+                format!(r#"{{"m":"{}"}}"#, "\\n".repeat(n)),
+            ));
+        }
+        shapes.push((
+            "nested objects".into(),
+            format!("{}0{}", r#"{"a":"#.repeat(100), "}".repeat(100)),
+        ));
+        let mut under = Vec::new();
+        for (name, text) in shapes {
+            let estimate = super::json_object_text_bytes(&text).expect("an object");
+            let (parsed, allocated) =
+                crate::test_alloc::measure(|| serde_json::from_str::<serde_json::Value>(&text));
+            assert!(parsed.is_ok());
+            drop(parsed);
+            let ratio = estimate as f64 / allocated.peak.max(1) as f64;
+            println!(
+                "REGRESSION parsed body estimate, {name}: text {} B, estimate {estimate} B, parse peak {} B, estimate/peak {ratio:.2}",
+                text.len(),
+                allocated.peak
+            );
+            if estimate < allocated.peak {
+                under.push(name.clone());
+            }
+            assert!(
+                (text.len() * super::PARSED_BYTES_PER_TEXT_BYTE) >= allocated.peak,
+                "{name}: over the quick bound per text byte"
+            );
+            assert!(
+                (text.len() * super::PARSED_BYTES_PER_TEXT_BYTE) >= estimate,
+                "{name}: estimate over the quick bound per text byte"
+            );
+        }
+        assert!(under.is_empty(), "estimated under the parse: {under:?}");
+    }
+
+    // Release-profile micro-benchmarks. Run with a filter, for example:
+    //   cargo test --release --lib -- --ignored --exact otel::logs::tests::bench_flatten_otel_protobuf_logs --nocapture
+    // They never touch the PARSEABLE global: every timestamp is set, so the rows
+    // are deterministic, and the flatten budget is built from FlattenLimits::DEFAULT.
+    mod benches {
+        use crate::otel::bench;
+        use crate::utils::json::flatten::{FlattenBudget, FlattenLimits};
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{
+            AnyValue, ArrayValue, InstrumentationScope, KeyValue, any_value,
+        };
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        const RECORDS_PER_SCOPE: usize = 250;
+        const ITERS: usize = 20;
+
+        fn string_kv(key: &str, value: impl Into<String>) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(value.into())),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn int_kv(key: &str, value: i64) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::IntValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn bool_kv(key: &str, value: bool) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::BoolValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn array_kv(key: &str) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::ArrayValue(ArrayValue {
+                        values: vec![
+                            AnyValue {
+                                value: Some(any_value::Value::StringValue("keep-alive".into())),
+                            },
+                            AnyValue {
+                                value: Some(any_value::Value::StringValue("gzip".into())),
+                            },
+                            AnyValue {
+                                value: Some(any_value::Value::IntValue(3)),
+                            },
+                        ],
+                    })),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn record(i: usize) -> LogRecord {
+            // Every tenth body is a JSON object, which the log flattener parses and expands
+            let body = if i.is_multiple_of(10) {
+                format!(
+                    r#"{{"event":"checkout","user":{{"id":{i}}},"items":[{{"sku":"a","qty":1}},{{"sku":"b","qty":2}}],"ok":true}}"#
+                )
+            } else {
+                format!("request {i} completed in {} ms", i % 500)
+            };
+            LogRecord {
+                time_unix_nano: 1_700_000_000_000_000_000 + i as u64 * 1_000_000,
+                observed_time_unix_nano: 1_700_000_000_000_000_100 + i as u64 * 1_000_000,
+                severity_number: 9,
+                severity_text: "INFO".to_string(),
+                body: Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(body)),
+                }),
+                attributes: vec![
+                    string_kv("http.method", "GET"),
+                    int_kv("http.status_code", (i % 500) as i64),
+                    string_kv("http.target", format!("/api/v1/items/{i}")),
+                    string_kv("net.host.name", "checkout.example.com"),
+                    string_kv("user_agent.original", "Mozilla/5.0 (compatible; bench)"),
+                    bool_kv("cache.hit", i.is_multiple_of(3)),
+                    string_kv("http.request.header.x-request-id", format!("req-{i:016x}")),
+                    array_kv("http.request.header.accept-encoding"),
+                ],
+                dropped_attributes_count: 0,
+                flags: 1,
+                trace_id: vec![0xab; 16],
+                span_id: vec![0xcd; 8],
+                event_name: String::new(),
+            }
+        }
+
+        fn request() -> ExportLogsServiceRequest {
+            let resource_logs = (0..4)
+                .map(|resource_index| ResourceLogs {
+                    resource: Some(Resource {
+                        attributes: vec![
+                            string_kv("service.name", "checkout"),
+                            string_kv("service.version", "1.42.0"),
+                            string_kv("deployment.environment", "production"),
+                            string_kv("host.name", format!("checkout-{resource_index}")),
+                            int_kv("process.pid", 4242 + resource_index as i64),
+                        ],
+                        dropped_attributes_count: 0,
+                        entity_refs: vec![],
+                    }),
+                    scope_logs: (0..2)
+                        .map(|scope_index| ScopeLogs {
+                            scope: Some(InstrumentationScope {
+                                name: "io.opentelemetry.contrib.bench".to_string(),
+                                version: "0.31.0".to_string(),
+                                attributes: vec![
+                                    string_kv("scope.kind", "server"),
+                                    string_kv(
+                                        "scope.extra",
+                                        format!("{resource_index}-{scope_index}"),
+                                    ),
+                                    int_kv("scope.ordinal", scope_index),
+                                ],
+                                dropped_attributes_count: 0,
+                            }),
+                            log_records: (0..RECORDS_PER_SCOPE)
+                                .map(|record_index| {
+                                    record(
+                                        resource_index as usize * 1000
+                                            + scope_index as usize * 100
+                                            + record_index,
+                                    )
+                                })
+                                .collect(),
+                            schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                        })
+                        .collect(),
+                    schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                })
+                .collect();
+            ExportLogsServiceRequest { resource_logs }
+        }
+
+        /// What ingestion does with a decoded request: its rows handed over in
+        /// chunks (collected here)
+        fn flatten(request: &ExportLogsServiceRequest) -> Vec<serde_json::Value> {
+            let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
+            bench::chunked(|chunker| {
+                super::super::flatten_logs_into(&request.resource_logs, &mut budget, chunker)
+            })
+        }
+
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_flatten_otel_protobuf_logs() {
+            let request = request();
+            bench::run("bench_flatten_otel_protobuf_logs", ITERS, || {
+                flatten(&request)
+            });
+        }
+
+        /// The rows of the benchmark request, pinned so that a refactor changing
+        /// them fails a normal `cargo test --lib` run. The digest is of
+        /// `serde_json::to_vec` of the rows; it was first recorded from the
+        /// unoptimised flatteners.
+        #[test]
+        fn benchmark_request_rows_are_stable() {
+            let rows = flatten(&request());
+            let bytes = serde_json::to_vec(&rows).unwrap();
+            use std::hash::Hasher;
+            let mut hasher = rustc_hash::FxHasher::default();
+            hasher.write(&bytes);
+            assert_eq!(rows.len(), 2000);
+            assert_eq!(
+                (bytes.len(), hasher.finish()),
+                (2_288_617, 0xa4ce_c43f_538f_d2cd),
+                "flattened rows of the benchmark request changed"
+            );
+        }
+
+        /// Cost of one flattened row clone, the per-record work the row
+        /// assembly in `process_resource_logs` repeats.
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_row_clone() {
+            let rows = flatten(&request());
+            let row = rows[0].as_object().expect("object row");
+            let mut sum = 0usize;
+            bench::time_calls("bench_row_clone", 200_000, |_| {
+                let clone = row.clone();
+                sum += clone.len();
+            });
+            assert!(sum > 0);
+        }
     }
 }

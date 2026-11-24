@@ -174,16 +174,13 @@ test('expiration updates at the deadline, disables copying and preserves deletio
   ]);
   const soon = row(page, 'soon');
   await expect(soon.getByText('Expired', { exact: true })).toHaveCount(0);
-  await expect(soon.getByRole('button', { name: 'Copy API key for soon' })).toBeEnabled();
   await page.clock.fastForward(30_000);
   await expect(soon.getByText('Expired', { exact: true })).toBeVisible();
-  await expect(soon.getByRole('button', { name: 'Copy API key for soon' })).toBeDisabled();
   for (const name of ['legacy', 'forever']) {
     await expect(row(page, name)).toContainText('No expiration');
-    await expect(
-      row(page, name).getByRole('button', { name: `Copy API key for ${name}` }),
-    ).toBeEnabled();
   }
+  // The key is shown once, when it is created: no row offers to copy it
+  await expect(page.getByRole('button', { name: /^Copy API key/ })).toHaveCount(0);
   await soon.getByRole('button', { name: 'Delete API key soon' }).click();
   const dialog = page.getByRole('dialog', { name: 'Delete API key', exact: true });
   await dialog.getByLabel('Confirmation name').fill('soon');

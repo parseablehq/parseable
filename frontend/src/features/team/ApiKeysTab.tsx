@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Copy } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Badge,
   Button,
@@ -7,7 +6,6 @@ import {
   EmptyState,
   Pagination,
   TypedConfirmDialog,
-  InlineError,
 } from '../../components/ui';
 import { QueryState } from '../../components/explorer/QueryState';
 import { useApp } from '../../app/AppProvider';
@@ -17,63 +15,6 @@ import { TeamSearch, useTeamSearch } from './shared';
 import { useCollection } from '../../hooks/useCollection';
 import { useMutation } from '../../hooks/useMutation';
 import { isApiKeyExpired } from './apiKeyExpiration';
-
-export async function copyApiKey(key: Promise<ApiKey>, active: { current: boolean }) {
-  try {
-    if (typeof ClipboardItem !== 'undefined') {
-      await navigator.clipboard.write([
-        new ClipboardItem({
-          'text/plain': key.then((result) => new Blob([result.apiKey], { type: 'text/plain' })),
-        }),
-      ]);
-    } else {
-      const result = await key;
-      if (!active.current) return;
-      await navigator.clipboard.writeText(result.apiKey);
-    }
-  } catch {
-    // Preserve fetch errors before translating a clipboard failure.
-    await key;
-    throw new Error(
-      'Unable to copy API key. Check your browser clipboard permissions and try again.',
-    );
-  }
-}
-
-function CopyKey({ apiKey, expired }: { apiKey: ApiKey; expired: boolean }) {
-  const { client } = useApp();
-  const [status, setStatus] = useState('');
-  const mutation = useMutation();
-  const active = useRef(true);
-  useEffect(() => {
-    active.current = true;
-    return () => {
-      active.current = false;
-    };
-  }, []);
-  function copy() {
-    setStatus('');
-    void mutation.run(async () => {
-      await copyApiKey(client.getApiKey(apiKey.keyId), active);
-      if (active.current) setStatus('API key copied to clipboard');
-    });
-  }
-  return (
-    <div className="team-copy">
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-label={`Copy API key for ${apiKey.keyName}`}
-        onClick={copy}
-        disabled={mutation.pending || expired}
-      >
-        <Copy size={14} aria-hidden="true" /> Copy API key
-      </Button>
-      <InlineError error={mutation.error} />
-      <span role="status">{status}</span>
-    </div>
-  );
-}
 
 function DeleteKey({
   apiKey,
@@ -203,10 +144,6 @@ export function ApiKeysTab({
                     </td>
                     <td>
                       <div className="team-actions">
-                        <CopyKey
-                          apiKey={key}
-                          expired={isApiKeyExpired(key.expiresAt, Math.max(now, Date.now()))}
-                        />
                         <Button
                           variant="ghost"
                           size="sm"

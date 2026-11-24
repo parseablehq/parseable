@@ -134,6 +134,10 @@ pub static INTRA_CLUSTER_CLIENT: Lazy<Client> = Lazy::new(|| {
         .expect("Construction of client shouldn't fail")
 });
 
+// Counts what a test thread allocates, see `test_alloc::measure`
+#[cfg(test)]
+pub(crate) mod test_alloc;
+
 // Keep the native build contract covered without network or frontend tooling.
 #[cfg(test)]
 #[path = "../build_support/native_ui.rs"]

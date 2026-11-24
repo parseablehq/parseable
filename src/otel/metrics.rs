@@ -17,16 +17,17 @@
  */
 use once_cell::sync::Lazy;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
 use opentelemetry_proto::tonic::metrics::v1::{
-    Exemplar, ExponentialHistogram, Gauge, Histogram, Metric, MetricsData, NumberDataPoint, Sum,
-    Summary, exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets, metric,
+    Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Histogram, HistogramDataPoint,
+    Metric, MetricsData, NumberDataPoint, ResourceMetrics, Sum, SummaryDataPoint,
+    exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets, metric,
 };
+use opentelemetry_proto::tonic::resource::v1::Resource;
 use serde_json::{Map, Value};
 
-use rustc_hash::FxHasher;
-use std::borrow::Cow;
-use std::collections::HashSet;
+use rustc_hash::{FxHashSet, FxHasher};
 use std::hash::Hasher;
 use tracing::info_span;
 
@@ -34,8 +35,10 @@ use crate::metrics::increment_metrics_collected_by_date;
 use crate::parseable::PARSEABLE;
 
 use super::otel_utils::{
-    convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
+    attribute_capacity, convert_epoch_nano_to_timestamp, insert_attributes,
+    insert_attributes_fitted, insert_number_if_some,
 };
+use super::sink::RowSink;
 
 pub const SERIES_HASH_COLUMN: &str = "__series_hash_u64";
 
@@ -91,7 +94,7 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 39] = [
     SERIES_HASH_COLUMN,
 ];
 
-static OTEL_METRICS_KNOWN_FIELDS: Lazy<HashSet<&'static str>> =
+static OTEL_METRICS_KNOWN_FIELDS: Lazy<FxHashSet<&'static str>> =
     Lazy::new(|| OTEL_METRICS_KNOWN_FIELD_LIST.iter().copied().collect());
 
 const SERVICE_NAME_ATTRIBUTE: &str = "service.name";
@@ -173,33 +176,52 @@ fn target_info_record(
 /// non-cryptographic) and feeds keys in sorted order so the hash
 /// doesn't depend on JSON Map iteration order.
 pub fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
-    let mut label_pairs: Vec<(&str, Cow<'_, str>)> = Vec::with_capacity(dp.len());
+    // Only references are collected: a non-string label is hashed as the text
+    // `Value` would print, not formatted into a string first (that allocated
+    // one string per non-string label of every data point).
+    let mut label_pairs: Vec<(&str, &Value)> = Vec::with_capacity(dp.len());
+    let mut metric_name: Option<&str> = None;
     for (key, value) in dp {
+        if key == "metric_name"
+            && let Value::String(name) = value
+        {
+            metric_name = Some(name.as_str());
+        }
         if OTEL_METRICS_KNOWN_FIELDS.contains(key.as_str()) {
             continue;
         }
         if key.starts_with("exemplars_") {
             continue;
         }
-        let value = match value {
-            Value::String(s) => Cow::Borrowed(s.as_str()),
-            other => Cow::Owned(other.to_string()),
-        };
         label_pairs.push((key.as_str(), value));
     }
-    label_pairs.sort_by(|a, b| a.0.cmp(b.0));
+    // Keys are unique, so an unstable sort leaves the same order
+    label_pairs.sort_unstable_by(|a, b| a.0.cmp(b.0));
 
     let mut hasher = FxHasher::default();
     // Include metric_name in the identity. Without it, two different
     // metrics with identical label sets would collide into one series.
-    if let Some(Value::String(name)) = dp.get("metric_name") {
+    if let Some(name) = metric_name {
         hasher.write(name.as_bytes());
         hasher.write(b"\0");
     }
+    let mut number = String::new();
     for (k, v) in &label_pairs {
         hasher.write(k.as_bytes());
         hasher.write(b"=");
-        hasher.write(v.as_bytes());
+        match v {
+            Value::String(s) => hasher.write(s.as_bytes()),
+            Value::Bool(b) => hasher.write(if *b { b"true" } else { b"false" }),
+            Value::Null => hasher.write(b"null"),
+            Value::Number(n) => {
+                // `Value` prints a number as this `Display` does
+                number.clear();
+                std::fmt::Write::write_fmt(&mut number, format_args!("{n}")).unwrap();
+                hasher.write(number.as_bytes());
+            }
+            // An array or object, as `Value` prints it
+            other => hasher.write(other.to_string().as_bytes()),
+        }
         hasher.write(b"\0");
     }
     hasher.finish()
@@ -229,7 +251,8 @@ fn exemplar_value_to_json(value: &ExemplarValue) -> Value {
 /// names match the legacy flat columns, so switching representations via the
 /// flag changes only the shape, not the field names.
 fn exemplar_to_json(exemplar: &Exemplar) -> Value {
-    let mut exemplar_json = Map::with_capacity(exemplar.filtered_attributes.len() + 4);
+    let mut exemplar_json =
+        Map::with_capacity(attribute_capacity(&exemplar.filtered_attributes) + 4);
     insert_attributes(&mut exemplar_json, &exemplar.filtered_attributes);
     exemplar_json.insert(
         "exemplar_time_unix_nano".to_string(),
@@ -293,148 +316,134 @@ fn insert_exemplars(map: &mut Map<String, Value>, exemplars: &[Exemplar], flatte
     }
 }
 
-/// otel metrics event has json array for number data points
-/// this function flatten the number data points json array
-/// and returns a `Vec` of `Map` of the flattened json
-/// this function is reused in all json objects that have number data points
-fn flatten_number_data_points(
-    data_points: &[NumberDataPoint],
+/// The own fields of the row of one number data point (gauge or sum); `extra` is
+/// the capacity the metric and envelope fields merged over it will take
+fn number_data_point_row(
+    data_point: &NumberDataPoint,
     flatten_exemplars: bool,
-) -> Vec<Map<String, Value>> {
-    data_points
-        .iter()
-        .map(|data_point| {
-            let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 8);
-            insert_attributes(&mut data_point_json, &data_point.attributes);
-            data_point_json.insert(
-                "start_time_unix_nano".to_string(),
-                Value::String(convert_epoch_nano_to_timestamp(
-                    data_point.start_time_unix_nano as i64,
-                )),
-            );
-            data_point_json.insert(
-                "time_unix_nano".to_string(),
-                Value::String(convert_epoch_nano_to_timestamp(
-                    data_point.time_unix_nano as i64,
-                )),
-            );
+    extra: usize,
+) -> Map<String, Value> {
+    let capacity = attribute_capacity(&data_point.attributes) + 8 + extra;
+    let mut data_point_json = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut data_point_json, &data_point.attributes, capacity);
+    data_point_json.insert(
+        "start_time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            data_point.start_time_unix_nano as i64,
+        )),
+    );
+    data_point_json.insert(
+        "time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            data_point.time_unix_nano as i64,
+        )),
+    );
 
-            insert_exemplars(
-                &mut data_point_json,
-                &data_point.exemplars,
-                flatten_exemplars,
-            );
+    insert_exemplars(
+        &mut data_point_json,
+        &data_point.exemplars,
+        flatten_exemplars,
+    );
 
-            insert_data_point_flags(&mut data_point_json, data_point.flags);
-            if let Some(value) = &data_point.value {
-                match value {
-                    NumberDataPointValue::AsDouble(double_val) => {
-                        data_point_json.insert(
-                            "data_point_value".to_string(),
-                            serde_json::Number::from_f64(*double_val)
-                                .map(Value::Number)
-                                .unwrap_or(Value::Null),
-                        );
-                    }
-                    NumberDataPointValue::AsInt(int_val) => {
-                        data_point_json.insert(
-                            "data_point_value".to_string(),
-                            Value::Number(serde_json::Number::from(*int_val)),
-                        );
-                    }
-                }
-            }
-            data_point_json
-        })
-        .collect()
-}
-
-/// otel metrics event has json object for gauge
-/// each gauge object has json array for data points
-/// this function flatten the gauge json object
-/// and returns a `Vec` of `Map` for each data point
-fn flatten_gauge(gauge: &Gauge, flatten_exemplars: bool) -> Vec<Map<String, Value>> {
-    flatten_number_data_points(&gauge.data_points, flatten_exemplars)
-}
-
-/// otel metrics event has json object for sum
-/// each sum object has json array for data points
-/// this function flatten the sum json object
-/// and returns a `Vec` of `Map` for each data point
-fn flatten_sum(sum: &Sum, flatten_exemplars: bool) -> Vec<Map<String, Value>> {
-    let mut data_points = flatten_number_data_points(&sum.data_points, flatten_exemplars);
-    for dp in &mut data_points {
-        insert_aggregation_temporality(dp, sum.aggregation_temporality);
-        dp.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
-    }
-    data_points
-}
-
-/// otel metrics event has json object for histogram
-/// each histogram object has json array for data points
-/// this function flatten the histogram json object
-/// and returns a `Vec` of `Map` for each data point
-fn flatten_histogram(histogram: &Histogram, flatten_exemplars: bool) -> Vec<Map<String, Value>> {
-    let mut data_points_json = Vec::with_capacity(histogram.data_points.len());
-    for data_point in &histogram.data_points {
-        let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 10);
-        insert_attributes(&mut data_point_json, &data_point.attributes);
-        data_point_json.insert(
-            "start_time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.start_time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "data_point_count".to_string(),
-            Value::Number(data_point.count.into()),
-        );
-        insert_number_if_some(&mut data_point_json, "data_point_sum", &data_point.sum);
-        let data_point_bucket_counts = Value::Array(
-            data_point
-                .bucket_counts
-                .iter()
-                .map(|&count| Value::Number(count.into()))
-                .collect(),
-        );
-        data_point_json.insert(
-            "data_point_bucket_counts".to_string(),
-            data_point_bucket_counts,
-        );
-        let data_point_explicit_bounds = Value::Array(
-            data_point
-                .explicit_bounds
-                .iter()
-                .map(|bound| {
-                    serde_json::Number::from_f64(*bound)
+    insert_data_point_flags(&mut data_point_json, data_point.flags);
+    if let Some(value) = &data_point.value {
+        match value {
+            NumberDataPointValue::AsDouble(double_val) => {
+                data_point_json.insert(
+                    "data_point_value".to_string(),
+                    serde_json::Number::from_f64(*double_val)
                         .map(Value::Number)
-                        .unwrap_or(Value::Null)
-                })
-                .collect(),
-        );
-        data_point_json.insert(
-            "data_point_explicit_bounds".to_string(),
-            data_point_explicit_bounds,
-        );
-        insert_exemplars(
-            &mut data_point_json,
-            &data_point.exemplars,
-            flatten_exemplars,
-        );
-
-        insert_data_point_flags(&mut data_point_json, data_point.flags);
-        insert_number_if_some(&mut data_point_json, "data_point_min", &data_point.min);
-        insert_number_if_some(&mut data_point_json, "data_point_max", &data_point.max);
-        insert_aggregation_temporality(&mut data_point_json, histogram.aggregation_temporality);
-        data_points_json.push(data_point_json);
+                        .unwrap_or(Value::Null),
+                );
+            }
+            NumberDataPointValue::AsInt(int_val) => {
+                data_point_json.insert(
+                    "data_point_value".to_string(),
+                    Value::Number(serde_json::Number::from(*int_val)),
+                );
+            }
+        }
     }
-    data_points_json
+    data_point_json
+}
+
+/// The own fields of the row of one sum data point
+fn sum_data_point_row(
+    sum: &Sum,
+    data_point: &NumberDataPoint,
+    flatten_exemplars: bool,
+    extra: usize,
+) -> Map<String, Value> {
+    let mut dp = number_data_point_row(data_point, flatten_exemplars, extra);
+    insert_aggregation_temporality(&mut dp, sum.aggregation_temporality);
+    dp.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
+    dp
+}
+
+/// The own fields of the row of one histogram data point
+fn histogram_data_point_row(
+    histogram: &Histogram,
+    data_point: &HistogramDataPoint,
+    flatten_exemplars: bool,
+    extra: usize,
+) -> Map<String, Value> {
+    let capacity = attribute_capacity(&data_point.attributes) + 10 + extra;
+    let mut data_point_json = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut data_point_json, &data_point.attributes, capacity);
+    data_point_json.insert(
+        "start_time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            data_point.start_time_unix_nano as i64,
+        )),
+    );
+    data_point_json.insert(
+        "time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            data_point.time_unix_nano as i64,
+        )),
+    );
+    data_point_json.insert(
+        "data_point_count".to_string(),
+        Value::Number(data_point.count.into()),
+    );
+    insert_number_if_some(&mut data_point_json, "data_point_sum", &data_point.sum);
+    let data_point_bucket_counts = Value::Array(
+        data_point
+            .bucket_counts
+            .iter()
+            .map(|&count| Value::Number(count.into()))
+            .collect(),
+    );
+    data_point_json.insert(
+        "data_point_bucket_counts".to_string(),
+        data_point_bucket_counts,
+    );
+    let data_point_explicit_bounds = Value::Array(
+        data_point
+            .explicit_bounds
+            .iter()
+            .map(|bound| {
+                serde_json::Number::from_f64(*bound)
+                    .map(Value::Number)
+                    .unwrap_or(Value::Null)
+            })
+            .collect(),
+    );
+    data_point_json.insert(
+        "data_point_explicit_bounds".to_string(),
+        data_point_explicit_bounds,
+    );
+    insert_exemplars(
+        &mut data_point_json,
+        &data_point.exemplars,
+        flatten_exemplars,
+    );
+
+    insert_data_point_flags(&mut data_point_json, data_point.flags);
+    insert_number_if_some(&mut data_point_json, "data_point_min", &data_point.min);
+    insert_number_if_some(&mut data_point_json, "data_point_max", &data_point.max);
+    insert_aggregation_temporality(&mut data_point_json, histogram.aggregation_temporality);
+    data_point_json
 }
 
 /// otel metrics event has json object for buckets
@@ -456,239 +465,298 @@ fn flatten_buckets(bucket: &Buckets) -> Map<String, Value> {
     bucket_json
 }
 
-/// otel metrics event has json object for exponential histogram
-/// each exponential histogram object has json array for data points
-/// this function flatten the exponential histogram json object
-/// and returns a `Vec` of `Map` for each data point
-fn flatten_exp_histogram(
+/// The own fields of the row of one exponential histogram data point
+fn exp_histogram_data_point_row(
     exp_histogram: &ExponentialHistogram,
+    data_point: &ExponentialHistogramDataPoint,
     flatten_exemplars: bool,
-) -> Vec<Map<String, Value>> {
-    let mut data_points_json = Vec::with_capacity(exp_histogram.data_points.len());
-    for data_point in &exp_histogram.data_points {
-        let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 12);
-        insert_attributes(&mut data_point_json, &data_point.attributes);
-        data_point_json.insert(
-            "start_time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.start_time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "data_point_count".to_string(),
-            Value::Number(data_point.count.into()),
-        );
-        insert_number_if_some(&mut data_point_json, "data_point_sum", &data_point.sum);
-        data_point_json.insert(
-            "data_point_scale".to_string(),
-            Value::Number(data_point.scale.into()),
-        );
-        data_point_json.insert(
-            "data_point_zero_count".to_string(),
-            Value::Number(data_point.zero_count.into()),
-        );
-        if let Some(positive) = &data_point.positive {
-            let positive_json = flatten_buckets(positive);
-            for (key, value) in positive_json {
-                data_point_json.insert(format!("positive_{key}"), value);
-            }
+    extra: usize,
+) -> Map<String, Value> {
+    let capacity = attribute_capacity(&data_point.attributes) + 12 + extra;
+    let mut data_point_json = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut data_point_json, &data_point.attributes, capacity);
+    data_point_json.insert(
+        "start_time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            data_point.start_time_unix_nano as i64,
+        )),
+    );
+    data_point_json.insert(
+        "time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            data_point.time_unix_nano as i64,
+        )),
+    );
+    data_point_json.insert(
+        "data_point_count".to_string(),
+        Value::Number(data_point.count.into()),
+    );
+    insert_number_if_some(&mut data_point_json, "data_point_sum", &data_point.sum);
+    data_point_json.insert(
+        "data_point_scale".to_string(),
+        Value::Number(data_point.scale.into()),
+    );
+    data_point_json.insert(
+        "data_point_zero_count".to_string(),
+        Value::Number(data_point.zero_count.into()),
+    );
+    if let Some(positive) = &data_point.positive {
+        let positive_json = flatten_buckets(positive);
+        for (key, value) in positive_json {
+            data_point_json.insert(format!("positive_{key}"), value);
         }
-        if let Some(negative) = &data_point.negative {
-            let negative_json = flatten_buckets(negative);
-            for (key, value) in negative_json {
-                data_point_json.insert(format!("negative_{key}"), value);
-            }
-        }
-        insert_exemplars(
-            &mut data_point_json,
-            &data_point.exemplars,
-            flatten_exemplars,
-        );
-
-        insert_aggregation_temporality(&mut data_point_json, exp_histogram.aggregation_temporality);
-        data_points_json.push(data_point_json);
     }
-    data_points_json
+    if let Some(negative) = &data_point.negative {
+        let negative_json = flatten_buckets(negative);
+        for (key, value) in negative_json {
+            data_point_json.insert(format!("negative_{key}"), value);
+        }
+    }
+    insert_exemplars(
+        &mut data_point_json,
+        &data_point.exemplars,
+        flatten_exemplars,
+    );
+
+    insert_aggregation_temporality(&mut data_point_json, exp_histogram.aggregation_temporality);
+    data_point_json
 }
 
-/// otel metrics event has json object for summary
-/// each summary object has json array for data points
-/// this function flatten the summary json object
-/// and returns a `Vec` of `Map` for each data point
-fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
-    let mut data_points_json = Vec::with_capacity(summary.data_points.len());
-    for data_point in &summary.data_points {
-        let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 6);
-        insert_attributes(&mut data_point_json, &data_point.attributes);
-        data_point_json.insert(
-            "start_time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.start_time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                data_point.time_unix_nano as i64,
-            )),
-        );
-        data_point_json.insert(
-            "data_point_count".to_string(),
-            Value::Number(data_point.count.into()),
-        );
-        data_point_json.insert(
-            "data_point_sum".to_string(),
-            serde_json::Number::from_f64(data_point.sum)
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
-        );
-        data_point_json.insert(
-            "data_point_quantile_values".to_string(),
-            Value::Array(
-                data_point
-                    .quantile_values
-                    .iter()
-                    .map(|quantile_value| {
-                        let mut quantile_map = Map::with_capacity(2);
-                        quantile_map.insert(
-                            "quantile".to_string(),
-                            serde_json::Number::from_f64(quantile_value.quantile)
-                                .map(Value::Number)
-                                .unwrap_or(Value::Null),
-                        );
-                        quantile_map.insert(
-                            "value".to_string(),
-                            serde_json::Number::from_f64(quantile_value.value)
-                                .map(Value::Number)
-                                .unwrap_or(Value::Null),
-                        );
-                        Value::Object(quantile_map)
-                    })
-                    .collect(),
-            ),
-        );
+/// The own fields of the row of one summary data point
+fn summary_data_point_row(data_point: &SummaryDataPoint, extra: usize) -> Map<String, Value> {
+    let capacity = attribute_capacity(&data_point.attributes) + 6 + extra;
+    let mut data_point_json = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut data_point_json, &data_point.attributes, capacity);
+    data_point_json.insert(
+        "start_time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            data_point.start_time_unix_nano as i64,
+        )),
+    );
+    data_point_json.insert(
+        "time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            data_point.time_unix_nano as i64,
+        )),
+    );
+    data_point_json.insert(
+        "data_point_count".to_string(),
+        Value::Number(data_point.count.into()),
+    );
+    data_point_json.insert(
+        "data_point_sum".to_string(),
+        serde_json::Number::from_f64(data_point.sum)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+    );
+    data_point_json.insert(
+        "data_point_quantile_values".to_string(),
+        Value::Array(
+            data_point
+                .quantile_values
+                .iter()
+                .map(|quantile_value| {
+                    let mut quantile_map = Map::with_capacity(2);
+                    quantile_map.insert(
+                        "quantile".to_string(),
+                        serde_json::Number::from_f64(quantile_value.quantile)
+                            .map(Value::Number)
+                            .unwrap_or(Value::Null),
+                    );
+                    quantile_map.insert(
+                        "value".to_string(),
+                        serde_json::Number::from_f64(quantile_value.value)
+                            .map(Value::Number)
+                            .unwrap_or(Value::Null),
+                    );
+                    Value::Object(quantile_map)
+                })
+                .collect(),
+        ),
+    );
+    data_point_json
+}
 
-        data_points_json.push(data_point_json);
+/// One row of a metric, handed to the caller of `metric_rows`
+pub enum MetricRow {
+    /// The row of one data point
+    Point(Map<String, Value>),
+    /// The one row of a metric that has data but no data points
+    NoPoints(Map<String, Value>),
+}
+
+/// Fields every row of one metric gets, merged over the data point's own fields
+struct MetricFields {
+    name: Value,
+    description: Value,
+    unit: Value,
+    metric_type: Value,
+    metadata: Map<String, Value>,
+}
+
+impl MetricFields {
+    fn apply(&self, mut dp: Map<String, Value>) -> Map<String, Value> {
+        dp.insert("metric_name".to_string(), self.name.clone());
+        dp.insert("metric_description".to_string(), self.description.clone());
+        dp.insert("metric_unit".to_string(), self.unit.clone());
+        dp.insert("metric_type".to_string(), self.metric_type.clone());
+        for (k, v) in &self.metadata {
+            dp.insert(k.clone(), v.clone());
+        }
+        dp
     }
-    data_points_json
+}
+
+/// Hands the rows of one metric to `emit` one at a time: one per data point, each
+/// built once the one before it was handed over, or one for a metric that has data
+/// but no data points. A metric without data has no rows. `merged` is the number of
+/// fields the caller merges over every row after this (a scope's envelope); rows
+/// are sized for them so that merging never has to grow a row map.
+pub fn metric_rows<E>(
+    metrics_record: &Metric,
+    flatten_exemplars: bool,
+    merged: usize,
+    mut emit: impl FnMut(MetricRow) -> Result<(), E>,
+) -> Result<(), E> {
+    let Some(data) = &metrics_record.data else {
+        return Ok(());
+    };
+    let metric_type = match data {
+        metric::Data::Gauge(_) => "gauge",
+        metric::Data::Sum(_) => "sum",
+        metric::Data::Histogram(_) => "histogram",
+        metric::Data::ExponentialHistogram(_) => "exponential_histogram",
+        metric::Data::Summary(_) => "summary",
+    };
+
+    // Build metric-level fields once
+    let capacity = attribute_capacity(&metrics_record.metadata);
+    let mut metadata = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut metadata, &metrics_record.metadata, capacity);
+    let fields = MetricFields {
+        name: Value::String(metrics_record.name.clone()),
+        description: Value::String(metrics_record.description.clone()),
+        unit: Value::String(metrics_record.unit.clone()),
+        metric_type: Value::String(metric_type.to_string()),
+        metadata,
+    };
+    let extra = 4 + fields.metadata.len() + merged;
+
+    let points = match data {
+        metric::Data::Gauge(gauge) => {
+            for dp in &gauge.data_points {
+                emit(MetricRow::Point(fields.apply(number_data_point_row(
+                    dp,
+                    flatten_exemplars,
+                    extra,
+                ))))?;
+            }
+            gauge.data_points.len()
+        }
+        metric::Data::Sum(sum) => {
+            for dp in &sum.data_points {
+                emit(MetricRow::Point(fields.apply(sum_data_point_row(
+                    sum,
+                    dp,
+                    flatten_exemplars,
+                    extra,
+                ))))?;
+            }
+            sum.data_points.len()
+        }
+        metric::Data::Histogram(histogram) => {
+            for dp in &histogram.data_points {
+                emit(MetricRow::Point(fields.apply(histogram_data_point_row(
+                    histogram,
+                    dp,
+                    flatten_exemplars,
+                    extra,
+                ))))?;
+            }
+            histogram.data_points.len()
+        }
+        metric::Data::ExponentialHistogram(exp_histogram) => {
+            for dp in &exp_histogram.data_points {
+                emit(MetricRow::Point(fields.apply(
+                    exp_histogram_data_point_row(exp_histogram, dp, flatten_exemplars, extra),
+                )))?;
+            }
+            exp_histogram.data_points.len()
+        }
+        metric::Data::Summary(summary) => {
+            for dp in &summary.data_points {
+                emit(MetricRow::Point(
+                    fields.apply(summary_data_point_row(dp, extra)),
+                ))?;
+            }
+            summary.data_points.len()
+        }
+    };
+
+    if points == 0 {
+        let MetricFields {
+            name,
+            description,
+            unit,
+            metric_type,
+            metadata,
+        } = fields;
+        let mut single = Map::with_capacity(metadata.len() + 8 + merged);
+        single.insert("metric_name".to_string(), name);
+        single.insert("metric_description".to_string(), description);
+        single.insert("metric_unit".to_string(), unit);
+        single.insert("metric_type".to_string(), metric_type);
+        match data {
+            metric::Data::Sum(sum) => {
+                insert_aggregation_temporality(&mut single, sum.aggregation_temporality);
+                single.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
+            }
+            metric::Data::Histogram(histogram) => {
+                insert_aggregation_temporality(&mut single, histogram.aggregation_temporality);
+            }
+            metric::Data::ExponentialHistogram(exp_histogram) => {
+                insert_aggregation_temporality(&mut single, exp_histogram.aggregation_temporality);
+            }
+            _ => {}
+        }
+        single.extend(metadata);
+        emit(MetricRow::NoPoints(single))?;
+    }
+    Ok(())
 }
 
 /// this function flattens the `Metric` object
 /// each metric object has json object for gauge, sum, histogram, exponential histogram, summary
 /// this function flatten the metric json object
 /// and returns a `Vec` of `Map` of the flattened json
-/// this function is called recursively for each metric record object in the otel metrics event
 pub fn flatten_metrics_record(
     metrics_record: &Metric,
     flatten_exemplars: bool,
 ) -> Vec<Map<String, Value>> {
-    let (mut data_points, metric_type) = match &metrics_record.data {
-        Some(metric::Data::Gauge(gauge)) => (flatten_gauge(gauge, flatten_exemplars), "gauge"),
-        Some(metric::Data::Sum(sum)) => (flatten_sum(sum, flatten_exemplars), "sum"),
-        Some(metric::Data::Histogram(histogram)) => {
-            (flatten_histogram(histogram, flatten_exemplars), "histogram")
-        }
-        Some(metric::Data::ExponentialHistogram(exp_histogram)) => (
-            flatten_exp_histogram(exp_histogram, flatten_exemplars),
-            "exponential_histogram",
-        ),
-        Some(metric::Data::Summary(summary)) => (flatten_summary(summary), "summary"),
-        None => return Vec::new(),
-    };
-
-    // Build metric-level fields once
-    let metric_name = Value::String(metrics_record.name.clone());
-    let metric_desc = Value::String(metrics_record.description.clone());
-    let metric_unit = Value::String(metrics_record.unit.clone());
-    let metric_type_val = Value::String(metric_type.to_string());
-    let mut metadata = Map::with_capacity(metrics_record.metadata.len());
-    insert_attributes(&mut metadata, &metrics_record.metadata);
-
-    if data_points.is_empty() {
-        let mut single = Map::with_capacity(metadata.len() + 8);
-        single.insert("metric_name".to_string(), metric_name);
-        single.insert("metric_description".to_string(), metric_desc);
-        single.insert("metric_unit".to_string(), metric_unit);
-        single.insert("metric_type".to_string(), metric_type_val);
-        match &metrics_record.data {
-            Some(metric::Data::Sum(sum)) => {
-                insert_aggregation_temporality(&mut single, sum.aggregation_temporality);
-                single.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
-            }
-            Some(metric::Data::Histogram(histogram)) => {
-                insert_aggregation_temporality(&mut single, histogram.aggregation_temporality);
-            }
-            Some(metric::Data::ExponentialHistogram(exp_histogram)) => {
-                insert_aggregation_temporality(&mut single, exp_histogram.aggregation_temporality);
-            }
-            _ => {}
-        }
-        single.extend(metadata);
-        return vec![single];
-    }
-
-    // Insert metric-level fields directly into each data point
-    for dp in &mut data_points {
-        dp.insert("metric_name".to_string(), metric_name.clone());
-        dp.insert("metric_description".to_string(), metric_desc.clone());
-        dp.insert("metric_unit".to_string(), metric_unit.clone());
-        dp.insert("metric_type".to_string(), metric_type_val.clone());
-        for (k, v) in &metadata {
-            dp.insert(k.clone(), v.clone());
-        }
-    }
-
-    data_points
+    let mut rows = Vec::new();
+    let Ok(()) =
+        metric_rows::<std::convert::Infallible>(metrics_record, flatten_exemplars, 0, |row| {
+            rows.push(match row {
+                MetricRow::Point(row) | MetricRow::NoPoints(row) => row,
+            });
+            Ok(())
+        });
+    rows
 }
 
-fn metric_data_point_count(metric: &Metric) -> usize {
-    match &metric.data {
-        Some(metric::Data::Gauge(gauge)) => gauge.data_points.len(),
-        Some(metric::Data::Sum(sum)) => sum.data_points.len(),
-        Some(metric::Data::Histogram(histogram)) => histogram.data_points.len(),
-        Some(metric::Data::ExponentialHistogram(exp_histogram)) => exp_histogram.data_points.len(),
-        Some(metric::Data::Summary(summary)) => summary.data_points.len(),
-        None => 0,
-    }
+/// Fields every row of one `ResourceMetrics` gets, and its Prometheus target identity
+pub struct ResourceMetricFields {
+    fields: Map<String, Value>,
+    target_identity: Option<(String, String)>,
 }
 
-/// Common function to process resource metrics and merge resource-level fields
-#[allow(clippy::too_many_arguments)]
-fn process_resource_metrics<T, S, M>(
-    resource_metrics: &[T],
-    get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
-    get_scope_metrics: fn(&T) -> &[S],
-    get_schema_url: fn(&T) -> &str,
-    get_scope: fn(&S) -> Option<&opentelemetry_proto::tonic::common::v1::InstrumentationScope>,
-    get_scope_schema_url: fn(&S) -> &str,
-    get_metrics: fn(&S) -> &[M],
-    get_metric: fn(&M) -> &Metric,
-    tenant_id: &str,
-    flatten_exemplars: bool,
-) -> Vec<Value> {
-    let _span = info_span!(
-        "process_resource_metrics",
-        resource_count = resource_metrics.len(),
-    )
-    .entered();
-    let mut vec_otel_json = Vec::new();
-
-    for resource_metric in resource_metrics {
+impl ResourceMetricFields {
+    pub fn new(resource: Option<&Resource>, schema_url: &str) -> Self {
         // Build resource-level fields once per resource
-        let mut resource_fields = Map::with_capacity(
-            get_resource(resource_metric)
-                .map(|resource| resource.attributes.len())
-                .unwrap_or_default()
-                + 2,
-        );
-        if let Some(resource) = get_resource(resource_metric) {
-            insert_attributes(&mut resource_fields, &resource.attributes);
+        let capacity = resource.map_or(0, |resource| attribute_capacity(&resource.attributes)) + 2;
+        let mut resource_fields = Map::with_capacity(capacity);
+        if let Some(resource) = resource {
+            insert_attributes_fitted(&mut resource_fields, &resource.attributes, capacity);
             resource_fields.insert(
                 "resource_dropped_attributes_count".to_string(),
                 Value::Number(resource.dropped_attributes_count.into()),
@@ -696,7 +764,7 @@ fn process_resource_metrics<T, S, M>(
         }
         resource_fields.insert(
             "resource_schema_url".to_string(),
-            Value::String(get_schema_url(resource_metric).to_string()),
+            Value::String(schema_url.to_string()),
         );
 
         // Prometheus uses these labels as the foreign key between every
@@ -705,110 +773,195 @@ fn process_resource_metrics<T, S, M>(
         if let Some(identity) = &target_identity {
             insert_prometheus_target_identity(&mut resource_fields, identity);
         }
-        let mut target_timestamp: Option<String> = None;
-
-        for scope_metric in get_scope_metrics(resource_metric) {
-            // Build envelope = resource + scope fields (once per scope)
-            let mut envelope = resource_fields.clone();
-
-            if let Some(scope) = get_scope(scope_metric) {
-                envelope.insert("scope_name".to_string(), Value::String(scope.name.clone()));
-                envelope.insert(
-                    "scope_version".to_string(),
-                    Value::String(scope.version.clone()),
-                );
-                insert_attributes(&mut envelope, &scope.attributes);
-                envelope.insert(
-                    "scope_dropped_attributes_count".to_string(),
-                    Value::Number(scope.dropped_attributes_count.into()),
-                );
-            }
-            envelope.insert(
-                "scope_schema_url".to_string(),
-                Value::String(get_scope_schema_url(scope_metric).to_string()),
-            );
-            // Scope attributes are merged after resource attributes. Reapply
-            // the derived identity so they cannot shadow job or instance.
-            if let Some(identity) = &target_identity {
-                insert_prometheus_target_identity(&mut envelope, identity);
-            }
-
-            let metrics = get_metrics(scope_metric);
-            vec_otel_json.reserve(
-                metrics
-                    .iter()
-                    .map(|metric| metric_data_point_count(get_metric(metric)).max(1))
-                    .sum::<usize>(),
-            );
-            let date = chrono::Utc::now().date_naive().to_string();
-            increment_metrics_collected_by_date(metrics.len() as u64, &date, tenant_id);
-
-            // Flatten each metric's data points and merge envelope in one pass
-            for metric in metrics {
-                let data_points = flatten_metrics_record(get_metric(metric), flatten_exemplars);
-                for mut dp in data_points {
-                    if let Some(Value::String(timestamp)) = dp.get("time_unix_nano")
-                        && target_timestamp
-                            .as_ref()
-                            .is_none_or(|latest| timestamp > latest)
-                    {
-                        target_timestamp = Some(timestamp.clone());
-                    }
-                    for (k, v) in &envelope {
-                        dp.insert(k.clone(), v.clone());
-                    }
-                    // Compute the physical-series hash AFTER envelope merge
-                    // so resource/scope attributes participate in series
-                    // identity (they're labels from the query layer's
-                    // perspective). Computed once per data point — O(label
-                    // count) per sample, ~200 ns at typical attribute counts.
-                    let series_hash = compute_series_hash(&dp);
-                    dp.insert(
-                        SERIES_HASH_COLUMN.to_string(),
-                        Value::Number(series_hash.into()),
-                    );
-                    vec_otel_json.push(Value::Object(dp));
-                }
-            }
-        }
-
-        // Emit one target_info sample per OTel resource, using its latest data
-        // point timestamp so current metadata joins remain available.
-        if target_identity.is_some()
-            && let Some(timestamp) = target_timestamp
-        {
-            vec_otel_json.push(Value::Object(target_info_record(
-                &resource_fields,
-                timestamp,
-            )));
+        Self {
+            fields: resource_fields,
+            target_identity,
         }
     }
 
-    vec_otel_json
+    /// Envelope = resource + scope fields, merged over every row of the scope
+    pub fn scope_envelope(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        scope_schema_url: &str,
+    ) -> Map<String, Value> {
+        let mut envelope = self.fields.clone();
+
+        if let Some(scope) = scope {
+            envelope.insert("scope_name".to_string(), Value::String(scope.name.clone()));
+            envelope.insert(
+                "scope_version".to_string(),
+                Value::String(scope.version.clone()),
+            );
+            insert_attributes(&mut envelope, &scope.attributes);
+            envelope.insert(
+                "scope_dropped_attributes_count".to_string(),
+                Value::Number(scope.dropped_attributes_count.into()),
+            );
+        }
+        envelope.insert(
+            "scope_schema_url".to_string(),
+            Value::String(scope_schema_url.to_string()),
+        );
+        // Scope attributes are merged after resource attributes. Reapply
+        // the derived identity so they cannot shadow job or instance.
+        if let Some(identity) = &self.target_identity {
+            insert_prometheus_target_identity(&mut envelope, identity);
+        }
+        envelope
+    }
+
+    /// Whether the rows of this resource get Prometheus `job` and `instance`
+    /// labels, and the resource a `target_info` row
+    pub fn has_target_identity(&self) -> bool {
+        self.target_identity.is_some()
+    }
+
+    /// The `target_info` row of this resource, at the latest data point
+    /// timestamp of its rows, if it has a Prometheus target identity
+    pub fn target_info(&self, latest: Option<String>) -> Option<Map<String, Value>> {
+        // Emit one target_info sample per OTel resource, using its latest data
+        // point timestamp so current metadata joins remain available.
+        if self.target_identity.is_some()
+            && let Some(timestamp) = latest
+        {
+            Some(target_info_record(&self.fields, timestamp))
+        } else {
+            None
+        }
+    }
+}
+
+/// Hands the rows of every metric of one scope to `sink`, tracking in `latest` the
+/// latest `time_unix_nano` of the rows for the resource's `target_info` row
+pub fn metric_rows_into<S: RowSink + ?Sized>(
+    metric: &Metric,
+    envelope: &Map<String, Value>,
+    flatten_exemplars: bool,
+    latest: &mut Option<String>,
+    sink: &mut S,
+) -> Result<(), S::Error> {
+    metric_rows(metric, flatten_exemplars, envelope.len(), |row| {
+        let (mut dp, point) = match row {
+            MetricRow::Point(dp) => (dp, true),
+            MetricRow::NoPoints(dp) => (dp, false),
+        };
+        if let Some(Value::String(timestamp)) = dp.get("time_unix_nano")
+            && latest.as_ref().is_none_or(|latest| timestamp > latest)
+        {
+            *latest = Some(timestamp.clone());
+        }
+        for (k, v) in envelope {
+            dp.insert(k.clone(), v.clone());
+        }
+        // Compute the physical-series hash AFTER envelope merge
+        // so resource/scope attributes participate in series
+        // identity (they're labels from the query layer's
+        // perspective). Computed once per data point — O(label
+        // count) per sample, ~200 ns at typical attribute counts.
+        let series_hash = compute_series_hash(&dp);
+        dp.insert(
+            SERIES_HASH_COLUMN.to_string(),
+            Value::Number(series_hash.into()),
+        );
+        if point { sink.point(dp) } else { sink.row(dp) }
+    })?;
+    sink.record_end();
+    Ok(())
+}
+
+/// Hands the rows of every metric of `resource_metrics` to `sink`, one at a time,
+/// with one `target_info` row after the rows of each resource that has a
+/// Prometheus target identity
+pub fn flatten_metrics_into<S: RowSink + ?Sized>(
+    resource_metrics: &[ResourceMetrics],
+    flatten_exemplars: bool,
+    sink: &mut S,
+) -> Result<(), S::Error> {
+    for resource_metric in resource_metrics {
+        let resource = ResourceMetricFields::new(
+            resource_metric.resource.as_ref(),
+            &resource_metric.schema_url,
+        );
+        let mut target_timestamp: Option<String> = None;
+        for scope_metric in &resource_metric.scope_metrics {
+            let envelope =
+                resource.scope_envelope(scope_metric.scope.as_ref(), &scope_metric.schema_url);
+            for metric in &scope_metric.metrics {
+                metric_rows_into(
+                    metric,
+                    &envelope,
+                    flatten_exemplars,
+                    &mut target_timestamp,
+                    sink,
+                )?;
+            }
+        }
+        if let Some(target) = resource.target_info(target_timestamp) {
+            sink.row(target)?;
+        }
+    }
+    Ok(())
+}
+
+/// All rows of `resource_metrics` at once, counting the metrics for `tenant_id`.
+/// Ingestion streams the rows instead, see `flatten_metrics_into`.
+fn process_resource_metrics(
+    resource_metrics: &[ResourceMetrics],
+    tenant_id: &str,
+    flatten_exemplars: bool,
+) -> Vec<Value> {
+    let _span = info_span!(
+        "process_resource_metrics",
+        resource_count = resource_metrics.len(),
+    )
+    .entered();
+    let mut rows = Vec::new();
+    flatten_metrics_into(resource_metrics, flatten_exemplars, &mut rows)
+        .expect("metric rows are never refused");
+    let metrics: usize = resource_metrics
+        .iter()
+        .flat_map(|resource_metric| &resource_metric.scope_metrics)
+        .map(|scope_metric| scope_metric.metrics.len())
+        .sum();
+    let date = chrono::Utc::now().date_naive().to_string();
+    increment_metrics_collected_by_date(metrics as u64, &date, tenant_id);
+    rows
 }
 
 /// this function performs the custom flattening of the otel metrics
 /// and returns a `Vec` of `Value::Object` of the flattened json
 #[cfg_attr(feature = "hotpath", hotpath::measure)]
 pub fn flatten_otel_metrics(message: MetricsData, tenant_id: &str) -> Vec<Value> {
-    process_resource_metrics(
-        &message.resource_metrics,
-        |record| record.resource.as_ref(),
-        |record| &record.scope_metrics,
-        |record| &record.schema_url,
-        |scope_metric| scope_metric.scope.as_ref(),
-        |scope_metric| &scope_metric.schema_url,
-        |scope_metric| &scope_metric.metrics,
-        |metric| metric,
-        tenant_id,
-        PARSEABLE.options.otel_flatten_exemplars,
-    )
+    flatten_otel_metrics_with_options(message, tenant_id, PARSEABLE.options.otel_flatten_exemplars)
+}
+
+/// Flattens a JSON-decoded metrics request with an explicit exemplar policy.
+pub fn flatten_otel_metrics_with_options(
+    message: MetricsData,
+    tenant_id: &str,
+    flatten_exemplars: bool,
+) -> Vec<Value> {
+    process_resource_metrics(&message.resource_metrics, tenant_id, flatten_exemplars)
 }
 
 /// Flattens OpenTelemetry metrics from protobuf format
 pub fn flatten_otel_metrics_protobuf(
     message: &ExportMetricsServiceRequest,
     tenant_id: &str,
+) -> Vec<Value> {
+    flatten_otel_metrics_protobuf_with_options(
+        message,
+        tenant_id,
+        PARSEABLE.options.otel_flatten_exemplars,
+    )
+}
+
+/// Flattens a protobuf metrics request with an explicit exemplar policy.
+pub fn flatten_otel_metrics_protobuf_with_options(
+    message: &ExportMetricsServiceRequest,
+    tenant_id: &str,
+    flatten_exemplars: bool,
 ) -> Vec<Value> {
     let span = info_span!(
         "flatten_otel_metrics_protobuf",
@@ -817,18 +970,7 @@ pub fn flatten_otel_metrics_protobuf(
     );
     let _guard = span.enter();
 
-    let result = process_resource_metrics(
-        &message.resource_metrics,
-        |record| record.resource.as_ref(),
-        |record| &record.scope_metrics,
-        |record| &record.schema_url,
-        |scope_metric| scope_metric.scope.as_ref(),
-        |scope_metric| &scope_metric.schema_url,
-        |scope_metric| &scope_metric.metrics,
-        |metric| metric,
-        tenant_id,
-        PARSEABLE.options.otel_flatten_exemplars,
-    );
+    let result = process_resource_metrics(&message.resource_metrics, tenant_id, flatten_exemplars);
 
     span.record("output_count", result.len());
     result
@@ -870,6 +1012,7 @@ mod tests {
     use opentelemetry_proto::tonic::common::v1::{
         AnyValue, InstrumentationScope, KeyValue, any_value,
     };
+    use opentelemetry_proto::tonic::metrics::v1::Gauge;
     use opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, ScopeMetrics};
     use opentelemetry_proto::tonic::resource::v1::Resource;
 
@@ -899,18 +1042,7 @@ mod tests {
     }
 
     fn flatten_for_test(message: &MetricsData) -> Vec<Value> {
-        process_resource_metrics(
-            &message.resource_metrics,
-            |record| record.resource.as_ref(),
-            |record| &record.scope_metrics,
-            |record| &record.schema_url,
-            |scope_metric| scope_metric.scope.as_ref(),
-            |scope_metric| &scope_metric.schema_url,
-            |scope_metric| &scope_metric.metrics,
-            |metric| metric,
-            "test-tenant",
-            false,
-        )
+        process_resource_metrics(&message.resource_metrics, "test-tenant", false)
     }
 
     #[test]
@@ -1459,6 +1591,206 @@ mod tests {
                 !OTEL_METRICS_KNOWN_FIELDS.contains(field),
                 "`{field}` must not be a known field"
             );
+        }
+    }
+
+    // Release-profile micro-benchmarks. Run with a filter, for example:
+    //   cargo test --release --lib -- --ignored --exact otel::metrics::tests::benches::bench_flatten_otel_metrics_protobuf --nocapture
+    // They call `process_resource_metrics` directly with `flatten_exemplars`
+    // false, as the PROTOBUF entry point does, so they never read PARSEABLE.
+    mod benches {
+        use crate::otel::bench;
+        use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{
+            AnyValue, InstrumentationScope, KeyValue, any_value,
+        };
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Exemplar, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric,
+            number_data_point,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        use super::super::compute_series_hash;
+
+        const DATA_POINTS_PER_METRIC: usize = 10;
+        const METRICS_PER_SCOPE: usize = 50;
+        const ITERS: usize = 20;
+
+        fn string_kv(key: &str, value: impl Into<String>) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::StringValue(value.into())),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn int_kv(key: &str, value: i64) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::IntValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn bool_kv(key: &str, value: bool) -> KeyValue {
+            KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::BoolValue(value)),
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn data_point(i: usize) -> NumberDataPoint {
+            let exemplars = if i.is_multiple_of(5) {
+                vec![Exemplar {
+                    filtered_attributes: vec![
+                        string_kv("exemplar.trace_id", format!("{i:032x}")),
+                        string_kv("exemplar.span_id", format!("{i:016x}")),
+                    ],
+                    time_unix_nano: 1_700_000_000_000_000_000 + i as u64 * 1_000,
+                    value: Some(
+                        opentelemetry_proto::tonic::metrics::v1::exemplar::Value::AsDouble(1.5),
+                    ),
+                    span_id: vec![0x11; 8],
+                    trace_id: vec![0x22; 16],
+                }]
+            } else {
+                Vec::new()
+            };
+            NumberDataPoint {
+                attributes: vec![
+                    string_kv("http.method", "GET"),
+                    string_kv("http.route", "/api/v1/items/:id"),
+                    string_kv("http.status_code", format!("{}", 200 + i % 5)),
+                    string_kv("net.peer.name", "checkout.internal"),
+                    int_kv("retry.count", (i % 3) as i64),
+                    bool_kv("cache.hit", i.is_multiple_of(2)),
+                ],
+                start_time_unix_nano: 1_700_000_000_000_000_000,
+                time_unix_nano: 1_700_000_000_000_000_000 + i as u64 * 1_000_000,
+                exemplars,
+                flags: 0,
+                value: Some(number_data_point::Value::AsDouble(i as f64 / 7.0)),
+            }
+        }
+
+        fn metric(metric_index: usize, resource_index: usize) -> Metric {
+            Metric {
+                name: format!("http.server.request.duration.{metric_index}"),
+                description: "Duration of HTTP server requests".to_string(),
+                unit: "s".to_string(),
+                data: Some(metric::Data::Gauge(Gauge {
+                    data_points: (0..DATA_POINTS_PER_METRIC)
+                        .map(|i| data_point(resource_index * 1000 + metric_index * 10 + i))
+                        .collect(),
+                })),
+                metadata: vec![
+                    string_kv("otel.scope.name", "bench"),
+                    string_kv("otel.scope.version", "1.2.3"),
+                ],
+            }
+        }
+
+        fn request() -> ExportMetricsServiceRequest {
+            let resource_metrics = (0..2)
+                .map(|resource_index| ResourceMetrics {
+                    resource: Some(Resource {
+                        attributes: vec![
+                            string_kv("service.name", "checkout"),
+                            string_kv("service.namespace", "shop"),
+                            string_kv("service.instance.id", format!("checkout-{resource_index}")),
+                            string_kv("deployment.environment", "production"),
+                            int_kv("process.pid", 4242 + resource_index as i64),
+                        ],
+                        dropped_attributes_count: 0,
+                        entity_refs: vec![],
+                    }),
+                    scope_metrics: (0..2)
+                        .map(|scope_index| ScopeMetrics {
+                            scope: Some(InstrumentationScope {
+                                name: "io.opentelemetry.contrib.bench".to_string(),
+                                version: "0.31.0".to_string(),
+                                attributes: vec![
+                                    string_kv("scope.kind", "server"),
+                                    string_kv(
+                                        "scope.extra",
+                                        format!("{resource_index}-{scope_index}"),
+                                    ),
+                                    int_kv("scope.ordinal", scope_index),
+                                ],
+                                dropped_attributes_count: 0,
+                            }),
+                            metrics: (0..METRICS_PER_SCOPE)
+                                .map(|metric_index| {
+                                    metric(
+                                        metric_index,
+                                        resource_index as usize * 10 + scope_index as usize,
+                                    )
+                                })
+                                .collect(),
+                            schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                        })
+                        .collect(),
+                    schema_url: "https://opentelemetry.io/schemas/1.24.0".to_string(),
+                })
+                .collect();
+            ExportMetricsServiceRequest { resource_metrics }
+        }
+
+        /// What ingestion does with a decoded request: its rows handed over in
+        /// chunks (collected here)
+        fn flatten(request: &ExportMetricsServiceRequest) -> Vec<serde_json::Value> {
+            bench::chunked(|chunker| {
+                super::super::flatten_metrics_into(&request.resource_metrics, false, chunker)
+            })
+        }
+
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_flatten_otel_metrics_protobuf() {
+            let request = request();
+            bench::run("bench_flatten_otel_metrics_protobuf", ITERS, || {
+                flatten(&request)
+            });
+        }
+
+        /// The rows of the benchmark request, pinned so that a refactor changing
+        /// them fails a normal `cargo test --lib` run. The digest is of
+        /// `serde_json::to_vec` of the rows; it was first recorded from the
+        /// unoptimised flatteners.
+        #[test]
+        fn benchmark_request_rows_are_stable() {
+            let rows = flatten(&request());
+            let bytes = serde_json::to_vec(&rows).unwrap();
+            use std::hash::Hasher;
+            let mut hasher = rustc_hash::FxHasher::default();
+            hasher.write(&bytes);
+            // 2000 data points plus one target_info sample per resource
+            assert_eq!(rows.len(), 2002);
+            assert_eq!(
+                (bytes.len(), hasher.finish()),
+                (2_357_124, 0xf123_85b9_f510_100b),
+                "flattened rows of the benchmark request changed"
+            );
+        }
+
+        /// Cost of the per-data-point series hash over a typical flattened row.
+        #[test]
+        #[ignore = "performance benchmark"]
+        fn bench_compute_series_hash() {
+            let rows = flatten(&request());
+            let row = rows[0].as_object().expect("object row");
+            let mut sum = 0u64;
+            bench::time_calls("bench_compute_series_hash", 200_000, |_| {
+                sum = sum.wrapping_add(compute_series_hash(row));
+            });
+            assert_ne!(sum, 0);
         }
     }
 }

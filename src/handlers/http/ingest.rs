@@ -34,7 +34,7 @@ use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
 use crate::handlers::http::modal::utils::ingest_utils::{
-    ingest_helper, process_otel_content, validate_stream_for_ingestion,
+    ingest_helper, otel_response, process_otel_content, validate_stream_for_ingestion,
 };
 use crate::handlers::{
     DatasetTag, EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY,
@@ -246,6 +246,14 @@ pub async fn setup_otel_stream(
     );
 
     let tenant_id = get_tenant_id_from_request(req)?;
+    // The OTLP endpoints authorize `Action::Ingest` against the header stream,
+    // and `check_auth` matches any stream-scoped permission against internal
+    // streams, so refuse them here exactly like the `/api/v1/ingest` and
+    // `/api/v1/logstream/{name}` handlers do.
+    let internal_stream_names = PARSEABLE.streams.list_internal_streams(&tenant_id);
+    if internal_stream_names.contains(&stream_name) {
+        return Err(PostError::InternalStream(stream_name));
+    }
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
@@ -317,9 +325,10 @@ pub async fn handle_otel_logs_ingestion(
         e
     })?;
 
-    process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Logs).await?;
+    let ingested =
+        process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Logs).await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok(otel_response(&req, TelemetryType::Logs, &ingested))
 }
 
 // Handler for POST /v1/metrics to ingest OTEL metrics
@@ -343,7 +352,7 @@ pub async fn handle_otel_metrics_ingestion(
         e
     })?;
 
-    process_otel_content(
+    let ingested = process_otel_content(
         &req,
         body,
         &stream_name,
@@ -352,7 +361,7 @@ pub async fn handle_otel_metrics_ingestion(
     )
     .await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok(otel_response(&req, TelemetryType::Metrics, &ingested))
 }
 
 // Handler for POST /v1/traces to ingest OTEL traces
@@ -376,9 +385,10 @@ pub async fn handle_otel_traces_ingestion(
         e
     })?;
 
-    process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Traces).await?;
+    let ingested =
+        process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Traces).await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok(otel_response(&req, TelemetryType::Traces, &ingested))
 }
 
 // Handler for POST /api/v1/logstream/{logstream}
@@ -1372,5 +1382,142 @@ mod header_error_tests {
         // unrelated nested errors keep their existing 500 mapping
         let other = PostError::StreamError(StreamError::UninitializedLogstream);
         assert_eq!(other.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}
+
+#[cfg(test)]
+mod otel_internal_stream_tests {
+    use std::sync::Arc;
+
+    use actix_web::test::TestRequest;
+
+    use super::*;
+    use crate::metadata::LogStreamMetadata;
+    use crate::option::Mode;
+    use crate::parseable::{DEFAULT_TENANT, Stream};
+
+    /// Registers an internal stream in the live server state, as `pmeta` and
+    /// `pstats` exist in a real deployment.
+    fn register_internal_stream(name: &str) {
+        let staging = tempfile::tempdir_in(concat!(env!("CARGO_MANIFEST_DIR"), "/target"))
+            .expect("a temporary staging directory")
+            .keep();
+        let options = Arc::new(crate::cli::Options {
+            local_staging_path: staging,
+            mode: Mode::All,
+            ..crate::cli::Options::default()
+        });
+        let metadata = LogStreamMetadata {
+            stream_type: StreamType::Internal,
+            // A pre-existing non-OTEL log source, so the OTLP handler's
+            // log-source compatibility check passes and the write would
+            // proceed past it.
+            log_source: vec![LogSourceEntry::new(LogSource::Json, HashSet::new())],
+            ..LogStreamMetadata::default()
+        };
+        let stream = Stream::new(options, name, metadata, None, &None);
+        PARSEABLE
+            .streams
+            .write()
+            .unwrap()
+            .entry(DEFAULT_TENANT.to_owned())
+            .or_default()
+            .insert(name.to_owned(), stream);
+    }
+
+    /// `POST /v1/logs`, `/v1/metrics` and `/v1/traces` all stage their writes
+    /// through `setup_otel_stream`, which must refuse internal streams exactly
+    /// like the `/api/v1/ingest` and `/api/v1/logstream/{name}` handlers do.
+    #[tokio::test]
+    async fn otel_ingestion_rejects_internal_streams() {
+        crate::parseable::install_default_test_parseable();
+        register_internal_stream("pmeta");
+        assert!(
+            PARSEABLE
+                .streams
+                .list_internal_streams(&None)
+                .contains(&"pmeta".to_owned()),
+            "the internal stream fixture must be registered"
+        );
+
+        let req = TestRequest::default()
+            .insert_header((STREAM_NAME_HEADER_KEY, "pmeta"))
+            .to_http_request();
+
+        let result = setup_otel_stream(
+            &req,
+            LogSource::OtelLogs,
+            &OTEL_LOG_KNOWN_FIELD_LIST,
+            TelemetryType::Logs,
+            vec![],
+            vec![],
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(PostError::InternalStream(ref name)) if name == "pmeta"),
+            "ingesting into an internal stream via the OTLP endpoints must be rejected, got {result:?}"
+        );
+    }
+
+    /// Documents the enabling half of the finding: `check_auth` treats any
+    /// stream-scoped permission as a match for an internal stream (the clause
+    /// was added for *reading* internal datasets in upstream commit 651f067c,
+    /// but it applies to every action, including Ingest). This is why the
+    /// ingestion handlers must refuse internal streams themselves, and why a
+    /// role scoped to a single user stream must never be the only protection.
+    #[test]
+    fn check_auth_matches_stream_scoped_permissions_against_internal_streams() {
+        use crate::rbac::map::{
+            ROLES, Roles, SESSIONS, SessionKey, Sessions, USER_GROUPS, USERS, UserGroups,
+            mut_roles, mut_users, sessions,
+        };
+        use crate::rbac::role::ParseableResourceType;
+        use crate::rbac::role::model::{DefaultPrivilege, Role};
+        use crate::rbac::user::{Basic, User, UserType};
+        use parking_lot::RwLock;
+        use ulid::Ulid;
+
+        crate::parseable::install_default_test_parseable();
+        register_internal_stream("pmeta");
+
+        let _serial = crate::rbac::map::TEST_SERIAL.blocking_lock();
+        USERS.get_or_init(|| RwLock::new(crate::rbac::map::Users::default()));
+        SESSIONS.get_or_init(|| RwLock::new(Sessions::default()));
+        USER_GROUPS.get_or_init(|| RwLock::new(UserGroups::default()));
+        ROLES.get_or_init(|| RwLock::new(Roles::default()));
+        mut_roles()
+            .entry(DEFAULT_TENANT.to_owned())
+            .or_default()
+            .insert(
+                "scoped-ingester".to_owned(),
+                Role::create_user_role(vec![DefaultPrivilege::Ingestor {
+                    resource: Some(ParseableResourceType::Stream("app-logs".to_owned())),
+                }]),
+            );
+
+        let user = User {
+            ty: UserType::Native(Basic {
+                username: format!("scoped-{}", Ulid::new()).to_lowercase(),
+                password_hash: "unused-in-this-test".to_owned(),
+                email: None,
+            }),
+            roles: HashSet::from(["scoped-ingester".to_owned()]),
+            user_groups: HashSet::new(),
+            tenant: None,
+            protected: false,
+        };
+        mut_users().insert(user.clone());
+        let key = SessionKey::SessionId(Ulid::new());
+        crate::rbac::Users.new_session(&user, key.clone(), chrono::TimeDelta::minutes(5));
+
+        let response =
+            sessions().check_auth(&key, crate::rbac::role::Action::Ingest, Some("pmeta"), None);
+
+        assert_eq!(
+            response,
+            Some(crate::rbac::Response::Authorized),
+            "documents the over-grant: a role scoped to `app-logs` authorizes ingest on the internal stream `pmeta`"
+        );
     }
 }

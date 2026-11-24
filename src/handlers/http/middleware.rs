@@ -271,16 +271,29 @@ where
 
         let key: Result<SessionKey, Error> = extract_session_key(&mut req);
 
-        // if action is ingestion, check if tenant is correct for basic auth user
+        // if action is ingestion, the client-supplied tenant header must match
+        // the tenant the credential itself belongs to
         if self.action.eq(&Action::Ingest)
             && let Ok(key) = &key
-            && let SessionKey::BasicAuth { username, password } = &key
             && let (_, Some(tenant)) = &user_and_tenant_id
-            && !Users.validate_basic_user_tenant_id(username, password, tenant)
         {
-            header_error = Some(actix_web::Error::from(PostError::Header(
-                crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
-            )));
+            // Basic credentials are verified against the users of that tenant.
+            // Every other credential is a tracked session (cookie, forwarded
+            // or API-key) already bound to the tenant it was issued in, so the
+            // claimed tenant must be the session's own.
+            let tenant_matches = match &key {
+                SessionKey::BasicAuth { username, password } => {
+                    Users.validate_basic_user_tenant_id(username, password, tenant)
+                }
+                session @ SessionKey::SessionId(_) => Users
+                    .get_userid_from_session(session)
+                    .is_some_and(|(_, session_tenant)| session_tenant.eq(tenant)),
+            };
+            if !tenant_matches {
+                header_error = Some(actix_web::Error::from(PostError::Header(
+                    crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
+                )));
+            }
         }
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
@@ -476,15 +489,20 @@ fn insert_api_key_tenant_header(
 }
 
 /// Unit tests cannot initialize `PARSEABLE`, which parses the process arguments,
-/// so they exercise the middleware in single-tenant mode.
+/// so they exercise the middleware in single-tenant mode. Tests that need the
+/// multi-tenant branches flip the test-only `TEST_MULTI_TENANT` flag while
+/// holding the RBAC serial lock, so no other middleware test observes the change.
 #[cfg(not(test))]
 fn is_multi_tenant() -> bool {
     PARSEABLE.options.is_multi_tenant()
 }
 
 #[cfg(test)]
+static TEST_MULTI_TENANT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
 fn is_multi_tenant() -> bool {
-    false
+    TEST_MULTI_TENANT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Resolve an incoming API key value to its backing `UserType::ApiKey` user.
@@ -502,9 +520,11 @@ fn find_api_key_user(api_key_value: &str, tenant_id: &Option<String>) -> Option<
     let users_guard = users();
     let tenant_users = users_guard.get(tenant)?;
     let now = Utc::now();
+    // Stored keys are hashes: hash the presented one once for the whole scan
+    let hash = user::hash_api_key(api_key_value);
     tenant_users.values().find_map(|user| {
         if let UserType::ApiKey(api_key) = &user.ty
-            && api_key.matches_active_key(api_key_value, now)
+            && api_key.matches_active_hash(&hash, now)
         {
             Some(user.clone())
         } else {
@@ -2282,5 +2302,166 @@ mod api_key_auth_tests {
         // Both categories ran, so neither branch above went untested.
         assert!(text_cases.load(Ordering::SeqCst) > 0);
         assert!(obs_text_cases.load(Ordering::SeqCst) > 0);
+    }
+}
+
+/// The ingest routes resolve the target tenant from the client-supplied
+/// `x-p-tenant` header. Basic credentials are checked against that tenant, but
+/// a session cookie is not: a user whose session belongs to tenant A must not
+/// be able to ingest as tenant B just by claiming B's header.
+#[cfg(test)]
+mod ingest_tenant_binding_tests {
+    use std::collections::HashSet;
+    use std::sync::atomic::Ordering;
+
+    use actix_web::{
+        App, HttpResponse, dev::ServiceResponse, http::StatusCode, test as actix_test, web,
+    };
+    use chrono::TimeDelta;
+    use parking_lot::RwLock;
+    use ulid::Ulid;
+
+    use super::*;
+    use crate::rbac::map::{
+        ROLES, Roles, SESSIONS, Sessions, USER_GROUPS, USERS, UserGroups, mut_roles, mut_users,
+    };
+    use crate::rbac::role::ParseableResourceType;
+    use crate::rbac::role::model::{DefaultPrivilege, Role};
+    use crate::rbac::user::{Basic, User, UserType};
+
+    const STREAM: &str = "shared-stream";
+
+    /// Runs with the middleware's multi-tenant answer enabled, restoring it
+    /// on scope exit (including on panic).
+    struct MultiTenant;
+    impl MultiTenant {
+        fn enable() -> Self {
+            TEST_MULTI_TENANT.store(true, Ordering::SeqCst);
+            MultiTenant
+        }
+    }
+    impl Drop for MultiTenant {
+        fn drop(&mut self) {
+            TEST_MULTI_TENANT.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn unique_tenant(prefix: &str) -> String {
+        format!("{prefix}-{}", Ulid::new()).to_lowercase()
+    }
+
+    async fn auth_state() -> tokio::sync::MutexGuard<'static, ()> {
+        let serial = crate::rbac::map::TEST_SERIAL.lock().await;
+        USERS.get_or_init(|| RwLock::new(crate::rbac::map::Users::default()));
+        SESSIONS.get_or_init(|| RwLock::new(Sessions::default()));
+        USER_GROUPS.get_or_init(|| RwLock::new(UserGroups::default()));
+        ROLES.get_or_init(|| RwLock::new(Roles::default()));
+        serial
+    }
+
+    /// A native user in `tenant` whose only role grants `Ingest` on `STREAM`,
+    /// plus a tracked cookie session for them.
+    fn scoped_session_user(tenant: &str) -> SessionKey {
+        let role_name = format!("scoped-ingester-{}", Ulid::new()).to_lowercase();
+        mut_roles().entry(tenant.to_owned()).or_default().insert(
+            role_name.clone(),
+            Role::create_user_role(vec![DefaultPrivilege::Ingestor {
+                resource: Some(ParseableResourceType::Stream(STREAM.to_owned())),
+            }]),
+        );
+        let user = User {
+            ty: UserType::Native(Basic {
+                username: format!("scoped-{}", Ulid::new()).to_lowercase(),
+                password_hash: "unused-in-this-test".to_owned(),
+                email: None,
+            }),
+            roles: HashSet::from([role_name]),
+            user_groups: HashSet::new(),
+            tenant: Some(tenant.to_owned()),
+            protected: false,
+        };
+        mut_users().insert(user.clone());
+        let key = SessionKey::SessionId(Ulid::new());
+        crate::rbac::Users.new_session(&user, key.clone(), TimeDelta::minutes(5));
+        key
+    }
+
+    /// A POST route wrapped exactly like the ingest routes: `Auth` with
+    /// `Action::Ingest` and the resource-context decision. The stub handler
+    /// records the tenant header it was reached with.
+    async fn call_ingest_route(
+        session: &SessionKey,
+        claimed_tenant: &str,
+    ) -> (StatusCode, Option<String>) {
+        let seen_tenant = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let handler_tenant = std::sync::Arc::clone(&seen_tenant);
+        let route = web::post()
+            .to(move |req: actix_web::HttpRequest| {
+                let tenant = req
+                    .headers()
+                    .get(TENANT_ID)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                *handler_tenant.lock().unwrap() = tenant;
+                async { HttpResponse::Ok().finish() }
+            })
+            .wrap(Auth {
+                action: Action::Ingest,
+                method: auth_resource_context,
+            });
+        let app = actix_test::init_service(App::new().route("/", route)).await;
+
+        let SessionKey::SessionId(id) = session else {
+            unreachable!("the fixture tracks a cookie session");
+        };
+        let request = actix_test::TestRequest::post()
+            .insert_header(("cookie", format!("session={id}")))
+            .insert_header((TENANT_ID, claimed_tenant))
+            .insert_header((STREAM_NAME_HEADER_KEY, STREAM))
+            .to_request();
+        let response: ServiceResponse = match actix_test::try_call_service(&app, request).await {
+            Ok(response) => response,
+            Err(error) => {
+                let status = error.as_response_error().status_code();
+                return (status, None);
+            }
+        };
+        let status = response.status();
+        let body = actix_web::body::to_bytes(response.into_body())
+            .await
+            .expect("buffered body");
+        assert!(body.is_empty(), "the stub returns an empty body");
+        (status, seen_tenant.lock().unwrap().clone())
+    }
+
+    #[actix_web::test]
+    async fn session_ingest_is_bound_to_the_sessions_tenant() {
+        // `check_auth` resolves the context stream through `PARSEABLE`.
+        crate::parseable::install_default_test_parseable();
+        let _state = auth_state().await;
+        let _multi = MultiTenant::enable();
+
+        let tenant_a = unique_tenant("tenant-a");
+        let tenant_b = unique_tenant("tenant-b");
+        let session = scoped_session_user(&tenant_a);
+
+        // The session belongs to tenant A; claiming tenant B's header must be
+        // rejected before the handler, like a Basic credential of another
+        // tenant already is.
+        let (status, seen) = call_ingest_route(&session, &tenant_b).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a session of tenant {tenant_a} must not ingest as {tenant_b}"
+        );
+        assert!(
+            seen.is_none(),
+            "the request must be rejected before the handler sees the tenant header"
+        );
+
+        // Control: claiming the session's own tenant still ingests.
+        let (status, seen) = call_ingest_route(&session, &tenant_a).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen.as_deref(), Some(tenant_a.as_str()));
     }
 }

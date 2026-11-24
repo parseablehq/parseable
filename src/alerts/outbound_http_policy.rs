@@ -453,7 +453,8 @@ fn denied_ipv6(ip: Ipv6Addr) -> bool {
     if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
         return true;
     }
-    let first = ip.segments()[0];
+    let segments = ip.segments();
+    let first = segments[0];
 
     if (first & 0xfe00) == 0xfc00 {
         return true;
@@ -462,7 +463,11 @@ fn denied_ipv6(ip: Ipv6Addr) -> bool {
         return true;
     }
 
-    // Block IPv6 transition ranges that can carry embedded IPv4 destinations.
+    // Block IPv6 transition ranges that can carry embedded IPv4 destinations,
+    // including NAT64 WKP (RFC 6052) and local-use (RFC 8215) prefixes.
+    if segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] || segments[..3] == [0x0064, 0xff9b, 1] {
+        return true;
+    }
     if first == 0x2002 {
         return true;
     }
@@ -684,6 +689,65 @@ mod tests {
         assert!(builtin_denied_ip(IpAddr::V6(
             "2001:0000:4136:e378:8000:63bf:3fff:fdd2".parse().unwrap()
         )));
+    }
+
+    #[test]
+    fn nat64_addresses_require_private_target_authorization() {
+        for address in [
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b::ac10:fe01",
+            "64:ff9b::808:808",
+            "64:ff9b::",
+            "64:ff9b::ffff:ffff",
+            "64:ff9b:1::c0a8:1",
+            "64:ff9b:1::",
+            "64:ff9b:1:ffff:ffff:ffff:ffff:ffff",
+        ] {
+            let ip = address.parse::<IpAddr>().unwrap();
+            let addrs = [socket(ip)];
+            for policy in [
+                AlertTargetPolicyConfig::default(),
+                policy_with(true, &[], &[]),
+                policy_with(false, &["64:ff9b::/96", "64:ff9b:1::/48"], &[]),
+            ] {
+                assert!(
+                    matches!(
+                        validate_resolved_addrs(address, &addrs, &policy),
+                        Err(OutboundPolicyError::PrivateAddressNotAllowed(denied)) if denied == ip
+                    ),
+                    "{address} must require allow_private and an allowlist match"
+                );
+            }
+
+            let policy = policy_with(true, &["64:ff9b::/96", "64:ff9b:1::/48"], &[]);
+            validate_resolved_addrs(address, &addrs, &policy).unwrap();
+        }
+    }
+
+    #[test]
+    fn addresses_outside_nat64_prefixes_remain_allowed() {
+        for address in [
+            "64:ff9a:ffff:ffff:ffff:ffff:ffff:ffff",
+            "64:ff9b::1:0:0",
+            "64:ff9b:0:ffff:ffff:ffff:ffff:ffff",
+            "64:ff9b:2::",
+            "2606:4700:4700::1111",
+        ] {
+            let addrs = [socket(address.parse().unwrap())];
+            validate_resolved_addrs(address, &addrs, &AlertTargetPolicyConfig::default()).unwrap();
+        }
+    }
+
+    #[test]
+    fn mixed_public_and_nat64_addresses_are_blocked() {
+        let nat64 = "64:ff9b::7f00:1".parse::<IpAddr>().unwrap();
+        let addrs = [socket("1.1.1.1".parse().unwrap()), socket(nat64)];
+
+        assert!(matches!(
+            validate_resolved_addrs("example.com", &addrs, &AlertTargetPolicyConfig::default()),
+            Err(OutboundPolicyError::PrivateAddressNotAllowed(ip)) if ip == nat64
+        ));
     }
 
     #[test]

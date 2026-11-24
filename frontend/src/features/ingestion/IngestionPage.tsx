@@ -209,8 +209,8 @@ function IngestionWorkspace() {
           <div className="ingestion-guide-divider" />
           <h3>Sending OpenTelemetry?</h3>
           <p>
-            Use HTTP with JSON encoding. A collector can receive your SDK's OTLP traffic and forward
-            compatible JSON to Parseable.
+            Use OTLP over HTTP with JSON or protobuf encoding. A collector can receive your SDK's
+            OTLP traffic and forward it to Parseable.
           </p>
           <a
             className="text-link"
