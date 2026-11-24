@@ -300,7 +300,14 @@ pub fn insert_attributes_fitted(
     let counted = attribute_capacity(attributes);
     let before = map.len();
     insert_attributes(map, attributes);
-    let added = map.len().saturating_sub(before);
+    fit_map(map, capacity, counted, map.len().saturating_sub(before));
+}
+
+/// Rebuilds `map`, created with room for `capacity` entries of which `counted`
+/// were for entries that only `added` turned out to make (repeated keys, or keys
+/// its own fields already had), with room for that many fewer. Does nothing when
+/// `added` is at least `counted`, so attributes with distinct keys rebuild nothing.
+pub fn fit_map(map: &mut Map<String, Value>, capacity: usize, counted: usize, added: usize) {
     if added < counted {
         let mut fitted = Map::with_capacity(capacity.saturating_sub(counted - added));
         fitted.extend(std::mem::take(map));

@@ -316,13 +316,16 @@ fn insert_exemplars(map: &mut Map<String, Value>, exemplars: &[Exemplar], flatte
     }
 }
 
-/// The own fields of the row of one number data point (gauge or sum)
+/// The own fields of the row of one number data point (gauge or sum); `extra` is
+/// the capacity the metric and envelope fields merged over it will take
 fn number_data_point_row(
     data_point: &NumberDataPoint,
     flatten_exemplars: bool,
+    extra: usize,
 ) -> Map<String, Value> {
-    let mut data_point_json = Map::with_capacity(attribute_capacity(&data_point.attributes) + 8);
-    insert_attributes(&mut data_point_json, &data_point.attributes);
+    let capacity = attribute_capacity(&data_point.attributes) + 8 + extra;
+    let mut data_point_json = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut data_point_json, &data_point.attributes, capacity);
     data_point_json.insert(
         "start_time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -369,8 +372,9 @@ fn sum_data_point_row(
     sum: &Sum,
     data_point: &NumberDataPoint,
     flatten_exemplars: bool,
+    extra: usize,
 ) -> Map<String, Value> {
-    let mut dp = number_data_point_row(data_point, flatten_exemplars);
+    let mut dp = number_data_point_row(data_point, flatten_exemplars, extra);
     insert_aggregation_temporality(&mut dp, sum.aggregation_temporality);
     dp.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
     dp
@@ -381,9 +385,11 @@ fn histogram_data_point_row(
     histogram: &Histogram,
     data_point: &HistogramDataPoint,
     flatten_exemplars: bool,
+    extra: usize,
 ) -> Map<String, Value> {
-    let mut data_point_json = Map::with_capacity(attribute_capacity(&data_point.attributes) + 10);
-    insert_attributes(&mut data_point_json, &data_point.attributes);
+    let capacity = attribute_capacity(&data_point.attributes) + 10 + extra;
+    let mut data_point_json = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut data_point_json, &data_point.attributes, capacity);
     data_point_json.insert(
         "start_time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -464,9 +470,11 @@ fn exp_histogram_data_point_row(
     exp_histogram: &ExponentialHistogram,
     data_point: &ExponentialHistogramDataPoint,
     flatten_exemplars: bool,
+    extra: usize,
 ) -> Map<String, Value> {
-    let mut data_point_json = Map::with_capacity(attribute_capacity(&data_point.attributes) + 12);
-    insert_attributes(&mut data_point_json, &data_point.attributes);
+    let capacity = attribute_capacity(&data_point.attributes) + 12 + extra;
+    let mut data_point_json = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut data_point_json, &data_point.attributes, capacity);
     data_point_json.insert(
         "start_time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -515,9 +523,10 @@ fn exp_histogram_data_point_row(
 }
 
 /// The own fields of the row of one summary data point
-fn summary_data_point_row(data_point: &SummaryDataPoint) -> Map<String, Value> {
-    let mut data_point_json = Map::with_capacity(attribute_capacity(&data_point.attributes) + 6);
-    insert_attributes(&mut data_point_json, &data_point.attributes);
+fn summary_data_point_row(data_point: &SummaryDataPoint, extra: usize) -> Map<String, Value> {
+    let capacity = attribute_capacity(&data_point.attributes) + 6 + extra;
+    let mut data_point_json = Map::with_capacity(capacity);
+    insert_attributes_fitted(&mut data_point_json, &data_point.attributes, capacity);
     data_point_json.insert(
         "start_time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -600,10 +609,13 @@ impl MetricFields {
 
 /// Hands the rows of one metric to `emit` one at a time: one per data point, each
 /// built once the one before it was handed over, or one for a metric that has data
-/// but no data points. A metric without data has no rows.
+/// but no data points. A metric without data has no rows. `merged` is the number of
+/// fields the caller merges over every row after this (a scope's envelope); rows
+/// are sized for them so that merging never has to grow a row map.
 pub fn metric_rows<E>(
     metrics_record: &Metric,
     flatten_exemplars: bool,
+    merged: usize,
     mut emit: impl FnMut(MetricRow) -> Result<(), E>,
 ) -> Result<(), E> {
     let Some(data) = &metrics_record.data else {
@@ -628,13 +640,16 @@ pub fn metric_rows<E>(
         metric_type: Value::String(metric_type.to_string()),
         metadata,
     };
+    let extra = 4 + fields.metadata.len() + merged;
 
     let points = match data {
         metric::Data::Gauge(gauge) => {
             for dp in &gauge.data_points {
-                emit(MetricRow::Point(
-                    fields.apply(number_data_point_row(dp, flatten_exemplars)),
-                ))?;
+                emit(MetricRow::Point(fields.apply(number_data_point_row(
+                    dp,
+                    flatten_exemplars,
+                    extra,
+                ))))?;
             }
             gauge.data_points.len()
         }
@@ -644,6 +659,7 @@ pub fn metric_rows<E>(
                     sum,
                     dp,
                     flatten_exemplars,
+                    extra,
                 ))))?;
             }
             sum.data_points.len()
@@ -654,6 +670,7 @@ pub fn metric_rows<E>(
                     histogram,
                     dp,
                     flatten_exemplars,
+                    extra,
                 ))))?;
             }
             histogram.data_points.len()
@@ -661,14 +678,16 @@ pub fn metric_rows<E>(
         metric::Data::ExponentialHistogram(exp_histogram) => {
             for dp in &exp_histogram.data_points {
                 emit(MetricRow::Point(fields.apply(
-                    exp_histogram_data_point_row(exp_histogram, dp, flatten_exemplars),
+                    exp_histogram_data_point_row(exp_histogram, dp, flatten_exemplars, extra),
                 )))?;
             }
             exp_histogram.data_points.len()
         }
         metric::Data::Summary(summary) => {
             for dp in &summary.data_points {
-                emit(MetricRow::Point(fields.apply(summary_data_point_row(dp))))?;
+                emit(MetricRow::Point(
+                    fields.apply(summary_data_point_row(dp, extra)),
+                ))?;
             }
             summary.data_points.len()
         }
@@ -682,7 +701,7 @@ pub fn metric_rows<E>(
             metric_type,
             metadata,
         } = fields;
-        let mut single = Map::with_capacity(metadata.len() + 8);
+        let mut single = Map::with_capacity(metadata.len() + 8 + merged);
         single.insert("metric_name".to_string(), name);
         single.insert("metric_description".to_string(), description);
         single.insert("metric_unit".to_string(), unit);
@@ -716,7 +735,7 @@ pub fn flatten_metrics_record(
 ) -> Vec<Map<String, Value>> {
     let mut rows = Vec::new();
     let Ok(()) =
-        metric_rows::<std::convert::Infallible>(metrics_record, flatten_exemplars, |row| {
+        metric_rows::<std::convert::Infallible>(metrics_record, flatten_exemplars, 0, |row| {
             rows.push(match row {
                 MetricRow::Point(row) | MetricRow::NoPoints(row) => row,
             });
@@ -822,7 +841,7 @@ pub fn metric_rows_into<S: RowSink + ?Sized>(
     latest: &mut Option<String>,
     sink: &mut S,
 ) -> Result<(), S::Error> {
-    metric_rows(metric, flatten_exemplars, |row| {
+    metric_rows(metric, flatten_exemplars, envelope.len(), |row| {
         let (mut dp, point) = match row {
             MetricRow::Point(dp) => (dp, true),
             MetricRow::NoPoints(dp) => (dp, false),

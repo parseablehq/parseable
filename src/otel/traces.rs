@@ -32,6 +32,7 @@ use crate::otel::otel_utils::flatten_attributes;
 
 use super::otel_utils::attribute_capacity;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
+use super::otel_utils::fit_map;
 use super::otel_utils::insert_attributes_fitted;
 use super::sink::RowSink;
 
@@ -124,7 +125,9 @@ impl SpanParents<'_> {
             "scope_schema_url".to_string(),
             Value::String(self.scope_schema_url.to_string()),
         );
-        row.extend(self.resource_fields.clone());
+        for (key, value) in self.resource_fields {
+            row.insert(key.clone(), value.clone());
+        }
         row
     }
 }
@@ -137,19 +140,24 @@ pub fn span_rows<S: RowSink + ?Sized>(
     parents: &SpanParents<'_>,
     sink: &mut S,
 ) -> Result<(), S::Error> {
-    let span_record_json = flatten_span_fields(span);
+    // The scope, schema URL and resource fields every row of the span gets
+    let extra = parents.scope_fields.len() + 1 + parents.resource_fields.len();
+    let span_record_json = flatten_span_fields(span, extra);
     if span.events.is_empty() && span.links.is_empty() {
         sink.row(parents.finish(span_record_json))?;
     } else {
+        // Sized so that the merges below never have to grow a row map: a growth
+        // rehashes every entry of the row.
+        let row_extra = extra + span_record_json.len();
         for event in &span.events {
-            let mut row = event_row(event, span.start_time_unix_nano);
+            let mut row = event_row(event, span.start_time_unix_nano, row_extra);
             for (key, value) in &span_record_json {
                 row.insert(key.clone(), value.clone());
             }
             sink.row(parents.finish(row))?;
         }
         for link in &span.links {
-            let mut row = link_row(link);
+            let mut row = link_row(link, row_extra);
             for (key, value) in &span_record_json {
                 row.insert(key.clone(), value.clone());
             }
@@ -212,12 +220,15 @@ pub fn flatten_otel_traces(message: &TracesData, tenant_id: &str) -> Vec<Value> 
     collect_resource_spans(&message.resource_spans, tenant_id)
 }
 
-/// The own fields of the row of one span event
-fn event_row(event: &Event, span_start_time_unix_nano: u64) -> Map<String, Value> {
-    let mut event_json = Map::with_capacity(6 + attribute_capacity(&event.attributes));
+/// The own fields of the row of one span event; `extra` is the capacity the
+/// span, scope and resource fields merged over it will take
+fn event_row(event: &Event, span_start_time_unix_nano: u64, extra: usize) -> Map<String, Value> {
+    let counted = attribute_capacity(&event.attributes);
+    let capacity = 6 + counted + extra;
+    let mut event_json = Map::with_capacity(capacity);
     event_json.insert(
         "event_time_unix_nano".to_string(),
-        Value::String(convert_epoch_nano_to_timestamp(event.time_unix_nano as i64).to_string()),
+        Value::String(convert_epoch_nano_to_timestamp(event.time_unix_nano as i64)),
     );
     // add epoch value of event time in json
     event_json.insert(
@@ -235,7 +246,11 @@ fn event_row(event: &Event, span_start_time_unix_nano: u64) -> Map<String, Value
         Value::Number(serde_json::Number::from(duration_nanos)),
     );
 
+    let before = event_json.len();
     insert_events_attributes(&mut event_json, &event.attributes);
+    // Repeated attribute keys must not leave room in the row
+    let added = event_json.len() - before;
+    fit_map(&mut event_json, capacity, counted, added);
     event_json.insert(
         "event_dropped_attributes_count".to_string(),
         Value::Number(event.dropped_attributes_count.into()),
@@ -243,9 +258,12 @@ fn event_row(event: &Event, span_start_time_unix_nano: u64) -> Map<String, Value
     event_json
 }
 
-/// The own fields of the row of one span link
-fn link_row(link: &Link) -> Map<String, Value> {
-    let mut link_json = Map::with_capacity(5 + attribute_capacity(&link.attributes));
+/// The own fields of the row of one span link; `extra` is the capacity the span,
+/// scope and resource fields merged over it will take
+fn link_row(link: &Link, extra: usize) -> Map<String, Value> {
+    let counted = attribute_capacity(&link.attributes);
+    let capacity = 5 + counted + extra;
+    let mut link_json = Map::with_capacity(capacity);
     link_json.insert(
         "link_span_id".to_string(),
         Value::String(hex::encode(&link.span_id)),
@@ -255,7 +273,11 @@ fn link_row(link: &Link) -> Map<String, Value> {
         Value::String(hex::encode(&link.trace_id)),
     );
 
+    let before = link_json.len();
     insert_links_attributes(&mut link_json, &link.attributes);
+    // Repeated attribute keys must not leave room in the row
+    let added = link_json.len() - before;
+    fit_map(&mut link_json, capacity, counted, added);
     link_json.insert(
         "link_dropped_attributes_count".to_string(),
         Value::Number(link.dropped_attributes_count.into()),
@@ -267,13 +289,13 @@ fn link_row(link: &Link) -> Map<String, Value> {
 fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<String, Value>> {
     events
         .iter()
-        .map(|event| event_row(event, span_start_time_unix_nano))
+        .map(|event| event_row(event, span_start_time_unix_nano, 0))
         .collect()
 }
 
 #[cfg(test)]
 fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
-    links.iter().map(link_row).collect()
+    links.iter().map(|link| link_row(link, 0)).collect()
 }
 
 /// otel trace event has status
@@ -350,10 +372,12 @@ fn flatten_kind(kind: i32) -> Map<String, Value> {
     kind_json
 }
 
-/// The fields of one span that every row of it gets
-fn flatten_span_fields(span_record: &Span) -> Map<String, Value> {
-    // Room for the scope and resource fields merged into the span's own row
-    let capacity = 40 + attribute_capacity(&span_record.attributes);
+/// The fields of one span that every row of it gets; `extra` is the capacity the
+/// scope and resource fields merged over it will take
+fn flatten_span_fields(span_record: &Span, extra: usize) -> Map<String, Value> {
+    // The span's own 20 fields (the status adds 3 of them), its attributes, and
+    // the scope and resource fields merged into the span's own row
+    let capacity = 20 + attribute_capacity(&span_record.attributes) + extra;
     let mut span_record_json = Map::with_capacity(capacity);
     span_record_json.insert(
         "span_trace_id".to_string(),

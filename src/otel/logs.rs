@@ -569,9 +569,13 @@ pub fn log_record_row(
     budget: &mut FlattenBudget,
 ) -> Result<Map<String, Value>, JsonFlattenError> {
     let log_record_json = flatten_log_record(log_record, budget)?;
-    let mut row = scope_fields.clone();
+    // Sized so that the two merges below never have to grow the map: a growth
+    // rehashes every entry of the row.
+    let mut row =
+        Map::with_capacity(scope_fields.len() + log_record_json.len() + resource_fields.len());
+    row.extend(scope_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
     row.extend(log_record_json);
-    row.extend(resource_fields.clone());
+    row.extend(resource_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
     Ok(row)
 }
 

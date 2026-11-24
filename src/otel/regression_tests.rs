@@ -114,11 +114,8 @@ fn held_and_estimated(build: impl FnOnce(&mut Last)) -> (isize, usize) {
 /// counts (a scope of 128 attributes with one key: 25,917 B against 2,613 B).
 /// Every shared map now holds no more than its entries need before it is cloned.
 ///
-/// The same holds for a log record's own fields. Span event, span link and metric
-/// data point rows are still sized from their own attribute count, repeats
-/// included: their slack is bounded by the record's wire bytes and was left
-/// alone. They are held to what they measured when this was written (at
-/// `98ae3903`: 3.09, 3.25 and 5.03 held/estimated) so that it does not grow.
+/// The same holds for the maps that are rows themselves: a log record's own
+/// fields, a span event, a span link and a metric data point.
 #[test]
 fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
     let record = LogRecord {
@@ -353,13 +350,7 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
         println!(
             "REGRESSION repeated keys, {name}: row holds {held} B, row_bytes {estimated} B, held/estimated {ratio:.2}"
         );
-        let bound = match *name {
-            "traces, event" => 3.2,
-            "traces, link" => 3.35,
-            "metrics, data point" => 5.15,
-            _ => 2.0,
-        };
-        if ratio > bound {
+        if ratio > 2.0 {
             failed.push(*name);
         }
     }
@@ -397,10 +388,7 @@ fn rows_copied_from_maps_with_repeated_keys_hold_what_row_bytes_counts() {
         mb(allocated.peak),
         mb(PEAK_BOUND)
     );
-    assert!(
-        failed.is_empty(),
-        "rows hold more than their bound over row_bytes: {failed:?}"
-    );
+    assert!(failed.is_empty(), "rows hold over 2x row_bytes: {failed:?}");
     assert_eq!(rows, 1 << 16);
     assert!(
         allocated.peak <= PEAK_BOUND,
