@@ -244,7 +244,8 @@ fn tiny_copied_fields_are_handed_over_in_bounded_memory() {
 }
 
 /// Review finding 7: a log body that is JSON text was parsed before anything was
-/// charged. A 10 MiB body `{"a":[0,0,...]}` peaked at 586 MiB.
+/// charged. A 10 MiB body `{"a":[0,0,...]}` peaked at 586 MiB. It would parse into
+/// more than one chunk's worth of memory, so it is kept as its text.
 #[test]
 fn json_text_log_body_is_not_parsed_into_unbounded_memory() {
     let mut text = String::with_capacity(10 * MIB);
@@ -272,7 +273,7 @@ fn json_text_log_body_is_not_parsed_into_unbounded_memory() {
     };
     let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
     let (result, allocated) = hand_over("10 MiB JSON text body", logs(&request, &mut budget));
-    assert!(result.is_err(), "the body expands far beyond the limits");
+    assert_eq!(result.unwrap().rows, 1, "the record is kept, its body as text");
     // The row holds copies of the body text, nothing parsed from it
     assert!(
         allocated.peak < PEAK_BOUND + 3 * body_len,

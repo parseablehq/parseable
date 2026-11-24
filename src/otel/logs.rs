@@ -20,7 +20,7 @@ use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 use super::otel_utils::insert_attributes_fitted;
-use super::sink::{CHUNK_LIMITS, ENTRY_BYTES, RowSink, VALUE_BYTES, heap_bytes};
+use super::sink::{CHUNK_LIMITS, RowSink, VALUE_BYTES, heap_bytes};
 use crate::metrics::increment_logs_collected_by_date;
 use crate::utils::json::flatten::{
     FlattenBudget, FlattenCost, JsonFlattenError, expand_generic_flattening, flatten_pipeline_cost,
@@ -175,23 +175,26 @@ fn category_from_body(body_str: &str) -> &'static str {
         .map_or("UNSPECIFIED", |(_, label)| *label)
 }
 
-/// Most memory the JSON text bodies of one log record may be parsed into: four
-/// chunks of rows. JSON text of typical logs parses into about 8 bytes per byte,
-/// so a body of several MiB of such text is accepted.
-pub const MAX_PARSED_BODY_BYTES: usize = 4 * CHUNK_LIMITS.bytes;
+/// Most memory the JSON text bodies of one log record may be parsed into: one
+/// chunk of rows. JSON text of typical logs parses into about 8 bytes per byte,
+/// so a body of a MiB or two of such text is parsed. A body that would take more
+/// is kept as its text, like text that is not JSON.
+pub const MAX_PARSED_BODY_BYTES: usize = CHUNK_LIMITS.bytes;
 
-/// Most bytes one byte of JSON text parses into: `0,` in an array is a 72 byte
-/// `Value`, in a `Vec` that may have grown to twice its length
+/// Most bytes one byte of JSON text parses into, at the peak of parsing it: each
+/// level of arrays nested in arrays (`[` and `]`, two bytes) is a `Vec` of four
+/// 72 byte `Value`s, which is the most any two bytes of text make (see
+/// `json_object_text_bytes`)
 const PARSED_BYTES_PER_TEXT_BYTE: usize = 2 * VALUE_BYTES;
 
 /// Parses every body that is the JSON text of an object, as the fields of the
 /// record are extracted from those only. Bodies are measured before they are
 /// parsed: a body whose text could parse into more than what is left of
 /// `MAX_PARSED_BODY_BYTES` is first scanned without allocating, which finds its
-/// type and the memory parsing it takes. Text that is not an object is not parsed.
-fn parse_json_object_bodies(
-    body_json: &Map<String, Value>,
-) -> Result<Vec<Option<Value>>, JsonFlattenError> {
+/// type and the memory parsing it takes. A body that would take more than is left
+/// is not parsed, and neither is text that is not an object: those are kept as
+/// their text.
+fn parse_json_object_bodies(body_json: &Map<String, Value>) -> Vec<Option<Value>> {
     let mut held = 0usize;
     let mut parsed = Vec::with_capacity(body_json.len());
     for value in body_json.values() {
@@ -202,16 +205,13 @@ fn parse_json_object_bodies(
         let most = text.len().saturating_mul(PARSED_BYTES_PER_TEXT_BYTE);
         if held.saturating_add(most) > MAX_PARSED_BODY_BYTES {
             match json_object_text_bytes(text) {
-                // Not the JSON text of an object: not parsed, as before
-                None => {
+                Some(bytes) if held.saturating_add(bytes) <= MAX_PARSED_BODY_BYTES => {
+                    held += bytes;
+                }
+                // Not the JSON text of an object, or too large to parse: kept as text
+                _ => {
                     parsed.push(None);
                     continue;
-                }
-                Some(bytes) => {
-                    held = held.saturating_add(bytes);
-                    if held > MAX_PARSED_BODY_BYTES {
-                        return Err(JsonFlattenError::LogBodyTooLarge(MAX_PARSED_BODY_BYTES));
-                    }
                 }
             }
         } else {
@@ -223,27 +223,81 @@ fn parse_json_object_bodies(
                 .filter(Value::is_object),
         );
     }
-    Ok(parsed)
+    parsed
 }
 
-/// Memory `serde_json::from_str::<Value>(text)` takes when `text` is the JSON
-/// text of an object, found without allocating; `None` for any other text
+/// Size of one `serde_json::Map` entry (an `IndexMap` bucket): the hash, the key
+/// and the value
+const MAP_ENTRY_BYTES: usize =
+    std::mem::size_of::<usize>() + std::mem::size_of::<String>() + VALUE_BYTES;
+
+/// Most memory `serde_json::from_str::<Value>(text)` holds at once while parsing
+/// `text`, when it is the JSON text of an object, found without allocating; `None`
+/// for any other text.
+///
+/// Containers are counted at the capacity they grow to while their elements are
+/// pushed one at a time: a `Vec` to at least 4 elements and then by doubling, a
+/// map's hash table by doubling its buckets (3, 7, 14, 28... entries fit) and its
+/// entries to what the table fits. The old block of the last growth is counted as
+/// well, as a reallocation holds both. So is the scratch buffer strings with escapes
+/// are unescaped into, at three times the longest string. Repeated keys are counted
+/// as distinct ones. The most any two bytes of text make is one more level of
+/// arrays nested in arrays: a `Vec` of four `Value`s, `2 * VALUE_BYTES` per byte,
+/// which `PARSED_BYTES_PER_TEXT_BYTE` is.
 fn json_object_text_bytes(text: &str) -> Option<usize> {
     use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 
-    /// Heap bytes of one parsed value, and whether it is an object
+    /// Heap bytes of one parsed value, whether it is an object, and the longest
+    /// string in it
     struct Parsed {
         bytes: usize,
         object: bool,
+        longest: usize,
     }
 
     impl Parsed {
-        fn scalar(bytes: usize) -> Self {
+        fn scalar() -> Self {
             Self {
-                bytes,
+                bytes: 0,
                 object: false,
+                longest: 0,
             }
         }
+    }
+
+    /// Bytes of a `Vec` of `len` values pushed one at a time, at the peak of its
+    /// last growth
+    fn vec_bytes(len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        let capacity = len.next_power_of_two().max(4);
+        let previous = if len > 4 { capacity / 2 } else { 0 };
+        heap_bytes(capacity.saturating_mul(VALUE_BYTES))
+            .saturating_add(heap_bytes(previous.saturating_mul(VALUE_BYTES)))
+    }
+
+    /// Bytes of a map of `len` entries inserted one at a time, at the peak of its
+    /// last growth: the hash table of `usize` indices (8 bytes and a control byte
+    /// per bucket, and one group of control bytes), and the entries, which grow to
+    /// what the table fits
+    fn map_bytes(len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        let fits = |buckets: usize| if buckets < 8 { buckets - 1 } else { buckets / 8 * 7 };
+        let mut buckets = 4usize;
+        while fits(buckets) < len {
+            buckets = buckets.saturating_mul(2);
+        }
+        let table = heap_bytes(buckets.saturating_mul(9).saturating_add(16));
+        let entries = heap_bytes(fits(buckets).saturating_mul(MAP_ENTRY_BYTES));
+        let previous = if buckets > 4 {
+            heap_bytes(fits(buckets / 2).saturating_mul(MAP_ENTRY_BYTES))
+        } else {
+            0
+        };
+        table.saturating_add(entries).saturating_add(previous)
     }
 
     impl<'de> Deserialize<'de> for Parsed {
@@ -261,47 +315,56 @@ fn json_object_text_bytes(text: &str) -> Option<usize> {
             formatter.write_str("any JSON value")
         }
         fn visit_bool<E>(self, _: bool) -> Result<Parsed, E> {
-            Ok(Parsed::scalar(0))
+            Ok(Parsed::scalar())
         }
         fn visit_i64<E>(self, _: i64) -> Result<Parsed, E> {
-            Ok(Parsed::scalar(0))
+            Ok(Parsed::scalar())
         }
         fn visit_u64<E>(self, _: u64) -> Result<Parsed, E> {
-            Ok(Parsed::scalar(0))
+            Ok(Parsed::scalar())
         }
         fn visit_f64<E>(self, _: f64) -> Result<Parsed, E> {
-            Ok(Parsed::scalar(0))
+            Ok(Parsed::scalar())
         }
         fn visit_unit<E>(self) -> Result<Parsed, E> {
-            Ok(Parsed::scalar(0))
+            Ok(Parsed::scalar())
         }
         fn visit_str<E>(self, s: &str) -> Result<Parsed, E> {
-            Ok(Parsed::scalar(heap_bytes(s.len())))
+            Ok(Parsed {
+                bytes: heap_bytes(s.len()),
+                object: false,
+                longest: s.len(),
+            })
         }
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Parsed, A::Error> {
             let mut len = 0usize;
             let mut bytes = 0usize;
+            let mut longest = 0usize;
             while let Some(element) = seq.next_element::<Parsed>()? {
                 len += 1;
                 bytes = bytes.saturating_add(element.bytes);
-            }
-            // The `Vec` grows by doubling
-            Ok(Parsed::scalar(bytes.saturating_add(heap_bytes(
-                len.next_power_of_two().saturating_mul(VALUE_BYTES),
-            ))))
-        }
-        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Parsed, A::Error> {
-            let mut bytes = 0usize;
-            while let Some(key) = map.next_key::<Parsed>()? {
-                let value = map.next_value::<Parsed>()?;
-                bytes = bytes
-                    .saturating_add(ENTRY_BYTES)
-                    .saturating_add(key.bytes)
-                    .saturating_add(value.bytes);
+                longest = longest.max(element.longest);
             }
             Ok(Parsed {
-                bytes,
+                bytes: bytes.saturating_add(vec_bytes(len)),
+                object: false,
+                longest,
+            })
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Parsed, A::Error> {
+            let mut len = 0usize;
+            let mut bytes = 0usize;
+            let mut longest = 0usize;
+            while let Some(key) = map.next_key::<Parsed>()? {
+                let value = map.next_value::<Parsed>()?;
+                len += 1;
+                bytes = bytes.saturating_add(key.bytes).saturating_add(value.bytes);
+                longest = longest.max(key.longest).max(value.longest);
+            }
+            Ok(Parsed {
+                bytes: bytes.saturating_add(map_bytes(len)),
                 object: true,
+                longest,
             })
         }
     }
@@ -309,7 +372,10 @@ fn json_object_text_bytes(text: &str) -> Option<usize> {
     let mut deserializer = serde_json::Deserializer::from_str(text);
     let parsed = Parsed::deserialize(&mut deserializer).ok()?;
     deserializer.end().ok()?;
-    parsed.object.then_some(parsed.bytes)
+    let scratch = heap_bytes(parsed.longest.saturating_mul(3));
+    parsed
+        .object
+        .then_some(parsed.bytes.saturating_add(scratch))
 }
 
 /// this function flattens the `LogRecord` object
@@ -348,7 +414,7 @@ pub fn flatten_log_record(
         let body = &log_record.body;
         let body_json = collect_json_from_values(body, "body");
         // Values that are strings which can be parsed as JSON objects get their fields extracted
-        let parsed_bodies = parse_json_object_bodies(&body_json)?;
+        let parsed_bodies = parse_json_object_bodies(&body_json);
         // The rows of every parsed body are merged into this record, but they are all built
         // first, so charge all of them before building any
         let limits = budget.limits();
@@ -1116,6 +1182,134 @@ mod tests {
                 bytes: expected
             }
         );
+    }
+
+    const MIB: usize = 1024 * 1024;
+
+    /// A JSON object of `fields` fields `"f0000000":0`, the reviewer's shape
+    fn many_fields(fields: usize) -> String {
+        let mut text = String::from("{");
+        for i in 0..fields {
+            if i > 0 {
+                text.push(',');
+            }
+            text.push_str(&format!("\"f{i:07}\":0"));
+        }
+        text.push('}');
+        text
+    }
+
+    fn timed_record(body: String) -> LogRecord {
+        LogRecord {
+            time_unix_nano: 1_700_000_000_000_000_000,
+            observed_time_unix_nano: 1_700_000_000_000_000_000,
+            body: string_body(&body),
+            ..Default::default()
+        }
+    }
+
+    /// Review findings 2 and 6: a JSON text body was parsed when its parse was
+    /// estimated under 64 MiB (a 3 MiB body of 241,980 fields was accepted and
+    /// peaked at 180 MiB), and a body estimated over it refused its record with
+    /// `LogBodyTooLarge` (450,000 fields, 5.6 MiB, which `b8c7d979` accepted). Now
+    /// at most one chunk's worth (16 MiB) of parsed memory is allowed, and a body
+    /// over it is kept as its text, as text that is not JSON is: never refused.
+    #[test]
+    fn json_text_body_over_one_chunk_of_parsed_memory_is_kept_as_text() {
+        let mut measured = Vec::new();
+        for fields in [241_980usize, 400_000, 450_000] {
+            let text = many_fields(fields);
+            let record = timed_record(text.clone());
+            let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
+            let (flattened, allocated) =
+                crate::test_alloc::measure(|| flatten_log_record(&record, &mut budget));
+            println!(
+                "REGRESSION JSON text body of {fields} fields: text {:.2} MiB, {}, peak {:.1} MiB",
+                text.len() as f64 / MIB as f64,
+                match &flattened {
+                    Ok(row) => format!("{} fields", row.len()),
+                    Err(e) => format!("refused: {e}"),
+                },
+                allocated.peak as f64 / MIB as f64,
+            );
+            measured.push((fields, text, flattened, allocated.peak));
+        }
+        for (fields, text, flattened, peak) in measured {
+            let row = flattened.expect("the record is not refused");
+            assert_eq!(row["body"], json!(text));
+            assert!(
+                !row.keys().any(|key| key.starts_with("body_")),
+                "{fields} fields: the body was parsed"
+            );
+            // Copies of the text: the body field, its copy in the row, and the
+            // text the category is looked for in (severity is unset)
+            assert!(peak < 5 * text.len() + MIB, "{fields} fields");
+        }
+        // A body whose parse fits in one chunk is still parsed
+        let text = many_fields(40_000);
+        let row = flatten_log_record(
+            &timed_record(text),
+            &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+        )
+        .unwrap();
+        assert_eq!(row["body_f0039999"], json!(0));
+    }
+
+    /// Review finding 6: the scan before parsing estimated under 64 MiB for an
+    /// object of 400,000 fields whose parse held 74.5 MiB. The estimate counts the
+    /// table and entries an `IndexMap` grows to, a `Vec` the capacity it doubles
+    /// to, and the old block of the last growth, which a reallocation holds too.
+    #[test]
+    fn parsed_body_estimate_covers_what_parsing_holds() {
+        let mut shapes: Vec<(String, String)> = [1usize, 3, 4, 7, 8, 15, 100, 1000, 100_000, 400_000]
+            .into_iter()
+            .map(|n| (format!("object of {n} fields"), many_fields(n)))
+            .collect();
+        for n in [1usize, 4, 5, 1000, 262_145] {
+            let numbers = vec!["0"; n].join(",");
+            shapes.push((format!("{n} numbers"), format!(r#"{{"a":[{numbers}]}}"#)));
+            let singles = vec!["[0]"; n].join(",");
+            shapes.push((format!("{n} one-number arrays"), format!(r#"{{"a":[{singles}]}}"#)));
+            let objects = vec![r#"{"k":"v","n":1}"#; n].join(",");
+            shapes.push((format!("{n} small objects"), format!(r#"{{"a":[{objects}]}}"#)));
+        }
+        for n in [1000usize, 1_000_000] {
+            // Escapes are unescaped into a scratch buffer while parsing
+            shapes.push((
+                format!("escaped string of {n} bytes"),
+                format!(r#"{{"m":"{}"}}"#, "\\n".repeat(n)),
+            ));
+        }
+        shapes.push((
+            "nested objects".into(),
+            format!("{}{}", r#"{"a":"#.repeat(100), format!("0{}", "}".repeat(100))),
+        ));
+        let mut under = Vec::new();
+        for (name, text) in shapes {
+            let estimate = super::json_object_text_bytes(&text).expect("an object");
+            let (parsed, allocated) =
+                crate::test_alloc::measure(|| serde_json::from_str::<serde_json::Value>(&text));
+            assert!(parsed.is_ok());
+            drop(parsed);
+            let ratio = estimate as f64 / allocated.peak.max(1) as f64;
+            println!(
+                "REGRESSION parsed body estimate, {name}: text {} B, estimate {estimate} B, parse peak {} B, estimate/peak {ratio:.2}",
+                text.len(),
+                allocated.peak
+            );
+            if estimate < allocated.peak {
+                under.push(name.clone());
+            }
+            assert!(
+                (text.len() * super::PARSED_BYTES_PER_TEXT_BYTE) >= allocated.peak,
+                "{name}: over the quick bound per text byte"
+            );
+            assert!(
+                (text.len() * super::PARSED_BYTES_PER_TEXT_BYTE) >= estimate,
+                "{name}: estimate over the quick bound per text byte"
+            );
+        }
+        assert!(under.is_empty(), "estimated under the parse: {under:?}");
     }
 
     // Release-profile micro-benchmarks. Run with a filter, for example:

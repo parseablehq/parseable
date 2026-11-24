@@ -117,10 +117,6 @@ pub enum JsonFlattenError {
         "Flattening the request would produce more than {0} bytes of JSON (P_MAX_FLATTEN_BYTES_PER_REQUEST). Split the batch into smaller requests, or reduce the number or size of nested arrays in its events"
     )]
     BytesPerRequestLimitExceeded(usize),
-    #[error(
-        "A log body of JSON text would take more than {0} bytes of memory once parsed. Send it as a key-value list body, or split it over several records"
-    )]
-    LogBodyTooLarge(usize),
 }
 
 impl JsonFlattenError {
@@ -132,7 +128,6 @@ impl JsonFlattenError {
             Self::RowsPerEventLimitExceeded(_)
                 | Self::RowsPerRequestLimitExceeded(_)
                 | Self::BytesPerRequestLimitExceeded(_)
-                | Self::LogBodyTooLarge(_)
         )
     }
 }
