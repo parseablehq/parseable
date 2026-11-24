@@ -37,7 +37,7 @@ use crate::metrics::increment_metrics_collected_by_date;
 use crate::parseable::PARSEABLE;
 
 use super::otel_utils::{
-    convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
+    attribute_capacity, convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
 };
 use super::sink::RowSink;
 
@@ -233,7 +233,8 @@ fn exemplar_value_to_json(value: &ExemplarValue) -> Value {
 /// names match the legacy flat columns, so switching representations via the
 /// flag changes only the shape, not the field names.
 fn exemplar_to_json(exemplar: &Exemplar) -> Value {
-    let mut exemplar_json = Map::with_capacity(exemplar.filtered_attributes.len() + 4);
+    let mut exemplar_json =
+        Map::with_capacity(attribute_capacity(&exemplar.filtered_attributes) + 4);
     insert_attributes(&mut exemplar_json, &exemplar.filtered_attributes);
     exemplar_json.insert(
         "exemplar_time_unix_nano".to_string(),
@@ -302,7 +303,7 @@ fn number_data_point_row(
     data_point: &NumberDataPoint,
     flatten_exemplars: bool,
 ) -> Map<String, Value> {
-    let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 8);
+    let mut data_point_json = Map::with_capacity(attribute_capacity(&data_point.attributes) + 8);
     insert_attributes(&mut data_point_json, &data_point.attributes);
     data_point_json.insert(
         "start_time_unix_nano".to_string(),
@@ -363,7 +364,7 @@ fn histogram_data_point_row(
     data_point: &HistogramDataPoint,
     flatten_exemplars: bool,
 ) -> Map<String, Value> {
-    let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 10);
+    let mut data_point_json = Map::with_capacity(attribute_capacity(&data_point.attributes) + 10);
     insert_attributes(&mut data_point_json, &data_point.attributes);
     data_point_json.insert(
         "start_time_unix_nano".to_string(),
@@ -446,7 +447,7 @@ fn exp_histogram_data_point_row(
     data_point: &ExponentialHistogramDataPoint,
     flatten_exemplars: bool,
 ) -> Map<String, Value> {
-    let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 12);
+    let mut data_point_json = Map::with_capacity(attribute_capacity(&data_point.attributes) + 12);
     insert_attributes(&mut data_point_json, &data_point.attributes);
     data_point_json.insert(
         "start_time_unix_nano".to_string(),
@@ -497,7 +498,7 @@ fn exp_histogram_data_point_row(
 
 /// The own fields of the row of one summary data point
 fn summary_data_point_row(data_point: &SummaryDataPoint) -> Map<String, Value> {
-    let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 6);
+    let mut data_point_json = Map::with_capacity(attribute_capacity(&data_point.attributes) + 6);
     insert_attributes(&mut data_point_json, &data_point.attributes);
     data_point_json.insert(
         "start_time_unix_nano".to_string(),
@@ -599,7 +600,7 @@ pub fn metric_rows<E>(
     };
 
     // Build metric-level fields once
-    let mut metadata = Map::with_capacity(metrics_record.metadata.len());
+    let mut metadata = Map::with_capacity(attribute_capacity(&metrics_record.metadata));
     insert_attributes(&mut metadata, &metrics_record.metadata);
     let fields = MetricFields {
         name: Value::String(metrics_record.name.clone()),
@@ -715,10 +716,7 @@ impl ResourceMetricFields {
     pub fn new(resource: Option<&Resource>, schema_url: &str) -> Self {
         // Build resource-level fields once per resource
         let mut resource_fields = Map::with_capacity(
-            resource
-                .map(|resource| resource.attributes.len())
-                .unwrap_or_default()
-                + 2,
+            resource.map_or(0, |resource| attribute_capacity(&resource.attributes)) + 2,
         );
         if let Some(resource) = resource {
             insert_attributes(&mut resource_fields, &resource.attributes);

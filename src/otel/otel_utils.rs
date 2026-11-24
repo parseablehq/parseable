@@ -138,7 +138,15 @@ fn insert_json_from_value(map: &mut Map<String, Value>, key: &str, value: OtelVa
 /// This handles nested array values and key-value lists by recursively
 /// converting them to JSON
 fn collect_json_from_array_value(array_value: &ArrayValue) -> Value {
-    let mut json_array = Vec::with_capacity(array_value.values.len());
+    // Sized by the values that will be pushed, as `attribute_capacity` does for maps
+    let mut json_array = Vec::with_capacity(
+        array_value
+            .values
+            .iter()
+            .filter(|value| value.value.is_some())
+            .take(ATTRIBUTE_CAPACITY_HINT_MAX)
+            .count(),
+    );
     for value in &array_value.values {
         if let Some(val) = &value.value {
             match val {
@@ -180,7 +188,8 @@ fn collect_json_from_array_value(array_value: &ArrayValue) -> Value {
 /// The function iterates through the key-value pairs in the list
 /// and collects their JSON representations into a single Map
 fn collect_json_from_key_value_list(key_value_list: KeyValueList) -> Map<String, Value> {
-    let mut kv_list_json: Map<String, Value> = Map::with_capacity(key_value_list.values.len());
+    let mut kv_list_json: Map<String, Value> =
+        Map::with_capacity(attribute_capacity(&key_value_list.values));
     for key_value in key_value_list.values {
         if let Some(val) = key_value.value {
             if let Some(val) = val.value {
@@ -219,7 +228,8 @@ pub fn value_to_string(value: serde_json::Value) -> String {
 }
 
 pub fn flatten_attributes(attributes: &[KeyValue]) -> Map<String, Value> {
-    let mut attributes_json: Map<String, Value> = Map::with_capacity(attributes.len());
+    let mut attributes_json: Map<String, Value> =
+        Map::with_capacity(attribute_capacity(attributes));
     for attribute in attributes {
         if let Some(value) = &attribute.value
             && let Some(value) = value.value.clone()
