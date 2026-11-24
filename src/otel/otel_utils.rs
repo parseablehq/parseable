@@ -250,6 +250,29 @@ pub fn insert_bool_if_some(map: &mut Map<String, Value>, key: &str, option: &Opt
     }
 }
 
+/// Largest capacity hint taken from the attribute count of one message
+const ATTRIBUTE_CAPACITY_HINT_MAX: usize = 128;
+
+/// Capacity hint for a map that `insert_attributes` fills from `attributes`.
+///
+/// The count comes from the request, and resource, scope and span maps sized by
+/// it are cloned into every row they belong to, capacity included. So only the
+/// attributes that will be inserted are counted (one without a value is two
+/// bytes on the wire), and the hint is capped: a larger map still grows as its
+/// entries arrive.
+pub fn attribute_capacity(attributes: &[KeyValue]) -> usize {
+    attributes
+        .iter()
+        .filter(|attribute| {
+            attribute
+                .value
+                .as_ref()
+                .is_some_and(|value| value.value.is_some())
+        })
+        .take(ATTRIBUTE_CAPACITY_HINT_MAX)
+        .count()
+}
+
 pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
     for attribute in attributes {
         if let Some(value) = &attribute.value
@@ -360,6 +383,43 @@ mod tests {
             convert_epoch_nano_to_timestamp(1_000_000_000),
             "1970-01-01T00:00:01.000000000Z"
         );
+    }
+
+    // A capacity hint that followed the raw attribute count would let a request
+    // of valueless attributes (two bytes each) size a scope map that is then
+    // cloned, capacity and all, into every row.
+    #[test]
+    fn attribute_capacity_counts_inserted_attributes_and_is_capped() {
+        let valued = |key: &str| KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(OtelValue::StringValue("v".to_string())),
+            }),
+            ..Default::default()
+        };
+        let empty_any = KeyValue {
+            key: "k".to_string(),
+            value: Some(AnyValue { value: None }),
+            ..Default::default()
+        };
+
+        assert_eq!(attribute_capacity(&[]), 0);
+        assert_eq!(attribute_capacity(&vec![KeyValue::default(); 200_000]), 0);
+        assert_eq!(attribute_capacity(&vec![empty_any; 1_000]), 0);
+        assert_eq!(
+            attribute_capacity(&[valued("a"), KeyValue::default(), valued("b")]),
+            2
+        );
+        assert_eq!(
+            attribute_capacity(&vec![valued("a"); 10_000]),
+            ATTRIBUTE_CAPACITY_HINT_MAX
+        );
+
+        // The hint never changes what is inserted
+        let attributes = vec![valued("a"), KeyValue::default(), valued("b")];
+        let mut map = Map::with_capacity(attribute_capacity(&attributes));
+        insert_attributes(&mut map, &attributes);
+        assert_eq!(map.len(), 2);
     }
 
     /// The direct formatter must produce exactly what the strftime path produces,

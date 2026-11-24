@@ -28,6 +28,7 @@ use serde_json::{Map, Value};
 use crate::metrics::increment_traces_collected_by_date;
 use crate::otel::otel_utils::flatten_attributes;
 
+use super::otel_utils::attribute_capacity;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 
@@ -73,7 +74,7 @@ fn flatten_scope_span(scope_span: &ScopeSpans, tenant_id: &str) -> Vec<Map<Strin
         5 + scope_span
             .scope
             .as_ref()
-            .map_or(0, |scope| scope.attributes.len()),
+            .map_or(0, |scope| attribute_capacity(&scope.attributes)),
     );
     for span in &scope_span.spans {
         let span_record_json = flatten_span_record(span);
@@ -127,8 +128,9 @@ where
 
     for resource_span in resource_spans {
         let resource = get_resource(resource_span);
-        let mut resource_span_json =
-            Map::with_capacity(4 + resource.map_or(0, |resource| resource.attributes.len()));
+        let mut resource_span_json = Map::with_capacity(
+            4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes)),
+        );
 
         // Process resource attributes if present
         if let Some(resource) = resource {
@@ -201,7 +203,7 @@ fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<S
     events
         .iter()
         .map(|event| {
-            let mut event_json = Map::with_capacity(6 + event.attributes.len());
+            let mut event_json = Map::with_capacity(6 + attribute_capacity(&event.attributes));
             event_json.insert(
                 "event_time_unix_nano".to_string(),
                 Value::String(
@@ -241,7 +243,7 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
     links
         .iter()
         .map(|link| {
-            let mut link_json = Map::with_capacity(5 + link.attributes.len());
+            let mut link_json = Map::with_capacity(5 + attribute_capacity(&link.attributes));
             link_json.insert(
                 "link_span_id".to_string(),
                 Value::String(hex::encode(&link.span_id)),
@@ -340,7 +342,7 @@ fn flatten_kind(kind: i32) -> Map<String, Value> {
 /// this function is called recursively for each span record object in the otel traces event
 fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     let mut span_records_json = Vec::new();
-    let mut span_record_json = Map::with_capacity(40 + span_record.attributes.len());
+    let mut span_record_json = Map::with_capacity(40 + attribute_capacity(&span_record.attributes));
     span_record_json.insert(
         "span_trace_id".to_string(),
         Value::String(hex::encode(&span_record.trace_id)),

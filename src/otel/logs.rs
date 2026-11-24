@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use super::otel_utils::attribute_capacity;
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
@@ -181,7 +182,7 @@ pub fn flatten_log_record(
     // Fixed fields plus the record attributes; body fields can add more, but
     // one growth is cheaper than the four an empty map needs for these
     let mut log_record_json: Map<String, Value> =
-        Map::with_capacity(16 + log_record.attributes.len());
+        Map::with_capacity(16 + attribute_capacity(&log_record.attributes));
     log_record_json.insert(
         "time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -321,7 +322,7 @@ fn flatten_scope_log(
         5 + scope_log
             .scope
             .as_ref()
-            .map_or(0, |scope| scope.attributes.len()),
+            .map_or(0, |scope| attribute_capacity(&scope.attributes)),
     );
     if let Some(scope) = &scope_log.scope {
         scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
@@ -367,8 +368,9 @@ where
 
     for resource_log in resource_logs {
         let resource = get_resource(resource_log);
-        let mut resource_log_json =
-            Map::with_capacity(4 + resource.map_or(0, |resource| resource.attributes.len()));
+        let mut resource_log_json = Map::with_capacity(
+            4 + resource.map_or(0, |resource| attribute_capacity(&resource.attributes)),
+        );
 
         // Process resource attributes if present
         if let Some(resource) = resource {
@@ -455,6 +457,65 @@ mod tests {
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, KeyValueList, any_value};
     use opentelemetry_proto::tonic::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
     use serde_json::json;
+
+    /// Resident memory of this process in bytes
+    #[cfg(target_os = "linux")]
+    fn resident_bytes() -> usize {
+        let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+        let pages: usize = statm.split_whitespace().nth(1).unwrap().parse().unwrap();
+        pages * 4096
+    }
+
+    // The scope map is cloned into every record's row, capacity included. Sized
+    // by the raw attribute count, 200k valueless scope attributes (two bytes
+    // each on the wire) made every one of 10k rows carry a map for 200k
+    // entries: a body of half a megabyte held about 3 GiB.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "measures the resident memory of the process; run it alone"]
+    fn valueless_scope_attributes_do_not_inflate_every_row() {
+        use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+
+        let logs = LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        attributes: vec![KeyValue::default(); 200_000],
+                        ..Default::default()
+                    }),
+                    log_records: (0..10_000u64)
+                        .map(|i| LogRecord {
+                            time_unix_nano: 1_700_000_000_000_000_000 + i,
+                            observed_time_unix_nano: 1_700_000_000_000_000_000 + i,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let before = resident_bytes();
+        let rows = flatten_otel_logs(
+            &logs,
+            "tenant",
+            &mut FlattenBudget::new(crate::utils::json::flatten::GENEROUS_LIMITS),
+        )
+        .unwrap();
+        let grown = resident_bytes().saturating_sub(before);
+        println!(
+            "{} rows hold {} MiB of resident memory",
+            rows.len(),
+            grown / (1024 * 1024)
+        );
+        assert_eq!(rows.len(), 10_000);
+        assert!(
+            grown < 256 * 1024 * 1024,
+            "{} MiB for 10k rows without attributes",
+            grown / (1024 * 1024)
+        );
+    }
 
     fn flatten_record(
         number: i32,
