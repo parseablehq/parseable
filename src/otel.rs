@@ -17,7 +17,6 @@
  */
 
 pub mod decoded_size;
-pub mod expansion;
 pub mod logs;
 pub mod metrics;
 pub mod otel_utils;
@@ -119,18 +118,19 @@ pub(crate) mod bench {
     pub fn chunked(
         flatten: impl FnOnce(
             &mut super::sink::Chunker<
-                &mut dyn FnMut(Vec<serde_json::Value>) -> Result<(), JsonFlattenError>,
+                &mut dyn FnMut(Vec<serde_json::Value>, usize) -> Result<(), JsonFlattenError>,
             >,
         ) -> Result<(), JsonFlattenError>,
     ) -> Vec<serde_json::Value> {
         let mut rows = Vec::new();
-        let mut stage = |chunk: Vec<serde_json::Value>| {
+        let mut stage = |chunk: Vec<serde_json::Value>, _bytes: usize| {
             rows.extend(chunk);
             Ok(())
         };
         let mut chunker = super::sink::Chunker::new(
             super::sink::CHUNK_LIMITS,
-            &mut stage as &mut dyn FnMut(Vec<serde_json::Value>) -> Result<(), JsonFlattenError>,
+            &mut stage
+                as &mut dyn FnMut(Vec<serde_json::Value>, usize) -> Result<(), JsonFlattenError>,
         );
         flatten(&mut chunker).expect("benchmark rows flatten");
         chunker.finish().expect("benchmark rows stage");

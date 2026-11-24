@@ -58,17 +58,17 @@ use crate::{
         increment_traces_collected_by_date,
     },
     otel::{
-        expansion::{
-            EXPANSION_FACTOR, RequestSize, logs_size, max_expanded_bytes, metrics_size, traces_size,
-        },
         logs::flatten_logs_into,
         metrics::flatten_metrics_into,
         otel_utils::deserialize_otel_json,
         protobuf_stream::{
-            Signal, StreamError, check_request_level, flatten_request, max_record_bytes,
-            size_request,
+            Outline, Signal, StreamError, count_points, flatten_request, max_record_bytes, outline,
+            refusal,
         },
-        sink::{CHUNK_LIMITS, Chunker, RowSink, Staged},
+        sink::{
+            CHUNK_LIMITS, ChunkLimits, Chunker, EXPANSION_FACTOR, RowSink, Staged,
+            max_expanded_bytes,
+        },
         traces::flatten_traces_into,
     },
     parseable::{DEFAULT_TENANT, PARSEABLE, Stream},
@@ -356,12 +356,37 @@ enum OtelResources<'a> {
 }
 
 impl OtelResources<'_> {
-    /// Rows, row bytes and records of the request, without building a row
-    fn size(&self, flatten_exemplars: bool) -> RequestSize {
+    /// What a partial success counts as rejected, for the whole request: log
+    /// records, data points or spans
+    fn total(&self) -> u64 {
+        let count = |n: usize| n as u64;
         match self {
-            Self::Logs(resources) => logs_size(resources),
-            Self::Metrics(resources) => metrics_size(resources, flatten_exemplars),
-            Self::Traces(resources) => traces_size(resources),
+            Self::Logs(resources) => resources
+                .iter()
+                .flat_map(|r| &r.scope_logs)
+                .map(|s| count(s.log_records.len()))
+                .sum(),
+            Self::Metrics(resources) => resources
+                .iter()
+                .flat_map(|r| &r.scope_metrics)
+                .flat_map(|s| &s.metrics)
+                .map(|metric| {
+                    use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+                    count(match &metric.data {
+                        Some(Data::Gauge(m)) => m.data_points.len(),
+                        Some(Data::Sum(m)) => m.data_points.len(),
+                        Some(Data::Histogram(m)) => m.data_points.len(),
+                        Some(Data::ExponentialHistogram(m)) => m.data_points.len(),
+                        Some(Data::Summary(m)) => m.data_points.len(),
+                        None => 0,
+                    })
+                })
+                .sum(),
+            Self::Traces(resources) => resources
+                .iter()
+                .flat_map(|r| &r.scope_spans)
+                .map(|s| count(s.spans.len()))
+                .sum(),
         }
     }
 
@@ -388,74 +413,83 @@ impl OtelResources<'_> {
     }
 }
 
-/// Refuses a request whose rows would hold more than `max_expanded_bytes` of the
-/// payload limit, before anything is staged
-fn check_expansion(size: &RequestSize, max_payload: usize) -> Result<(), PostError> {
-    let max = max_expanded_bytes(max_payload);
-    if size.bytes > max {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "The request would expand to {} rows holding about {} bytes, more than the {max} bytes allowed ({EXPANSION_FACTOR} times P_MAX_EVENT_PAYLOAD_SIZE). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record",
-            size.rows,
-            size.bytes,
-        )));
-    }
-    Ok(())
+/// The refusal of a request whose rows hold more than `max` estimated bytes in all
+fn expansion_error(max: u64) -> PostError {
+    PostError::Invalid(anyhow::anyhow!(
+        "The rows of the request take more than the {max} bytes allowed ({EXPANSION_FACTOR} times P_MAX_EVENT_PAYLOAD_SIZE). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record"
+    ))
 }
 
-/// Stages the rows of one decoded OTEL request in chunks (see `Chunker`), so
-/// that its rows are never all held at once.
-///
-/// Before any chunk is staged, errors are returned as they are. Once at least
-/// one chunk is staged, the request stops at the first failing chunk:
-/// - a client error (status 4xx, such as a schema conflict, the field count
-///   limit or a flatten limit) becomes a partial success that reports every
-///   record not staged in full as rejected, answered with status 200 as
-///   OTLP/HTTP requires;
-/// - a server error keeps its 5xx status. The exporter then retries the whole
-///   request, so the rows of the chunks already staged are staged twice.
-fn ingest_otel_rows(
-    signal: Signal,
-    size: RequestSize,
-    target: &OtelTarget<'_>,
+/// Limits of staging one OTEL request
+#[derive(Debug, Clone, Copy)]
+struct StageLimits {
+    chunk: ChunkLimits,
+    /// Estimated row bytes the request may stage in all, see `max_expanded_bytes`
+    max_expanded: u64,
+    flatten: FlattenLimits,
+}
+
+/// Flattens one OTEL request and hands its rows to `stage` in chunks (see
+/// `Chunker`), so that they are never all held at once. The rows passed on are
+/// counted against `limits.max_expanded` as they go: the chunk that would pass
+/// it is refused with `expansion_error`, like any other chunk `stage` refuses.
+/// Stops at the first error. Needs no server state.
+fn stage_otel_rows(
+    limits: StageLimits,
     flatten: impl FnOnce(
         &mut FlattenBudget,
         &mut dyn RowSink<Error = PostError>,
     ) -> Result<(), PostError>,
-) -> Result<OtelIngested, PostError> {
-    let tenant_str = target.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    // Verify the dataset fields count
-    verify_dataset_fields_count(target.stream_name, target.tenant_id)?;
-    check_expansion(&size, max_event_payload_size())?;
-
+    mut stage: impl FnMut(Vec<Value>) -> Result<(), PostError>,
+) -> (Result<(), PostError>, Staged) {
     // The JSON log bodies of every record of the request share one budget
-    let mut budget = FlattenBudget::new(FlattenLimits::from_config());
-    let mut staging = Staging::new(target.stream_name, target.tenant_id)?;
-    let mut chunker = Chunker::new(CHUNK_LIMITS, |rows: Vec<Value>| {
-        staging.push(
-            Value::Array(rows),
-            target.log_source,
-            target.p_custom_fields,
-            None,
-            target.telemetry_type,
-        )
+    let mut budget = FlattenBudget::new(limits.flatten);
+    let mut expanded = 0u64;
+    let mut chunker = Chunker::new(limits.chunk, |rows: Vec<Value>, bytes: usize| {
+        expanded = expanded.saturating_add(bytes as u64);
+        if expanded > limits.max_expanded {
+            return Err(expansion_error(limits.max_expanded));
+        }
+        stage(rows)
     });
     let result = flatten(&mut budget, &mut chunker).and_then(|()| chunker.finish());
     let staged = chunker.staged();
-    drop(chunker);
+    (result, staged)
+}
 
-    if result.is_ok() || staged.chunks > 0 {
-        count_collected(signal, staged.records, tenant_str);
-    }
+/// The answer to an OTEL request that `stage_otel_rows` staged as `staged`.
+///
+/// Before any chunk is staged, errors are returned as they are. Once at least
+/// one chunk is staged, the request stopped at the first failing chunk:
+/// - a client error (status 4xx: a schema conflict, the field count limit, a
+///   flatten limit, the expansion cap, a protobuf record that does not decode
+///   or is too large) becomes a partial success that reports every record not
+///   staged in full as rejected, answered with status 200 as OTLP/HTTP requires.
+///   `total` gives the rejected unit for the whole request (log records, data
+///   points or spans), and is only asked for here;
+/// - a server error keeps its 5xx status. The exporter then retries the whole
+///   request, so the rows of the chunks already staged are staged twice.
+fn otel_outcome(
+    signal: Signal,
+    stream_name: &str,
+    result: Result<(), PostError>,
+    staged: &Staged,
+    total: impl FnOnce() -> u64,
+) -> Result<OtelIngested, PostError> {
     match result {
         Ok(()) => Ok(OtelIngested::Full),
         Err(error)
             if staged.chunks > 0
                 && actix_web::ResponseError::status_code(&error).is_client_error() =>
         {
-            let rejected = rejected(signal, &size, &staged);
+            let staged_units = match signal {
+                Signal::Metrics => staged.points,
+                Signal::Logs | Signal::Traces => staged.records,
+            };
+            let rejected = total().saturating_sub(staged_units) as i64;
             warn!(
-                "Ingestion into stream {} stopped after {} rows: {error}. {rejected} records rejected",
-                target.stream_name, staged.rows
+                "Ingestion into stream {stream_name} stopped after {} rows: {error}. {rejected} records rejected",
+                staged.rows
             );
             Ok(OtelIngested::Partial {
                 rejected,
@@ -466,26 +500,54 @@ fn ingest_otel_rows(
     }
 }
 
+/// Stages the rows of one OTEL request in chunks into its stream, see
+/// `stage_otel_rows` and `otel_outcome`
+fn ingest_otel_rows(
+    signal: Signal,
+    target: &OtelTarget<'_>,
+    flatten: impl FnOnce(
+        &mut FlattenBudget,
+        &mut dyn RowSink<Error = PostError>,
+    ) -> Result<(), PostError>,
+    total: impl FnOnce() -> u64,
+) -> Result<OtelIngested, PostError> {
+    let tenant_str = target.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    // Verify the dataset fields count
+    verify_dataset_fields_count(target.stream_name, target.tenant_id)?;
+
+    let limits = StageLimits {
+        chunk: CHUNK_LIMITS,
+        max_expanded: max_expanded_bytes(max_event_payload_size()),
+        flatten: FlattenLimits::from_config(),
+    };
+    let mut staging = Staging::new(target.stream_name, target.tenant_id)?;
+    let (result, staged) = stage_otel_rows(limits, flatten, |rows| {
+        staging.push(
+            Value::Array(rows),
+            target.log_source,
+            target.p_custom_fields,
+            None,
+            target.telemetry_type,
+        )
+    });
+    if result.is_ok() || staged.chunks > 0 {
+        count_collected(signal, staged.records, tenant_str);
+    }
+    otel_outcome(signal, target.stream_name, result, &staged, total)
+}
+
 /// `ingest_otel_rows` for a request decoded whole (OTLP JSON)
 fn ingest_otel_resources(
     resources: OtelResources<'_>,
     target: &OtelTarget<'_>,
 ) -> Result<OtelIngested, PostError> {
     let flatten_exemplars = PARSEABLE.options.otel_flatten_exemplars;
-    let size = resources.size(flatten_exemplars);
-    ingest_otel_rows(resources.signal(), size, target, |budget, sink| {
-        resources.flatten_into(budget, flatten_exemplars, sink)
-    })
-}
-
-/// The records a partial success reports as rejected: log records, data points or
-/// spans that were not staged in full
-fn rejected(signal: Signal, size: &RequestSize, staged: &Staged) -> i64 {
-    let (total, staged) = match signal {
-        Signal::Metrics => (size.points, staged.points),
-        Signal::Logs | Signal::Traces => (size.records, staged.records),
-    };
-    total.saturating_sub(staged) as i64
+    ingest_otel_rows(
+        resources.signal(),
+        target,
+        |budget, sink| resources.flatten_into(budget, flatten_exemplars, sink),
+        || resources.total(),
+    )
 }
 
 /// Counts for `tenant_id` the leaf records (log records, spans, metrics) whose rows
@@ -591,16 +653,34 @@ struct ProtobufOptions {
 }
 
 /// Protobuf counterpart of `ingest_otel_json`. The body is read one leaf record
-/// at a time (`protobuf_stream`), twice: a sizing pass that refuses a body that
-/// does not decode or would expand too far before anything is staged, then the
-/// pass whose rows are staged. Each record is decoded in each pass and dropped,
-/// so the decoded request is never held whole. The body size is capped by the
-/// `PayloadConfig` of the OTEL routes.
+/// at a time (`protobuf_stream`): `outline` first walks the levels above the
+/// records, so a body broken there is refused before anything is staged (and
+/// before the configuration is read), then every record is decoded once, its rows
+/// handed over in chunks, and dropped. So the decoded request is never held whole.
+/// A record that does not decode, or would be too large once decoded, is a client
+/// error met while staging: a partial success once chunks were staged. The body
+/// size is capped by the `PayloadConfig` of the OTEL routes.
 fn flatten_and_push_otel_protobuf(
     body: web::Bytes,
     target: &OtelTarget<'_>,
     options: impl FnOnce() -> ProtobufOptions,
 ) -> Result<OtelIngested, PostError> {
+    let (signal, outline, options) = outline_otel_protobuf(&body, target, options)?;
+    ingest_otel_rows(
+        signal,
+        target,
+        |budget, sink| flatten_otel_protobuf(&body, signal, &options, target, budget, sink),
+        || protobuf_total(&body, signal, &outline),
+    )
+}
+
+/// The signal and outline of a protobuf body, and the options to read it with,
+/// read only once the body is known to be a request (see `refusal`)
+fn outline_otel_protobuf(
+    body: &web::Bytes,
+    target: &OtelTarget<'_>,
+    options: impl FnOnce() -> ProtobufOptions,
+) -> Result<(Signal, Outline, ProtobufOptions), PostError> {
     let signal = match target.log_source {
         LogSource::OtelLogs => Signal::Logs,
         LogSource::OtelMetrics => Signal::Metrics,
@@ -612,27 +692,89 @@ fn flatten_and_push_otel_protobuf(
             ));
         }
     };
-    // A body that is not a request at all is refused before the configuration is read
-    check_request_level(body.clone(), signal).map_err(|e| {
-        from_stream_error(target, e.map_consumer::<PostError>(|never| match never {}))
-    })?;
-    let options = options();
-    let max_record = max_record_bytes(options.max_payload);
-    let size =
-        size_request(body.clone(), signal, max_record, options.flatten_exemplars).map_err(|e| {
-            from_stream_error(target, e.map_consumer::<PostError>(|never| match never {}))
-        })?;
-    ingest_otel_rows(signal, size, target, |budget, sink| {
-        flatten_request(
-            body,
-            signal,
-            max_record,
-            budget,
-            options.flatten_exemplars,
-            sink,
-        )
-        .map_err(|e| from_stream_error(target, e))
-    })
+    match outline(body, signal) {
+        Ok(outline) => Ok((signal, outline, options())),
+        Err(error) => {
+            let error = refusal(body, signal, error, || {
+                max_record_bytes(options().max_payload)
+            });
+            Err(from_stream_error(target, error.widen()))
+        }
+    }
+}
+
+/// Hands the rows of a protobuf body that passed `outline` to `sink`
+fn flatten_otel_protobuf(
+    body: &web::Bytes,
+    signal: Signal,
+    options: &ProtobufOptions,
+    target: &OtelTarget<'_>,
+    budget: &mut FlattenBudget,
+    sink: &mut dyn RowSink<Error = PostError>,
+) -> Result<(), PostError> {
+    flatten_request(
+        body,
+        signal,
+        max_record_bytes(options.max_payload),
+        budget,
+        options.flatten_exemplars,
+        sink,
+    )
+    .map_err(|e| from_stream_error(target, e))
+}
+
+/// `flatten_and_push_otel_protobuf` without the server: the rows are handed to
+/// `stage` under `limits` instead of being staged into a stream. For tests,
+/// which must not touch `PARSEABLE`.
+#[cfg(test)]
+fn stage_otel_protobuf(
+    body: web::Bytes,
+    target: &OtelTarget<'_>,
+    options: ProtobufOptions,
+    limits: StageLimits,
+    stage: impl FnMut(Vec<Value>) -> Result<(), PostError>,
+) -> (Result<OtelIngested, PostError>, Staged) {
+    let (signal, outline, options) = match outline_otel_protobuf(&body, target, || options) {
+        Ok(read) => read,
+        Err(error) => return (Err(error), Staged::default()),
+    };
+    let (result, staged) = stage_otel_rows(
+        limits,
+        |budget, sink| flatten_otel_protobuf(&body, signal, &options, target, budget, sink),
+        stage,
+    );
+    let outcome = otel_outcome(signal, target.stream_name, result, &staged, || {
+        protobuf_total(&body, signal, &outline)
+    });
+    (outcome, staged)
+}
+
+/// `ingest_otel_resources` without the server, see `stage_otel_protobuf`
+#[cfg(test)]
+fn stage_otel_resources(
+    resources: OtelResources<'_>,
+    flatten_exemplars: bool,
+    limits: StageLimits,
+    stage: impl FnMut(Vec<Value>) -> Result<(), PostError>,
+) -> (Result<OtelIngested, PostError>, Staged) {
+    let (result, staged) = stage_otel_rows(
+        limits,
+        |budget, sink| resources.flatten_into(budget, flatten_exemplars, sink),
+        stage,
+    );
+    let outcome = otel_outcome(resources.signal(), "test", result, &staged, || {
+        resources.total()
+    });
+    (outcome, staged)
+}
+
+/// What a partial success of a protobuf request counts as rejected, for the whole
+/// request: its records from the outline, or its data points read from the wire
+fn protobuf_total(body: &web::Bytes, signal: Signal, outline: &Outline) -> u64 {
+    match signal {
+        Signal::Metrics => count_points(body),
+        Signal::Logs | Signal::Traces => outline.records,
+    }
 }
 
 fn stream_error(target: &OtelTarget<'_>, error: String) -> PostError {

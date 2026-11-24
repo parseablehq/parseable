@@ -1269,10 +1269,9 @@ mod tests {
             ExportLogsServiceRequest { resource_logs }
         }
 
-        /// What ingestion does with a decoded request before staging: the sizing
-        /// pass, then the rows handed over in chunks (collected here)
+        /// What ingestion does with a decoded request: its rows handed over in
+        /// chunks (collected here)
         fn flatten(request: &ExportLogsServiceRequest) -> Vec<serde_json::Value> {
-            std::hint::black_box(crate::otel::expansion::logs_size(&request.resource_logs));
             let mut budget = FlattenBudget::new(FlattenLimits::DEFAULT);
             bench::chunked(|chunker| {
                 super::super::flatten_logs_into(&request.resource_logs, &mut budget, chunker)

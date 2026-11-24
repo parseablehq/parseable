@@ -17,7 +17,8 @@
  */
 
 //! Requests shaped like real collector traffic, at the default payload limit:
-//! what they expand to per body byte (the numbers behind `EXPANSION_FACTOR`),
+//! what their rows hold per body byte (`row_bytes`, the unit of the running total
+//! the expansion cap counts while staging; the numbers behind `EXPANSION_FACTOR`),
 //! and that the expansion cap accepts every one of them. Nothing here touches
 //! `PARSEABLE`. `OTLP_DUMP_DIR=<dir>` makes the ignored `dump_realistic_bodies`
 //! write the bodies for end-to-end checks against a server.
@@ -36,7 +37,11 @@ use opentelemetry_proto::tonic::resource::v1::Resource;
 use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span, Status, span};
 use prost::Message;
 
-use super::expansion::{RequestSize, logs_size, max_expanded_bytes, metrics_size, traces_size};
+use serde_json::{Map, Value};
+
+use super::protobuf_stream::{Signal, flatten_request, max_record_bytes, outline};
+use super::sink::{RowSink, max_expanded_bytes, row_bytes};
+use crate::utils::json::flatten::{FlattenBudget, FlattenLimits, JsonFlattenError};
 
 /// `P_MAX_EVENT_PAYLOAD_SIZE` default
 const PAYLOAD: usize = 10 * 1024 * 1024;
@@ -365,7 +370,58 @@ pub(crate) struct Shape {
     pub name: &'static str,
     pub signal: &'static str,
     pub body: Vec<u8>,
-    pub size: RequestSize,
+}
+
+/// What the rows of a request add up to, as staging counts them
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Totals {
+    pub rows: u64,
+    /// `row_bytes` of every row: what the expansion cap counts
+    pub bytes: u64,
+    pub records: u64,
+    pub points: u64,
+}
+
+impl RowSink for Totals {
+    type Error = JsonFlattenError;
+
+    fn row(&mut self, row: Map<String, Value>) -> Result<(), Self::Error> {
+        self.rows += 1;
+        self.bytes += row_bytes(&row) as u64;
+        Ok(())
+    }
+
+    fn point(&mut self, row: Map<String, Value>) -> Result<(), Self::Error> {
+        self.points += 1;
+        self.row(row)
+    }
+
+    fn record_end(&mut self) {
+        self.records += 1;
+    }
+}
+
+/// The totals of the protobuf `body` of `signal`, read as ingestion reads it
+pub(crate) fn totals(signal: &str, body: &[u8]) -> Totals {
+    let signal = match signal {
+        "logs" => Signal::Logs,
+        "traces" => Signal::Traces,
+        "metrics" => Signal::Metrics,
+        other => panic!("{other}"),
+    };
+    let body = bytes::Bytes::copy_from_slice(body);
+    outline(&body, signal).unwrap();
+    let mut totals = Totals::default();
+    flatten_request(
+        &body,
+        signal,
+        max_record_bytes(PAYLOAD),
+        &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+        false,
+        &mut totals,
+    )
+    .unwrap();
+    totals
 }
 
 /// Records of `one` bytes each that fit in `PAYLOAD`, with room for framing
@@ -377,7 +433,6 @@ fn shape<M: Message>(
     name: &'static str,
     signal: &'static str,
     build: impl Fn(usize) -> M,
-    size: impl Fn(&M) -> RequestSize,
 ) -> Shape {
     let probe = build(1000).encoded_len();
     let mut n = fitting(probe.div_ceil(1000));
@@ -388,132 +443,102 @@ fn shape<M: Message>(
         request = build(n);
     }
     let body = request.encode_to_vec();
-    let size = size(&request);
-    Shape {
-        name,
-        signal,
-        body,
-        size,
-    }
+    Shape { name, signal, body }
 }
 
 pub(crate) fn shapes() -> Vec<Shape> {
-    let logs_size = |r: &ExportLogsServiceRequest| logs_size(&r.resource_logs);
-    let traces_size = |r: &ExportTraceServiceRequest| traces_size(&r.resource_spans);
-    let metrics_size = |r: &ExportMetricsServiceRequest| metrics_size(&r.resource_metrics, false);
     vec![
-        shape(
-            "logs, 30 k8s resource attributes",
-            "logs",
-            |n| logs(k8s_resource(), (0..n).map(app_log).collect()),
-            logs_size,
-        ),
-        shape(
-            "logs, service.name only",
-            "logs",
-            |n| logs(minimal_resource(), (0..n).map(app_log).collect()),
-            logs_size,
-        ),
+        shape("logs, 30 k8s resource attributes", "logs", |n| {
+            logs(k8s_resource(), (0..n).map(app_log).collect())
+        }),
+        shape("logs, service.name only", "logs", |n| {
+            logs(minimal_resource(), (0..n).map(app_log).collect())
+        }),
         shape(
             "logs, short records (time, severity, body \"ok\")",
             "logs",
             |n| logs(None, (0..n).map(short_log).collect()),
-            logs_size,
         ),
         shape(
             "logs, short records, 30 k8s resource attributes",
             "logs",
             |n| logs(k8s_resource(), (0..n).map(short_log).collect()),
-            logs_size,
         ),
-        shape(
-            "traces, 30 k8s resource attributes",
-            "traces",
-            |n| traces(k8s_resource(), (0..n).map(server_span).collect()),
-            traces_size,
-        ),
-        shape(
-            "traces, service.name only",
-            "traces",
-            |n| traces(minimal_resource(), (0..n).map(server_span).collect()),
-            traces_size,
-        ),
-        shape(
-            "traces, bare spans (ids, name, times)",
-            "traces",
-            |n| traces(minimal_resource(), (0..n).map(bare_span).collect()),
-            traces_size,
-        ),
+        shape("traces, 30 k8s resource attributes", "traces", |n| {
+            traces(k8s_resource(), (0..n).map(server_span).collect())
+        }),
+        shape("traces, service.name only", "traces", |n| {
+            traces(minimal_resource(), (0..n).map(server_span).collect())
+        }),
+        shape("traces, bare spans (ids, name, times)", "traces", |n| {
+            traces(minimal_resource(), (0..n).map(bare_span).collect())
+        }),
         shape(
             "traces, bare spans, 30 k8s resource attributes",
             "traces",
             |n| traces(k8s_resource(), (0..n).map(bare_span).collect()),
-            traces_size,
         ),
-        shape(
-            "traces, an event and a link per span, k8s",
-            "traces",
-            |n| traces(k8s_resource(), (0..n).map(span_with_event).collect()),
-            traces_size,
-        ),
+        shape("traces, an event and a link per span, k8s", "traces", |n| {
+            traces(k8s_resource(), (0..n).map(span_with_event).collect())
+        }),
         shape(
             "metrics, sum points, 30 k8s resource attributes",
             "metrics",
             |n| metrics(k8s_resource(), sum_points(n)),
-            metrics_size,
         ),
-        shape(
-            "metrics, sum points, service.name only",
-            "metrics",
-            |n| metrics(minimal_resource(), sum_points(n)),
-            metrics_size,
-        ),
-        shape(
-            "metrics, bare gauge points (time, value)",
-            "metrics",
-            |n| metrics(minimal_resource(), bare_gauge_points(n)),
-            metrics_size,
-        ),
+        shape("metrics, sum points, service.name only", "metrics", |n| {
+            metrics(minimal_resource(), sum_points(n))
+        }),
+        shape("metrics, bare gauge points (time, value)", "metrics", |n| {
+            metrics(minimal_resource(), bare_gauge_points(n))
+        }),
         shape(
             "metrics, bare gauge points, 30 k8s resource attributes",
             "metrics",
             |n| metrics(k8s_resource(), bare_gauge_points(n)),
-            metrics_size,
         ),
         shape(
             "metrics, histograms with an exemplar, k8s",
             "metrics",
             |n| metrics(k8s_resource(), histogram_points(n)),
-            metrics_size,
         ),
         shape(
             "metrics, exponential histograms, 160 buckets",
             "metrics",
             |n| metrics(minimal_resource(), exp_histogram_points(n)),
-            metrics_size,
         ),
     ]
 }
 
-/// Every realistic shape at the payload limit is under the expansion cap
+/// Every realistic shape at the payload limit is under the expansion cap, counted
+/// as staging counts it: the `row_bytes` of every row
 #[test]
 fn realistic_requests_at_the_payload_limit_are_under_the_expansion_cap() {
+    use rayon::prelude::*;
     let cap = max_expanded_bytes(PAYLOAD);
     let mut worst: f64 = 0.0;
-    for shape in shapes() {
-        let ratio = shape.size.bytes as f64 / shape.body.len() as f64;
+    // Flattened at once: a few seconds each in a debug build
+    let measured: Vec<(Shape, Totals)> = shapes()
+        .into_par_iter()
+        .map(|shape| {
+            let totals = totals(shape.signal, &shape.body);
+            (shape, totals)
+        })
+        .collect();
+    for (shape, totals) in measured {
+        let ratio = totals.bytes as f64 / shape.body.len() as f64;
         worst = worst.max(ratio);
         println!(
             "EXPANSION {}: body {:.2} MiB, {} records, {} rows, {:.0} row bytes per row, {:.1} row bytes per body byte ({:.0}% of the cap)",
             shape.name,
             shape.body.len() as f64 / (1024.0 * 1024.0),
-            shape.size.records,
-            shape.size.rows,
-            shape.size.bytes as f64 / shape.size.rows as f64,
+            totals.records,
+            totals.rows,
+            totals.bytes as f64 / totals.rows as f64,
             ratio,
-            100.0 * shape.size.bytes as f64 / cap as f64
+            100.0 * totals.bytes as f64 / cap as f64
         );
-        assert!(shape.size.bytes <= cap, "{} is refused", shape.name);
+        assert!(totals.bytes <= cap, "{} is refused", shape.name);
     }
     println!(
         "EXPANSION worst {worst:.1} row bytes per body byte, cap {} per body byte",
@@ -521,27 +546,39 @@ fn realistic_requests_at_the_payload_limit_are_under_the_expansion_cap() {
     );
 }
 
-/// Copied fields that no collector sends: a 15 KB resource over empty records of
-/// two bytes each, which expand to tens of GiB of rows, are refused
-#[test]
-fn copied_fields_over_tiny_records_are_over_the_expansion_cap() {
+/// The request that copies a 15 KB resource into empty records of two bytes each:
+/// half a MiB of protobuf
+fn copied_resource_over_empty_records() -> ExportLogsServiceRequest {
     let resource = Some(Resource {
         attributes: (0..500)
             .map(|i| s(&format!("attribute.{i:03}"), "value-0123456789"))
             .collect(),
         ..Default::default()
     });
-    // Half a MiB of protobuf
-    let records = 1 << 18;
-    let request = logs(resource, vec![LogRecord::default(); records]);
-    let size = logs_size(&request.resource_logs);
+    logs(resource, vec![LogRecord::default(); 1 << 18])
+}
+
+/// Copied fields that no collector sends: a 15 KB resource over empty records of
+/// two bytes each, which expand to tens of GiB of rows, pass the expansion cap.
+/// Counted from the rows of the first records (they all hold the same), not by
+/// building all of them.
+#[test]
+fn copied_fields_over_tiny_records_are_over_the_expansion_cap() {
+    let request = copied_resource_over_empty_records();
+    let records = request.resource_logs[0].scope_logs[0].log_records.len() as u64;
+    let mut first = request.clone();
+    first.resource_logs[0].scope_logs[0]
+        .log_records
+        .truncate(1000);
+    let totals = totals("logs", &first.encode_to_vec());
+    let bytes = totals.bytes / 1000 * records;
     println!(
-        "EXPANSION copied resource: {} records, {:.1} GiB of rows",
-        size.records,
-        size.bytes as f64 / (1u64 << 30) as f64
+        "EXPANSION copied resource: {records} records, {:.0} row bytes each, {:.1} GiB of rows",
+        totals.bytes as f64 / 1000.0,
+        bytes as f64 / (1u64 << 30) as f64
     );
     assert!(request.encoded_len() <= PAYLOAD);
-    assert!(size.bytes > max_expanded_bytes(PAYLOAD));
+    assert!(bytes > max_expanded_bytes(PAYLOAD));
 }
 
 /// Writes the body of every shape to `OTLP_DUMP_DIR`, named after its signal
@@ -551,14 +588,39 @@ fn copied_fields_over_tiny_records_are_over_the_expansion_cap() {
 fn dump_realistic_bodies() {
     let dir = std::env::var("OTLP_DUMP_DIR").expect("OTLP_DUMP_DIR");
     let mut index = String::new();
+    let mut write = |file: String, signal: &str, name: &str, body: &[u8]| {
+        let totals = totals(signal, body);
+        std::fs::write(format!("{dir}/{file}"), body).unwrap();
+        index.push_str(&format!(
+            "{file}\t{signal}\t{}\t{}\t{name}\n",
+            totals.records, totals.points
+        ));
+    };
     for (i, shape) in shapes().into_iter().enumerate() {
         let file = format!("{i:02}-{}.pb", shape.signal);
-        std::fs::write(format!("{dir}/{file}"), &shape.body).unwrap();
-        index.push_str(&format!(
-            "{file}\t{}\t{}\t{}\t{}\n",
-            shape.signal, shape.size.records, shape.size.points, shape.name
-        ));
+        write(file, shape.signal, shape.name, &shape.body);
     }
+    // Crafted: one span of 2 million empty events (4 MiB), 400k empty spans (0.8 MB)
+    let events = traces(
+        None,
+        vec![Span {
+            events: vec![span::Event::default(); 1 << 21],
+            ..Default::default()
+        }],
+    );
+    write(
+        "20-traces.pb".into(),
+        "traces",
+        "one span of 2 million empty events",
+        &events.encode_to_vec(),
+    );
+    let spans = traces(None, vec![Span::default(); 400_000]);
+    write(
+        "21-traces.pb".into(),
+        "traces",
+        "400k empty spans",
+        &spans.encode_to_vec(),
+    );
     // Requests of 100 records, as an SDK or a collector with a small batch sends them
     let small: [(&str, Vec<u8>); 3] = [
         (

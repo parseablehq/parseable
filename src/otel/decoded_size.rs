@@ -35,6 +35,7 @@
 //! the text of a hex or base64 field, more than the bytes it decodes to.
 
 use std::mem::size_of;
+use std::sync::LazyLock;
 
 use opentelemetry_proto::tonic::common::v1::{AnyValue, EntityRef, KeyValue};
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
@@ -62,15 +63,135 @@ pub enum Leaf {
 /// occurrences into one `Vec` that grows past the sum of their capacities). A record
 /// whose framing breaks is counted up to the break, where decoding it fails too.
 pub fn leaf_decoded_size(body: &[u8], leaf: Leaf) -> usize {
-    let (msg, own) = match leaf {
-        Leaf::LogRecord => (Msg::LogRecord, size_of::<LogRecord>()),
-        Leaf::Span => (Msg::Span, size_of::<Span>()),
-        Leaf::Metric => (Msg::Metric, size_of::<Metric>()),
+    let msg = match leaf {
+        Leaf::LogRecord => Msg::LogRecord,
+        Leaf::Span => Msg::Span,
+        Leaf::Metric => Msg::Metric,
     };
-    let mut size = own;
+    let mut size = leaf_struct_size(leaf);
     // A leaf is three messages deep in its request
     let _ = scan(body, msg, 3, &mut size);
     size
+}
+
+/// Most estimated bytes ([`leaf_decoded_size`]) one wire byte of a `leaf` record adds
+/// beyond the record's own struct: `leaf_decoded_size(body, leaf) <= size_of the leaf
+/// + bytes_per_wire_byte(leaf) * body.len()` for every `body`, valid or not.
+///
+/// The bound is `B = max(8, 2 * S)`, where `S` is the largest element of a repeated
+/// field reachable from the leaf. By induction over the messages of a body, each
+/// message adds at most `B` times its own encoded length:
+/// - a nested message adds what its fields add (its own struct is counted by the
+///   `Vec` that holds it, or is part of its parent's struct);
+/// - a string or bytes field of `L > 0` bytes adds `max(8, L) <= 8 * L`, and is
+///   `L` bytes of content plus at least 2 of key and length;
+/// - a repeated field of `n` elements adds a `Vec` of at most `max(4, n.next_power_of_two())
+///   <= 2 * n + 2` elements of `S` bytes, while each element takes at least 2 wire
+///   bytes besides its content (a key and a length, or a key and a 1-byte varint;
+///   a packed run of `n` numbers takes `n + 2`): `(2n + 2) * S <= 2 * S * 2n`.
+///
+/// So a record can come close to `S` bytes per wire byte (many empty elements of the
+/// largest kind, 2 bytes each) and reach `2 * S` (one empty element alone in its
+/// `Vec`, which holds 4); `bound_holds_for_crafted_and_random_records` checks it.
+pub fn bytes_per_wire_byte(leaf: Leaf) -> usize {
+    static BOUNDS: LazyLock<[usize; 3]> = LazyLock::new(|| {
+        [
+            reachable_bound(Msg::LogRecord),
+            reachable_bound(Msg::Span),
+            reachable_bound(Msg::Metric),
+        ]
+    });
+    BOUNDS[leaf as usize]
+}
+
+/// Bytes of the struct of a `leaf` record
+pub fn leaf_struct_size(leaf: Leaf) -> usize {
+    match leaf {
+        Leaf::LogRecord => size_of::<LogRecord>(),
+        Leaf::Span => size_of::<Span>(),
+        Leaf::Metric => size_of::<Metric>(),
+    }
+}
+
+/// Whether a `leaf` record of `len` wire bytes can take more than `limit` bytes once
+/// decoded ([`leaf_decoded_size`]); one that can not needs no measuring
+#[inline]
+pub fn needs_measuring(len: usize, leaf: Leaf, limit: usize) -> bool {
+    leaf_struct_size(leaf).saturating_add(bytes_per_wire_byte(leaf).saturating_mul(len)) > limit
+}
+
+/// Field numbers of the OTLP schema are all below this
+const MAX_FIELD_NUMBER: u64 = 32;
+
+/// `max(8, 2 * S)` over the repeated fields of the messages reachable from `root`,
+/// see [`bytes_per_wire_byte`]
+fn reachable_bound(root: Msg) -> usize {
+    let mut bound = 8;
+    let mut seen = vec![root];
+    let mut stack = vec![root];
+    while let Some(msg) = stack.pop() {
+        for number in 1..MAX_FIELD_NUMBER {
+            let Some(Field { kind, slot }) = msg.field(number) else {
+                continue;
+            };
+            if slot.is_some() {
+                bound = bound.max(2 * kind.element_size());
+            }
+            if let Kind::Message(child) = kind
+                && !seen.contains(&child)
+            {
+                seen.push(child);
+                stack.push(child);
+            }
+        }
+    }
+    bound
+}
+
+/// Data points the metric `body` (its encoding, without a length prefix) decodes to:
+/// the elements of the `data_points` field of its `data`, which prost merges when the
+/// same kind of data occurs again and replaces when another kind follows. Read from
+/// the wire, without decoding the metric. A metric whose framing breaks is counted up
+/// to the break.
+pub fn metric_points(mut body: &[u8]) -> u64 {
+    let (mut kind, mut points) = (0, 0);
+    while !body.is_empty() {
+        let Ok((number, wire)) = key(&mut body) else {
+            break;
+        };
+        // `gauge`, `sum`, `histogram`, `exponential_histogram`, `summary`
+        if matches!(number, 5 | 7 | 9 | 10 | 11) && wire == LEN {
+            let Ok(data) = varint(&mut body).and_then(|len| take(&mut body, len)) else {
+                break;
+            };
+            let found = data_points(data);
+            if number == kind {
+                points += found;
+            } else {
+                (kind, points) = (number, found);
+            }
+        } else if skip(&mut body, wire, number, 0).is_err() {
+            break;
+        }
+    }
+    points
+}
+
+/// Elements of field 1 (`data_points`) of the `data` of a metric, up to a break
+fn data_points(mut body: &[u8]) -> u64 {
+    let mut points = 0;
+    while !body.is_empty() {
+        let Ok((number, wire)) = key(&mut body) else {
+            break;
+        };
+        if skip(&mut body, wire, number, 0).is_err() {
+            break;
+        }
+        if number == 1 && wire == LEN {
+            points += 1;
+        }
+    }
+    points
 }
 
 /// Messages of the OTLP schema whose fields allocate when decoded. Leaf records are
@@ -479,4 +600,196 @@ fn scan_fields(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry_proto::tonic::metrics::v1::{Gauge, Sum, metric};
+    use prost::Message as _;
+
+    fn put_varint(out: &mut Vec<u8>, mut value: u64) {
+        while value >= 0x80 {
+            out.push(value as u8 | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+
+    fn put_key(out: &mut Vec<u8>, number: u64, wire: u64) {
+        put_varint(out, (number << 3) | wire);
+    }
+
+    fn len_field(number: u64, body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_key(&mut out, number, LEN);
+        put_varint(&mut out, body.len() as u64);
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// The shortest path of field numbers from `root` to every message reachable from it
+    fn paths(root: Msg) -> Vec<(Msg, Vec<u64>)> {
+        let mut found = vec![(root, vec![])];
+        let mut next = 0;
+        while next < found.len() {
+            let (msg, path) = found[next].clone();
+            next += 1;
+            for number in 1..MAX_FIELD_NUMBER {
+                if let Some(Field {
+                    kind: Kind::Message(child),
+                    ..
+                }) = msg.field(number)
+                    && !found.iter().any(|(seen, _)| *seen == child)
+                {
+                    let mut path = path.clone();
+                    path.push(number);
+                    found.push((child, path));
+                }
+            }
+        }
+        found
+    }
+
+    /// Records of `root` built to come close to the bound: for every repeated field
+    /// of every message reachable from it, `n` elements of the fewest wire bytes,
+    /// packed and unpacked, inside the shortest path to that message
+    fn crafted(root: Msg) -> Vec<Vec<u8>> {
+        let mut records = Vec::new();
+        for (msg, path) in paths(root) {
+            for number in 1..MAX_FIELD_NUMBER {
+                let Some(Field {
+                    kind,
+                    slot: Some(_),
+                }) = msg.field(number)
+                else {
+                    continue;
+                };
+                for n in [1, 2, 3, 5, 9, 17, 33, 1025, 4097] {
+                    let mut bodies = vec![Vec::new()];
+                    match kind {
+                        Kind::Message(_) | Kind::Bytes => {
+                            for _ in 0..n {
+                                put_key(&mut bodies[0], number, LEN);
+                                bodies[0].push(0);
+                            }
+                        }
+                        Kind::Numbers(encoding) => {
+                            let (wire, width) = match encoding {
+                                Encoding::Varint => (VARINT, 1),
+                                Encoding::Fixed64 => (FIXED64, 8),
+                            };
+                            for _ in 0..n {
+                                put_key(&mut bodies[0], number, wire);
+                                bodies[0].extend(std::iter::repeat_n(0, width));
+                            }
+                            bodies.push(len_field(number, &vec![0; n * width]));
+                        }
+                    }
+                    for mut body in bodies {
+                        for &field in path.iter().rev() {
+                            body = len_field(field, &body);
+                        }
+                        records.push(body);
+                    }
+                }
+            }
+        }
+        records
+    }
+
+    #[test]
+    fn bound_holds_for_crafted_and_random_records() {
+        println!(
+            "STRUCTS KeyValue {} AnyValue {} Event {} Link {} NumberDataPoint {} HistogramDataPoint {} ExponentialHistogramDataPoint {} SummaryDataPoint {} ValueAtQuantile {} Exemplar {}",
+            size_of::<KeyValue>(),
+            size_of::<AnyValue>(),
+            size_of::<Event>(),
+            size_of::<Link>(),
+            size_of::<NumberDataPoint>(),
+            size_of::<HistogramDataPoint>(),
+            size_of::<ExponentialHistogramDataPoint>(),
+            size_of::<SummaryDataPoint>(),
+            size_of::<ValueAtQuantile>(),
+            size_of::<Exemplar>(),
+        );
+        let cap = crate::otel::protobuf_stream::max_record_bytes(10 * 1024 * 1024);
+        for (leaf, root) in [
+            (Leaf::LogRecord, Msg::LogRecord),
+            (Leaf::Span, Msg::Span),
+            (Leaf::Metric, Msg::Metric),
+        ] {
+            let bound = bytes_per_wire_byte(leaf);
+            let own = leaf_struct_size(leaf);
+            let mut worst: f64 = 0.0;
+            let records = crafted(root);
+            for record in &records {
+                let size = leaf_decoded_size(record, leaf);
+                assert!(
+                    size <= own + bound * record.len(),
+                    "{leaf:?}: {size} B from {} wire bytes",
+                    record.len()
+                );
+                worst = worst.max((size - own) as f64 / record.len() as f64);
+            }
+            let threshold = (0..).find(|&len| needs_measuring(len, leaf, cap)).unwrap();
+            println!(
+                "BOUND {leaf:?}: {bound} decoded bytes per wire byte, struct {own} B, {} crafted records reach {worst:.1}; at the default cap ({cap} B) records from {threshold} wire bytes are measured",
+                records.len()
+            );
+            // Close to tight: a record reaches at least half of it
+            assert!(worst >= bound as f64 / 2.0, "{leaf:?}: {worst} of {bound}");
+            assert_eq!(threshold, (cap - own) / bound + 1);
+        }
+    }
+
+    fn metric_with(data: metric::Data) -> Vec<u8> {
+        Metric {
+            name: "m".into(),
+            data: Some(data),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    fn gauge(points: usize) -> Vec<u8> {
+        metric_with(metric::Data::Gauge(Gauge {
+            data_points: vec![NumberDataPoint::default(); points],
+        }))
+    }
+
+    fn sum(points: usize) -> Vec<u8> {
+        metric_with(metric::Data::Sum(Sum {
+            data_points: vec![NumberDataPoint::default(); points],
+            ..Default::default()
+        }))
+    }
+
+    /// Concatenated encodings decode as one merged metric: the same kind of data
+    /// merges, another kind replaces it
+    #[test]
+    fn data_points_read_from_the_wire_match_decoding() {
+        let cases: Vec<Vec<u8>> = vec![
+            gauge(3),
+            [gauge(3), gauge(4)].concat(),
+            [gauge(3), sum(2)].concat(),
+            [gauge(3), sum(2), gauge(4)].concat(),
+            [sum(5), sum(0), sum(1)].concat(),
+            [gauge(2), Metric::default().encode_to_vec()].concat(),
+            Metric::default().encode_to_vec(),
+        ];
+        for body in cases {
+            let decoded = Metric::decode(body.as_slice()).unwrap();
+            let points = match decoded.data {
+                Some(metric::Data::Gauge(g)) => g.data_points.len(),
+                Some(metric::Data::Sum(s)) => s.data_points.len(),
+                None => 0,
+                _ => unreachable!(),
+            };
+            assert_eq!(metric_points(&body), points as u64);
+        }
+        // Cut short: counted up to the break
+        let body = gauge(5);
+        assert!(metric_points(&body[..body.len() - 1]) < 5);
+    }
 }

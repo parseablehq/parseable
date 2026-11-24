@@ -158,8 +158,31 @@ pub struct Staged {
     pub points: u64,
 }
 
-/// Collects rows into chunks and passes every full chunk to `stage`, dropping it
-/// before the next row is taken. Call [`Chunker::finish`] to pass on the rest.
+/// Row bytes per payload byte one request may expand to: the rows of a request
+/// may hold at most `EXPANSION_FACTOR` times `P_MAX_EVENT_PAYLOAD_SIZE` of
+/// estimated memory ([`row_bytes`]) in all, counted while they are staged.
+///
+/// Every row carries its own copy of the resource, scope, span and metric fields,
+/// so a small request can expand to a very large number of row bytes: 15 KB of
+/// resource attributes copied into each of 5 million two-byte log records is tens
+/// of GiB. Chunking bounds the memory this takes at once, not what is written to
+/// staging. The most measured for a request shaped like collector traffic is
+/// below 500 (short log records or bare gauge points under 30 Kubernetes resource
+/// attributes; ordinary k8s logs, spans and metrics expand 40-110x, see
+/// `realistic_tests`), so 1024 leaves about 2x headroom, and stops the requests
+/// that copy kilobytes of shared fields into millions of records of a few bytes,
+/// at 10 GiB of rows for the default 10 MiB payload limit.
+pub const EXPANSION_FACTOR: u64 = 1024;
+
+/// Estimated bytes of rows one request may expand to, for a payload limit of
+/// `max_payload` bytes
+pub fn max_expanded_bytes(max_payload: usize) -> u64 {
+    (max_payload as u64).saturating_mul(EXPANSION_FACTOR)
+}
+
+/// Collects rows into chunks and passes every full chunk to `stage`, with the
+/// estimated bytes of its rows, dropping it before the next row is taken. Call
+/// [`Chunker::finish`] to pass on the rest.
 pub struct Chunker<F> {
     limits: ChunkLimits,
     stage: F,
@@ -173,7 +196,7 @@ pub struct Chunker<F> {
 
 impl<F, E> Chunker<F>
 where
-    F: FnMut(Vec<Value>) -> Result<(), E>,
+    F: FnMut(Vec<Value>, usize) -> Result<(), E>,
     E: From<JsonFlattenError>,
 {
     pub fn new(limits: ChunkLimits, stage: F) -> Self {
@@ -196,8 +219,8 @@ where
     fn flush(&mut self) -> Result<(), E> {
         let rows = std::mem::take(&mut self.rows);
         let count = rows.len() as u64;
-        self.bytes = 0;
-        (self.stage)(rows)?;
+        let bytes = std::mem::take(&mut self.bytes);
+        (self.stage)(rows, bytes)?;
         self.staged.chunks += 1;
         self.staged.rows += count;
         self.staged.records += std::mem::take(&mut self.pending_records);
@@ -216,7 +239,7 @@ where
 
 impl<F, E> RowSink for Chunker<F>
 where
-    F: FnMut(Vec<Value>) -> Result<(), E>,
+    F: FnMut(Vec<Value>, usize) -> Result<(), E>,
     E: From<JsonFlattenError>,
 {
     type Error = E;
@@ -277,7 +300,7 @@ mod tests {
                 rows: 3,
                 bytes: usize::MAX,
             },
-            |rows| {
+            |rows, _| {
                 chunks.push(rows.len());
                 Ok::<_, JsonFlattenError>(())
             },
@@ -302,7 +325,7 @@ mod tests {
                 rows: usize::MAX,
                 bytes: 2 * one,
             },
-            |rows| {
+            |rows, _| {
                 chunks.push(rows.len());
                 Ok::<_, JsonFlattenError>(())
             },
@@ -323,7 +346,7 @@ mod tests {
                 rows: 2,
                 bytes: usize::MAX,
             },
-            |_| {
+            |_, _| {
                 fail_at -= 1;
                 if fail_at == 0 {
                     Err(JsonFlattenError::CannotFlatten)
@@ -347,7 +370,7 @@ mod tests {
 
     #[test]
     fn records_without_rows_count_when_finished() {
-        let mut chunker = Chunker::new(CHUNK_LIMITS, |_| Ok::<_, JsonFlattenError>(()));
+        let mut chunker = Chunker::new(CHUNK_LIMITS, |_, _| Ok::<_, JsonFlattenError>(()));
         chunker.record_end();
         chunker.finish().unwrap();
         let staged = chunker.staged();

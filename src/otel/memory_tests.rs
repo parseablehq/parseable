@@ -59,7 +59,7 @@ fn kv(key: impl Into<String>, value: any_value::Value) -> KeyValue {
 }
 
 /// Takes a chunk of rows, as staging does
-type Stage<'a> = dyn FnMut(Vec<Value>) -> Result<(), JsonFlattenError> + 'a;
+type Stage<'a> = dyn FnMut(Vec<Value>, usize) -> Result<(), JsonFlattenError> + 'a;
 
 /// Rows handed over, and the most rows a chunk held
 #[derive(Debug, Default)]
@@ -76,7 +76,7 @@ fn hand_over<E: std::fmt::Debug>(
 ) -> (Result<Handed, String>, Allocated) {
     let (result, allocated) = measure(|| {
         let mut handed = Handed::default();
-        let mut stage = |rows: Vec<Value>| {
+        let mut stage = |rows: Vec<Value>, _bytes: usize| {
             handed.rows += rows.len();
             handed.largest_chunk = handed.largest_chunk.max(rows.len());
             Ok(())
@@ -528,23 +528,15 @@ fn row_estimate_tracks_allocated_memory() {
             .iter()
             .map(|row| row_bytes(row.as_object().unwrap()))
             .sum();
-        let sizing = crate::otel::expansion::logs_size(&request.resource_logs);
         let ratio = allocated.retained as f64 / estimate as f64;
         println!(
-            "MEMORY row estimate, {name}: {} rows, allocated {} B, estimated {} B, allocated/estimated {:.2}, sizing pass {} B ({:.2} of estimated)",
+            "MEMORY row estimate, {name}: {} rows, allocated {} B, estimated {} B, allocated/estimated {:.2}",
             rows.len(),
             allocated.retained,
             estimate,
             ratio,
-            sizing.bytes,
-            sizing.bytes as f64 / estimate as f64
         );
         assert!((0.5..=2.0).contains(&ratio), "{name}: {ratio:.2}");
-        let sizing_ratio = sizing.bytes as f64 / estimate as f64;
-        assert!(
-            (0.5..=2.0).contains(&sizing_ratio),
-            "{name}: {sizing_ratio:.2}"
-        );
     }
 }
 
@@ -577,7 +569,7 @@ fn resident_memory_of_requests() {
         std::fs::write("/proc/self/clear_refs", "5").unwrap();
         let (before, _) = resident();
         let mut rows = 0usize;
-        let mut stage = |chunk: Vec<Value>| {
+        let mut stage = |chunk: Vec<Value>, _bytes: usize| {
             rows += chunk.len();
             Ok::<_, JsonFlattenError>(())
         };

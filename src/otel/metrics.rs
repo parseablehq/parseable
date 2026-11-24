@@ -1706,13 +1706,9 @@ mod tests {
             ExportMetricsServiceRequest { resource_metrics }
         }
 
-        /// What ingestion does with a decoded request before staging: the sizing
-        /// pass, then the rows handed over in chunks (collected here)
+        /// What ingestion does with a decoded request: its rows handed over in
+        /// chunks (collected here)
         fn flatten(request: &ExportMetricsServiceRequest) -> Vec<serde_json::Value> {
-            std::hint::black_box(crate::otel::expansion::metrics_size(
-                &request.resource_metrics,
-                false,
-            ));
             bench::chunked(|chunker| {
                 super::super::flatten_metrics_into(&request.resource_metrics, false, chunker)
             })

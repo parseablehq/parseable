@@ -84,6 +84,15 @@ const PROTOBUF_OPTIONS: ProtobufOptions = ProtobufOptions {
     flatten_exemplars: false,
 };
 
+/// The staging limits of the server defaults
+fn test_limits() -> StageLimits {
+    StageLimits {
+        chunk: CHUNK_LIMITS,
+        max_expanded: max_expanded_bytes(PROTOBUF_OPTIONS.max_payload),
+        flatten: FlattenLimits::DEFAULT,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Seeds and runners
 // ---------------------------------------------------------------------------
@@ -1474,11 +1483,42 @@ impl Req {
         }
     }
 
-    fn resource_count(&self) -> usize {
+    /// Leaf records: log records, spans or metrics
+    fn record_count(&self) -> u64 {
+        let n: usize = match self {
+            Self::Logs(data) => data
+                .resource_logs
+                .iter()
+                .flat_map(|r| &r.scope_logs)
+                .map(|s| s.log_records.len())
+                .sum(),
+            Self::Metrics(data) => data
+                .resource_metrics
+                .iter()
+                .flat_map(|r| &r.scope_metrics)
+                .map(|s| s.metrics.len())
+                .sum(),
+            Self::Traces(data) => data
+                .resource_spans
+                .iter()
+                .flat_map(|r| &r.scope_spans)
+                .map(|s| s.spans.len())
+                .sum(),
+        };
+        n as u64
+    }
+
+    /// Metric data points
+    fn point_count(&self) -> u64 {
         match self {
-            Self::Logs(data) => data.resource_logs.len(),
-            Self::Metrics(data) => data.resource_metrics.len(),
-            Self::Traces(data) => data.resource_spans.len(),
+            Self::Metrics(data) => data
+                .resource_metrics
+                .iter()
+                .flat_map(|r| &r.scope_metrics)
+                .flat_map(|s| &s.metrics)
+                .map(|m| metric_points(m) as u64)
+                .sum(),
+            Self::Logs(_) | Self::Traces(_) => 0,
         }
     }
 }
@@ -1500,9 +1540,10 @@ fn decode_as(request: &Req, protobuf: bool) -> Req {
 
 /// Chunks of at most `rows` rows (and a byte limit small enough to cut chunks of a
 /// row or two) give the same rows in the same order as one chunk, for both
-/// encodings, and count every record and data point as staged. The sizing pass
-/// counts the same records and data points, and the rows up to one `target_info`
-/// row per resource.
+/// encodings, and count every record and data point as staged: as many as the
+/// request has, which is what a partial success counts its rejected records from
+/// (`OtelResources::total`, and for protobuf the outline and the wire count of
+/// data points).
 fn chunking_keeps_rows(
     mut request: Req,
     rows: usize,
@@ -1524,7 +1565,7 @@ fn chunking_keeps_rows(
             )
             .unwrap();
         let mut chunks: Vec<Vec<Value>> = Vec::new();
-        let mut chunker = Chunker::new(limits, |rows| {
+        let mut chunker = Chunker::new(limits, |rows, _| {
             chunks.push(rows);
             Ok::<_, JsonFlattenError>(())
         });
@@ -1552,17 +1593,26 @@ fn chunking_keeps_rows(
             "chunked rows differ (protobuf: {})",
             protobuf
         );
-        let size = resources.size(flatten_exemplars);
         prop_assert_eq!(staged.rows as usize, whole.len());
-        prop_assert_eq!(staged.records, size.records);
-        prop_assert_eq!(staged.points, size.points);
-        prop_assert!(
-            size.rows as usize >= whole.len()
-                && size.rows as usize <= whole.len() + decoded.resource_count(),
-            "sizing pass counted {} rows for {}",
-            size.rows,
-            whole.len()
-        );
+        prop_assert_eq!(staged.records, decoded.record_count());
+        prop_assert_eq!(staged.points, decoded.point_count());
+        let units = match decoded {
+            Req::Metrics(_) => staged.points,
+            Req::Logs(_) | Req::Traces(_) => staged.records,
+        };
+        prop_assert_eq!(resources.total(), units);
+        if protobuf {
+            let body = web::Bytes::from(request.encode_pb());
+            let signal = streamed::signal(&decoded);
+            let outline = crate::otel::protobuf_stream::outline(&body, signal).unwrap();
+            prop_assert_eq!(outline.records, staged.records);
+            if signal == crate::otel::protobuf_stream::Signal::Metrics {
+                prop_assert_eq!(
+                    crate::otel::protobuf_stream::count_points(&body),
+                    staged.points
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -1654,24 +1704,37 @@ fn decode_is_total(
             }
         }
         Err(error) => {
-            // Returns before the dataset field check, the first use of `PARSEABLE`
-            let refused = flatten_and_push_otel_protobuf(
-                web::Bytes::copy_from_slice(body),
-                &OtelTarget {
-                    stream_name: "otel_pb_props",
-                    log_source: source,
-                    p_custom_fields: &HashMap::new(),
-                    telemetry_type,
-                    tenant_id: &None,
-                },
-                || PROTOBUF_OPTIONS,
-            )
-            .expect_err("a body that does not decode is refused");
+            let target = OtelTarget {
+                stream_name: "otel_pb_props",
+                log_source: source,
+                p_custom_fields: &HashMap::new(),
+                telemetry_type,
+                tenant_id: &None,
+            };
+            let expected =
+                format!("Invalid Request: Ingestion failed for stream otel_pb_props: {error}");
+            let body = web::Bytes::copy_from_slice(body);
+            let signal = match source {
+                LogSource::OtelLogs => crate::otel::protobuf_stream::Signal::Logs,
+                LogSource::OtelMetrics => crate::otel::protobuf_stream::Signal::Metrics,
+                _ => crate::otel::protobuf_stream::Signal::Traces,
+            };
+            if crate::otel::protobuf_stream::outline(&body, signal).is_err() {
+                // Broken above its records: refused before the dataset field check,
+                // the first use of `PARSEABLE`
+                let refused =
+                    flatten_and_push_otel_protobuf(body.clone(), &target, || PROTOBUF_OPTIONS)
+                        .expect_err("a body that does not decode is refused");
+                prop_assert!(matches!(refused, PostError::Invalid(_)), "{refused:?}");
+                prop_assert_eq!(refused.to_string(), expected.clone());
+            }
+            // A broken record is met while staging, before the first chunk is full
+            let (refused, staged) =
+                stage_otel_protobuf(body, &target, PROTOBUF_OPTIONS, test_limits(), |_| Ok(()));
+            let refused = refused.expect_err("a body that does not decode is refused");
             prop_assert!(matches!(refused, PostError::Invalid(_)), "{refused:?}");
-            prop_assert_eq!(
-                refused.to_string(),
-                format!("Invalid Request: Ingestion failed for stream otel_pb_props: {error}")
-            );
+            prop_assert_eq!(refused.to_string(), expected);
+            prop_assert_eq!(staged.chunks, 0);
         }
     }
     Ok(())
@@ -2532,7 +2595,7 @@ fn run_scenario(seed: u64) -> Result<Scenario, (String, Vec<String>)> {
                     return fail(format!("undamaged body refused: {error}"), &mut trace);
                 }
                 if encoding == Encoding::Protobuf {
-                    let refused = flatten_and_push_otel_protobuf(
+                    let (refused, _) = stage_otel_protobuf(
                         web::Bytes::copy_from_slice(&body),
                         &OtelTarget {
                             stream_name: "dst",
@@ -2541,7 +2604,9 @@ fn run_scenario(seed: u64) -> Result<Scenario, (String, Vec<String>)> {
                             telemetry_type: request.telemetry_type(),
                             tenant_id: &None,
                         },
-                        || PROTOBUF_OPTIONS,
+                        PROTOBUF_OPTIONS,
+                        test_limits(),
+                        |_| Ok(()),
                     );
                     if !matches!(&refused, Err(PostError::Invalid(e)) if e.to_string().ends_with(error.as_str()))
                     {
@@ -2708,15 +2773,49 @@ fn dst_otlp_mixed_encoding_seeds_differ() {
 
 mod streamed {
     use super::*;
-    use crate::otel::expansion::{logs_size, metrics_size, traces_size};
-    use crate::otel::protobuf_stream::{Signal, StreamError, flatten_request, size_request};
+    use crate::otel::decoded_size::{
+        Leaf, bytes_per_wire_byte, leaf_decoded_size, leaf_struct_size,
+        metric_points as wire_points,
+    };
+    use crate::otel::protobuf_stream::{
+        Signal, StreamError, count_points, flatten_request, outline, refusal,
+    };
     use prost::Message as ProstMessage;
     use prost::encoding::{WireType, encode_key, encode_varint};
 
-    /// Wire edits applied while re-encoding a request field by field
-    struct Edits<'a>(&'a mut SplitMix64);
+    /// Damage to one leaf record of a body: byte `at` set to `byte`, or the record
+    /// cut at `at`, inside the record (its framing is rewritten to fit)
+    #[derive(Debug, Clone, Copy)]
+    struct RecordDamage {
+        index: u64,
+        at: u64,
+        byte: u8,
+        cut: bool,
+    }
+
+    /// Wire edits applied while re-encoding a request field by field, and the
+    /// record damage to apply, with the count of records seen so far
+    struct Edits<'a>(&'a mut SplitMix64, Option<RecordDamage>, u64);
 
     impl Edits<'_> {
+        /// The encoding of the next leaf record, damaged if it is the one to damage
+        fn record(&mut self, mut encoded: Vec<u8>) -> Vec<u8> {
+            let index = self.2;
+            self.2 += 1;
+            if let Some(damage) = self.1
+                && damage.index == index
+                && !encoded.is_empty()
+            {
+                let at = (damage.at % encoded.len() as u64) as usize;
+                if damage.cut {
+                    encoded.truncate(at);
+                } else {
+                    encoded[at] = damage.byte;
+                }
+            }
+            encoded
+        }
+
         /// An unknown field (numbers 4-40 or a large one) of a random wire type
         fn unknown(&mut self, out: &mut Vec<u8>) {
             let tag = if self.0.percent(80) {
@@ -2862,9 +2961,10 @@ mod streamed {
         )
     }
 
-    /// The protobuf body of `request`, re-encoded field by field with `edits`
-    fn edited_body(request: &Req, rng: &mut SplitMix64) -> Vec<u8> {
-        let mut edits = Edits(rng);
+    /// The protobuf body of `request`, re-encoded field by field with edits drawn
+    /// from `rng`, with `damage` applied to one of its leaf records
+    fn edited_body(request: &Req, rng: &mut SplitMix64, damage: Option<RecordDamage>) -> Vec<u8> {
+        let mut edits = Edits(rng, damage, 0);
         let resources: Vec<Vec<u8>> = match request {
             Req::Logs(data) => data
                 .resource_logs
@@ -2877,7 +2977,7 @@ mod streamed {
                             let records = s
                                 .log_records
                                 .iter()
-                                .map(ProstMessage::encode_to_vec)
+                                .map(|record| edits.record(record.encode_to_vec()))
                                 .collect();
                             edits.parent(s.scope.as_ref(), split_scope, records, &s.schema_url)
                         })
@@ -2893,7 +2993,11 @@ mod streamed {
                         .scope_spans
                         .iter()
                         .map(|s| {
-                            let spans = s.spans.iter().map(ProstMessage::encode_to_vec).collect();
+                            let spans = s
+                                .spans
+                                .iter()
+                                .map(|span| edits.record(span.encode_to_vec()))
+                                .collect();
                             edits.parent(s.scope.as_ref(), split_scope, spans, &s.schema_url)
                         })
                         .collect();
@@ -2908,8 +3012,11 @@ mod streamed {
                         .scope_metrics
                         .iter()
                         .map(|s| {
-                            let metrics =
-                                s.metrics.iter().map(ProstMessage::encode_to_vec).collect();
+                            let metrics = s
+                                .metrics
+                                .iter()
+                                .map(|metric| edits.record(metric.encode_to_vec()))
+                                .collect();
                             edits.parent(s.scope.as_ref(), split_scope, metrics, &s.schema_url)
                         })
                         .collect();
@@ -2921,7 +3028,7 @@ mod streamed {
         edits.level(fields)
     }
 
-    fn signal(request: &Req) -> Signal {
+    pub(super) fn signal(request: &Req) -> Signal {
         match request {
             Req::Logs(_) => Signal::Logs,
             Req::Metrics(_) => Signal::Metrics,
@@ -2929,91 +3036,477 @@ mod streamed {
         }
     }
 
-    /// Rows and size of `body` decoded whole, or prost's error text
-    fn whole(
-        request: &Req,
-        body: &[u8],
-        flatten_exemplars: bool,
-    ) -> Result<(Vec<u8>, RequestSize), String> {
-        let decoded =
-            OtelProtobufRequest::decode(body, &request.source()).map_err(|e| e.to_string())?;
-        let decoded = Req::from_decoded(decoded);
-        let resources = decoded.resources();
+    fn leaf(request: &Req) -> Leaf {
+        match request {
+            Req::Logs(_) => Leaf::LogRecord,
+            Req::Metrics(_) => Leaf::Metric,
+            Req::Traces(_) => Leaf::Span,
+        }
+    }
+
+    /// The rows the flatteners build for `request`, or the flatten error text
+    fn rows_of(request: &Req, flatten_exemplars: bool) -> Result<Vec<Value>, String> {
         let mut rows = Vec::new();
-        resources
+        request
+            .resources()
             .flatten_into(
                 &mut FlattenBudget::new(FlattenLimits::DEFAULT),
                 flatten_exemplars,
                 &mut rows,
             )
             .map_err(|e| format!("flatten: {e}"))?;
-        let size = match &decoded {
-            Req::Logs(data) => logs_size(&data.resource_logs),
-            Req::Metrics(data) => metrics_size(&data.resource_metrics, flatten_exemplars),
-            Req::Traces(data) => traces_size(&data.resource_spans),
-        };
-        Ok((serde_json::to_vec(&rows).unwrap(), size))
+        Ok(rows)
     }
 
-    /// Rows and size of `body` read one record at a time, or the error text
-    fn streamed(
+    /// The rows of `request`, and whether some of them take the wall clock for an
+    /// unset timestamp (then only their number can be compared)
+    fn clocked_rows(request: &Req, flatten_exemplars: bool) -> Result<(Vec<Value>, bool), String> {
+        let clock = fill_unset_timestamps(&mut request.clone());
+        Ok((rows_of(request, flatten_exemplars)?, clock))
+    }
+
+    /// Rows of `body` decoded whole, or prost's error text
+    fn whole(
         request: &Req,
         body: &[u8],
         flatten_exemplars: bool,
-    ) -> Result<(Vec<u8>, RequestSize), String> {
-        let text = |e: StreamError<_>| match e {
+    ) -> Result<(Vec<Value>, bool), String> {
+        let decoded =
+            OtelProtobufRequest::decode(body, &request.source()).map_err(|e| e.to_string())?;
+        clocked_rows(&Req::from_decoded(decoded), flatten_exemplars)
+    }
+
+    /// Whether streamed rows are the expected ones: the same, or as many where the
+    /// wall clock filled a timestamp
+    fn same_rows(streamed: &[Value], expected: &[Value], clock: bool) -> bool {
+        if clock {
+            streamed.len() == expected.len()
+        } else {
+            serde_json::to_vec(streamed).unwrap() == serde_json::to_vec(expected).unwrap()
+        }
+    }
+
+    /// What reading `body` one record at a time staged, in chunks of one row
+    #[derive(Debug)]
+    struct Streamed {
+        rows: Vec<Value>,
+        staged: Staged,
+        /// The error text, if it stopped
+        error: Option<String>,
+        /// What a partial success counts its rejected records from: the records of
+        /// the outline, or the data points read from the wire
+        total: u64,
+    }
+
+    fn text(e: StreamError<JsonFlattenError>) -> String {
+        match e {
             StreamError::Decode(e) => OtelProtobufError::Decode(e).to_string(),
             StreamError::RecordTooLarge { .. } => "record too large".to_string(),
             StreamError::Consumer(e) => format!("flatten: {e}"),
+        }
+    }
+
+    fn streamed(request: &Req, body: &[u8], flatten_exemplars: bool) -> Streamed {
+        let body = web::Bytes::copy_from_slice(body);
+        let signal = signal(request);
+        let outlined = match outline(&body, signal) {
+            Ok(outlined) => outlined,
+            Err(error) => {
+                return Streamed {
+                    rows: Vec::new(),
+                    staged: Staged::default(),
+                    error: Some(text(refusal(&body, signal, error, || usize::MAX).widen())),
+                    total: 0,
+                };
+            }
         };
-        let size = size_request(
-            web::Bytes::copy_from_slice(body),
-            signal(request),
-            usize::MAX,
-            flatten_exemplars,
-        )
-        .map_err(|e| {
-            text(match e {
-                StreamError::Decode(e) => StreamError::Decode(e),
-                StreamError::RecordTooLarge { leaf, limit } => {
-                    StreamError::RecordTooLarge { leaf, limit }
-                }
-                StreamError::Consumer(never) => match never {},
-            })
-        })?;
         let mut rows: Vec<Value> = Vec::new();
-        flatten_request(
-            web::Bytes::copy_from_slice(body),
-            signal(request),
+        let mut chunker = Chunker::new(
+            ChunkLimits {
+                rows: 1,
+                bytes: usize::MAX,
+            },
+            |chunk, _| {
+                rows.extend(chunk);
+                Ok::<_, JsonFlattenError>(())
+            },
+        );
+        let result = flatten_request(
+            &body,
+            signal,
             usize::MAX,
             &mut FlattenBudget::new(FlattenLimits::DEFAULT),
             flatten_exemplars,
-            &mut rows,
+            &mut chunker,
         )
-        .map_err(text)?;
-        Ok((serde_json::to_vec(&rows).unwrap(), size))
+        .and_then(|()| chunker.finish().map_err(StreamError::Consumer));
+        let staged = chunker.staged();
+        drop(chunker);
+        Streamed {
+            rows,
+            staged,
+            error: result.err().map(text),
+            total: match signal {
+                Signal::Metrics => count_points(&body),
+                Signal::Logs | Signal::Traces => outlined.records,
+            },
+        }
     }
 
-    fn streamed_matches_whole(
-        mut request: Req,
-        seed: u64,
-        flatten_exemplars: bool,
-        cut: Option<u64>,
-    ) -> TestCaseResult {
-        fill_unset_timestamps(&mut request);
-        let mut rng = SplitMix64(seed);
-        let mut body = edited_body(&request, &mut rng);
-        if let Some(cut) = cut {
-            body.truncate((cut % (body.len() as u64 + 1)) as usize);
+    /// The levels of a request above its leaf records, with the records kept as
+    /// bytes: prost decodes a body as this exactly when its framing above the
+    /// records holds, and merges `resource`, `scope` and `schema_url` as it does
+    /// for the real messages
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct ShallowRequest {
+        #[prost(message, repeated, tag = "1")]
+        resources: Vec<ShallowResource>,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct ShallowResource {
+        #[prost(message, optional, tag = "1")]
+        resource: Option<Resource>,
+        #[prost(message, repeated, tag = "2")]
+        scopes: Vec<ShallowScope>,
+        #[prost(string, tag = "3")]
+        schema_url: String,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct ShallowScope {
+        #[prost(message, optional, tag = "1")]
+        scope: Option<InstrumentationScope>,
+        #[prost(bytes = "vec", repeated, tag = "2")]
+        records: Vec<Vec<u8>>,
+        #[prost(string, tag = "3")]
+        schema_url: String,
+    }
+
+    type Scopes<L> = Vec<(Option<InstrumentationScope>, String, Vec<L>)>;
+
+    /// A request rebuilt from its shallow decoding, with the records that prost
+    /// decodes on their own up to the first that it does not
+    struct Prefix<L> {
+        resources: Vec<(Option<Resource>, String, Scopes<L>)>,
+        /// Position of the first record that does not decode, in body order
+        failed: Option<u64>,
+        records: u64,
+        /// Every record, decoded where it decodes
+        all: Vec<Result<L, Vec<u8>>>,
+    }
+
+    fn prefix<L: ProstMessage + Default + Clone>(shallow: &ShallowRequest) -> Prefix<L> {
+        let mut prefix = Prefix {
+            resources: vec![],
+            failed: None,
+            records: 0,
+            all: vec![],
+        };
+        for resource in &shallow.resources {
+            if prefix.failed.is_none() {
+                prefix.resources.push((
+                    resource.resource.clone(),
+                    resource.schema_url.clone(),
+                    vec![],
+                ));
+            }
+            for scope in &resource.scopes {
+                if prefix.failed.is_none() {
+                    let scopes = &mut prefix.resources.last_mut().unwrap().2;
+                    scopes.push((scope.scope.clone(), scope.schema_url.clone(), vec![]));
+                }
+                for encoded in &scope.records {
+                    let decoded = L::decode(encoded.as_slice()).map_err(|_| encoded.clone());
+                    if prefix.failed.is_none() {
+                        match &decoded {
+                            Ok(record) => {
+                                let scopes = &mut prefix.resources.last_mut().unwrap().2;
+                                scopes.last_mut().unwrap().2.push(record.clone());
+                            }
+                            Err(_) => prefix.failed = Some(prefix.records),
+                        }
+                    }
+                    prefix.all.push(decoded);
+                    prefix.records += 1;
+                }
+            }
         }
-        let whole = whole(&request, &body, flatten_exemplars);
-        let streamed = streamed(&request, &body, flatten_exemplars);
-        prop_assert_eq!(
-            &whole,
-            &streamed,
-            "whole (left) and streamed (right) differ"
-        );
-        Ok(())
+        prefix
+    }
+
+    /// What streaming must stage for a body
+    enum Expected {
+        /// The framing above the records is broken: nothing is staged
+        Outer,
+        Records {
+            /// The rows of the records before the first that does not decode (all
+            /// of them if each does), or the flatten error text
+            rows: Result<(Vec<Value>, bool), String>,
+            failed: Option<u64>,
+            records: u64,
+            /// Data points of the records before the first that does not decode
+            staged_points: u64,
+            /// Data points of every record, those that do not decode read from the wire
+            total_points: u64,
+        },
+    }
+
+    fn is_target_info(row: &Value) -> bool {
+        row.get("metric_name") == Some(&json!("target_info"))
+            && row.get("metric_description") == Some(&json!("Target metadata"))
+    }
+
+    fn expected(request: &Req, body: &[u8], flatten_exemplars: bool) -> Expected {
+        let Ok(shallow) = ShallowRequest::decode(body) else {
+            return Expected::Outer;
+        };
+        let (rows, failed, records, staged_points, total_points) = match request {
+            Req::Logs(_) => {
+                let p = prefix::<LogRecord>(&shallow);
+                let request = Req::Logs(LogsData {
+                    resource_logs: p
+                        .resources
+                        .into_iter()
+                        .map(|(resource, schema_url, scopes)| ResourceLogs {
+                            resource,
+                            scope_logs: scopes
+                                .into_iter()
+                                .map(|(scope, schema_url, log_records)| ScopeLogs {
+                                    scope,
+                                    log_records,
+                                    schema_url,
+                                })
+                                .collect(),
+                            schema_url,
+                        })
+                        .collect(),
+                });
+                (
+                    clocked_rows(&request, flatten_exemplars),
+                    p.failed,
+                    p.records,
+                    0,
+                    0,
+                )
+            }
+            Req::Traces(_) => {
+                let p = prefix::<Span>(&shallow);
+                let request = Req::Traces(TracesData {
+                    resource_spans: p
+                        .resources
+                        .into_iter()
+                        .map(|(resource, schema_url, scopes)| ResourceSpans {
+                            resource,
+                            scope_spans: scopes
+                                .into_iter()
+                                .map(|(scope, schema_url, spans)| ScopeSpans {
+                                    scope,
+                                    spans,
+                                    schema_url,
+                                })
+                                .collect(),
+                            schema_url,
+                        })
+                        .collect(),
+                });
+                (
+                    clocked_rows(&request, flatten_exemplars),
+                    p.failed,
+                    p.records,
+                    0,
+                    0,
+                )
+            }
+            Req::Metrics(_) => {
+                let p = prefix::<Metric>(&shallow);
+                let points = |record: &Result<Metric, Vec<u8>>| match record {
+                    Ok(metric) => metric_points(metric) as u64,
+                    Err(encoded) => wire_points(encoded),
+                };
+                let failed_at = p.failed.unwrap_or(p.records) as usize;
+                let staged_points = p.all[..failed_at].iter().map(points).sum();
+                let total_points = p.all.iter().map(points).sum();
+                let resources: Vec<ResourceMetrics> = p
+                    .resources
+                    .into_iter()
+                    .map(|(resource, schema_url, scopes)| ResourceMetrics {
+                        resource,
+                        scope_metrics: scopes
+                            .into_iter()
+                            .map(|(scope, schema_url, metrics)| ScopeMetrics {
+                                scope,
+                                metrics,
+                                schema_url,
+                            })
+                            .collect(),
+                        schema_url,
+                    })
+                    .collect();
+                let clock = fill_unset_timestamps(&mut Req::Metrics(MetricsData {
+                    resource_metrics: resources.clone(),
+                }));
+                let rows = if p.failed.is_some() {
+                    // Streaming stops inside the last resource, before its `target_info` row
+                    let (last, complete) = resources.split_last().unwrap();
+                    let complete = rows_of(
+                        &Req::Metrics(MetricsData {
+                            resource_metrics: complete.to_vec(),
+                        }),
+                        flatten_exemplars,
+                    );
+                    let last = rows_of(
+                        &Req::Metrics(MetricsData {
+                            resource_metrics: vec![last.clone()],
+                        }),
+                        flatten_exemplars,
+                    );
+                    complete.and_then(|mut rows| {
+                        let mut last = last?;
+                        if last.last().is_some_and(is_target_info) {
+                            last.pop();
+                        }
+                        rows.extend(last);
+                        Ok(rows)
+                    })
+                } else {
+                    rows_of(
+                        &Req::Metrics(MetricsData {
+                            resource_metrics: resources,
+                        }),
+                        flatten_exemplars,
+                    )
+                };
+                (
+                    rows.map(|rows| (rows, clock)),
+                    p.failed,
+                    p.records,
+                    staged_points,
+                    total_points,
+                )
+            }
+        };
+        Expected::Records {
+            rows,
+            failed,
+            records,
+            staged_points,
+            total_points,
+        }
+    }
+
+    /// Which of the semantics a body met
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Case {
+        /// Decodes whole: the same rows, every record staged
+        Decoded,
+        /// Broken above its records: refused with prost's error, nothing staged
+        Outer,
+        /// The first record does not decode: prost's error, nothing staged
+        FirstRecord,
+        /// A later record does not decode: prost's error, the rows of the records
+        /// before it staged, the rest counted as rejected
+        Partial,
+        /// Flattening refused a record first
+        Flatten,
+    }
+
+    /// The differential property of streamed decoding, for one body: either
+    /// whole-request decoding and streaming both succeed with identical rows; or
+    /// streaming stages exactly the rows of the records before the first record
+    /// prost can not decode and counts the rest rejected; or the framing above the
+    /// records is broken and nothing is staged. Every failure has prost's text.
+    /// Also checks the bound on the decoded size of every record of the body.
+    fn check_body(
+        request: &Req,
+        body: &[u8],
+        flatten_exemplars: bool,
+    ) -> Result<Case, TestCaseError> {
+        let whole = whole(request, body, flatten_exemplars);
+        let streamed = streamed(request, body, flatten_exemplars);
+        let leaf = leaf(request);
+        if let Ok(shallow) = ShallowRequest::decode(body) {
+            for encoded in shallow
+                .resources
+                .iter()
+                .flat_map(|r| &r.scopes)
+                .flat_map(|s| &s.records)
+            {
+                prop_assert!(
+                    leaf_decoded_size(encoded, leaf)
+                        <= leaf_struct_size(leaf) + bytes_per_wire_byte(leaf) * encoded.len(),
+                    "a {leaf:?} of {} bytes is over the bound",
+                    encoded.len()
+                );
+            }
+        }
+        let units = |staged: &Staged| match request {
+            Req::Metrics(_) => staged.points,
+            Req::Logs(_) | Req::Traces(_) => staged.records,
+        };
+        match (&whole, expected(request, body, flatten_exemplars)) {
+            (Ok((rows, clock)), _) => {
+                prop_assert_eq!(&streamed.error, &None);
+                prop_assert!(
+                    same_rows(&streamed.rows, rows, *clock),
+                    "whole and streamed rows differ ({} and {})",
+                    rows.len(),
+                    streamed.rows.len()
+                );
+                prop_assert_eq!(streamed.total, units(&streamed.staged));
+                Ok(Case::Decoded)
+            }
+            (Err(text), Expected::Outer) => {
+                prop_assert_eq!(streamed.error.as_ref(), Some(text));
+                prop_assert!(streamed.rows.is_empty());
+                prop_assert_eq!(streamed.staged, Staged::default());
+                Ok(Case::Outer)
+            }
+            (
+                Err(text),
+                Expected::Records {
+                    rows,
+                    failed,
+                    records,
+                    staged_points,
+                    total_points,
+                },
+            ) => {
+                let (rows, clock) = match rows {
+                    Ok(rows) => rows,
+                    Err(flatten) => {
+                        prop_assert_eq!(streamed.error, Some(flatten));
+                        return Ok(Case::Flatten);
+                    }
+                };
+                prop_assert_eq!(streamed.error.as_ref(), Some(text));
+                let Some(failed) = failed else {
+                    return Err(TestCaseError::fail(format!(
+                        "whole decoding failed ({text}) but every record decodes on its own"
+                    )));
+                };
+                prop_assert!(
+                    same_rows(&streamed.rows, &rows, clock),
+                    "streamed did not stage the rows of the records before the broken one ({} of {})",
+                    streamed.rows.len(),
+                    rows.len()
+                );
+                prop_assert_eq!(streamed.staged.records, failed);
+                let rejected = streamed.total - units(&streamed.staged);
+                match request {
+                    Req::Metrics(_) => {
+                        prop_assert_eq!(streamed.staged.points, staged_points);
+                        prop_assert_eq!(rejected, total_points - staged_points);
+                    }
+                    Req::Logs(_) | Req::Traces(_) => prop_assert_eq!(rejected, records - failed),
+                }
+                Ok(if failed == 0 {
+                    Case::FirstRecord
+                } else {
+                    Case::Partial
+                })
+            }
+        }
     }
 
     fn requests() -> BoxedStrategy<Req> {
@@ -3025,71 +3518,139 @@ mod streamed {
         .boxed()
     }
 
+    /// Counts the cases a property met, by kind
+    #[derive(Default)]
+    struct Cases([AtomicUsize; 5]);
+
+    impl Cases {
+        fn add(&self, case: Case) {
+            self.0[case as usize].fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn get(&self, case: Case) -> usize {
+            self.0[case as usize].load(Ordering::Relaxed)
+        }
+
+        fn print(&self, name: &str) {
+            println!(
+                "{name}: decoded {} outer {} first_record {} partial {} flatten {}",
+                self.get(Case::Decoded),
+                self.get(Case::Outer),
+                self.get(Case::FirstRecord),
+                self.get(Case::Partial),
+                self.get(Case::Flatten)
+            );
+        }
+    }
+
     #[test]
     fn otel_pb_streamed_rows_match_whole_decoding() {
         check(
             "otel_pb_streamed_rows_match_whole_decoding",
             192,
             (requests(), any::<u64>(), any::<bool>()),
-            |(request, seed, flatten_exemplars)| {
-                streamed_matches_whole(request, seed, flatten_exemplars, None)
+            |(mut request, seed, flatten_exemplars)| {
+                fill_unset_timestamps(&mut request);
+                let body = edited_body(&request, &mut SplitMix64(seed), None);
+                let case = check_body(&request, &body, flatten_exemplars)?;
+                prop_assert_eq!(case, Case::Decoded);
+                Ok(())
             },
         );
     }
 
     #[test]
-    fn otel_pb_streamed_errors_match_whole_decoding() {
+    fn otel_pb_streamed_cut_bodies_match_whole_decoding() {
+        let cases = Cases::default();
         check(
-            "otel_pb_streamed_errors_match_whole_decoding",
+            "otel_pb_streamed_cut_bodies_match_whole_decoding",
             192,
             (requests(), any::<u64>(), any::<u64>()),
-            |(request, seed, cut)| streamed_matches_whole(request, seed, false, Some(cut)),
+            |(mut request, seed, cut)| {
+                fill_unset_timestamps(&mut request);
+                let mut body = edited_body(&request, &mut SplitMix64(seed), None);
+                body.truncate((cut % (body.len() as u64 + 1)) as usize);
+                cases.add(check_body(&request, &body, false)?);
+                Ok(())
+            },
         );
+        cases.print("otel_pb_streamed_cut_bodies");
     }
 
-    /// Single-byte damage: streamed and whole decoding accept and refuse the same
-    /// bodies, with the same rows, and give the same error (the sizing pass reports
-    /// the break prost meets first, see `first_error`)
+    /// Single-byte damage anywhere in the body
     #[test]
     fn otel_pb_streamed_damaged_bodies_match_whole_decoding() {
-        let (refused, other_error) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let cases = Cases::default();
         check(
             "otel_pb_streamed_damaged_bodies_match_whole_decoding",
             192,
             (requests(), any::<u64>(), any::<u64>(), any::<u8>()),
             |(mut request, seed, at, byte)| {
                 fill_unset_timestamps(&mut request);
-                let mut body = edited_body(&request, &mut SplitMix64(seed));
+                let mut body = edited_body(&request, &mut SplitMix64(seed), None);
                 if !body.is_empty() {
                     let at = (at % body.len() as u64) as usize;
                     body[at] = byte;
                 }
-                match (
-                    whole(&request, &body, false),
-                    streamed(&request, &body, false),
-                ) {
-                    (Ok(whole), Ok(streamed)) => prop_assert_eq!(whole, streamed),
-                    (Err(whole), Err(streamed)) => {
-                        refused.fetch_add(1, Ordering::Relaxed);
-                        if whole != streamed {
-                            other_error.fetch_add(1, Ordering::Relaxed);
-                        }
-                        prop_assert_eq!(whole, streamed, "error texts differ");
-                    }
-                    (whole, streamed) => prop_assert!(
-                        false,
-                        "whole {:?} and streamed {:?} disagree",
-                        whole.map(|_| ()),
-                        streamed.map(|_| ())
-                    ),
-                }
+                cases.add(check_body(&request, &body, false)?);
                 Ok(())
             },
         );
-        println!(
-            "otel_pb_streamed_damaged_bodies: refused {} bodies, {} with another error text",
-            refused.into_inner(),
-            other_error.into_inner()
+        cases.print("otel_pb_streamed_damaged_bodies");
+    }
+
+    /// Damage inside one record, whose framing is rewritten to fit: the framing
+    /// above the records holds, so the rows of every record before a record that
+    /// no longer decodes are staged
+    #[test]
+    fn otel_pb_streamed_damaged_records_keep_the_rows_before_them() {
+        let cases = Cases::default();
+        check(
+            "otel_pb_streamed_damaged_records_keep_the_rows_before_them",
+            192,
+            (
+                requests(),
+                any::<u64>(),
+                any::<(u64, u64, u8, bool)>(),
+                any::<bool>(),
+            ),
+            |(mut request, seed, (index, at, byte, cut), flatten_exemplars)| {
+                fill_unset_timestamps(&mut request);
+                let records = request.record_count();
+                prop_assume!(records > 0);
+                let damage = RecordDamage {
+                    index: index % records,
+                    at,
+                    byte,
+                    cut,
+                };
+                let body = edited_body(&request, &mut SplitMix64(seed), Some(damage));
+                let case = check_body(&request, &body, flatten_exemplars)?;
+                prop_assert!(case != Case::Outer, "record damage broke the levels above");
+                cases.add(case);
+                Ok(())
+            },
+        );
+        cases.print("otel_pb_streamed_damaged_records");
+        assert!(cases.get(Case::Partial) > 0, "no partial case was met");
+    }
+
+    /// Arbitrary bytes as a record of every kind stay under the bound on decoded
+    /// bytes per wire byte
+    #[test]
+    fn otel_pb_decoded_size_bound_holds_for_arbitrary_records() {
+        check(
+            "otel_pb_decoded_size_bound_holds_for_arbitrary_records",
+            512,
+            (vec(any::<u8>(), 0..512), 0..3usize),
+            |(bytes, leaf)| {
+                let leaf = [Leaf::LogRecord, Leaf::Span, Leaf::Metric][leaf];
+                prop_assert!(
+                    leaf_decoded_size(&bytes, leaf)
+                        <= leaf_struct_size(leaf) + bytes_per_wire_byte(leaf) * bytes.len()
+                );
+                Ok(())
+            },
         );
     }
 
@@ -3111,20 +3672,35 @@ mod streamed {
             }],
         });
         let body = web::Bytes::from(request.encode_pb());
-        let estimate = crate::otel::decoded_size::leaf_decoded_size(
+        let estimate = leaf_decoded_size(
             &request_span_bytes(&request),
             crate::otel::decoded_size::Leaf::Span,
         );
-        let (_, allocated) = crate::test_alloc::measure(|| {
-            size_request(body.clone(), Signal::Traces, estimate - 1, false)
-        });
-        assert!(matches!(
-            size_request(body.clone(), Signal::Traces, estimate - 1, false),
-            Err(StreamError::RecordTooLarge { .. })
-        ));
+        let read = |max_record: usize| {
+            let mut rows = 0usize;
+            let mut chunker = Chunker::new(CHUNK_LIMITS, |chunk: Vec<Value>, _| {
+                rows += chunk.len();
+                Ok::<_, JsonFlattenError>(())
+            });
+            let result = flatten_request(
+                &body,
+                Signal::Traces,
+                max_record,
+                &mut FlattenBudget::new(FlattenLimits::DEFAULT),
+                false,
+                &mut chunker,
+            )
+            .and_then(|()| chunker.finish().map_err(StreamError::Consumer));
+            drop(chunker);
+            (result, rows)
+        };
+        let (refused, allocated) = crate::test_alloc::measure(|| read(estimate - 1));
+        assert!(matches!(refused.0, Err(StreamError::RecordTooLarge { .. })));
+        assert_eq!(refused.1, 0);
         assert!(allocated.peak < 64 * 1024, "peak {} B", allocated.peak);
-        let size = size_request(body, Signal::Traces, estimate, false).unwrap();
-        assert_eq!(size.rows, 1 << 16);
+        let (read, rows) = read(estimate);
+        assert!(read.is_ok());
+        assert_eq!(rows, 1 << 16);
     }
 
     fn request_span_bytes(request: &Req) -> Vec<u8> {
@@ -3132,5 +3708,383 @@ mod streamed {
             Req::Traces(data) => data.resource_spans[0].scope_spans[0].spans[0].encode_to_vec(),
             _ => unreachable!(),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Partial success after chunks were staged, without the server
+    // -----------------------------------------------------------------------
+
+    const T0: u64 = 1_700_000_000_000_000_000;
+
+    fn string_value(value: String) -> Option<AnyValue> {
+        Some(AnyValue {
+            value: Some(any_value::Value::StringValue(value)),
+        })
+    }
+
+    /// One resource of `attributes` attributes over `records` log records
+    fn logs_request(records: usize, attributes: usize) -> Req {
+        Req::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: (0..attributes)
+                        .map(|i| KeyValue {
+                            key: format!("resource.attribute.{i:02}"),
+                            value: string_value(format!("value-of-attribute-{i:02}")),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: (0..records)
+                        .map(|i| LogRecord {
+                            time_unix_nano: T0 + i as u64,
+                            observed_time_unix_nano: T0 + i as u64,
+                            severity_number: 9,
+                            severity_text: format!("S{i:07}"),
+                            body: string_value(format!("record {i}")),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        })
+    }
+
+    /// `metrics` sum metrics of `points` points each, under a resource without a
+    /// target identity (so no `target_info` row)
+    fn metrics_request(metrics: usize, points: usize) -> Req {
+        Req::Metrics(MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: (0..metrics)
+                        .map(|m| Metric {
+                            name: format!("metric{m:05}"),
+                            data: Some(metric::Data::Sum(Sum {
+                                data_points: (0..points)
+                                    .map(|p| NumberDataPoint {
+                                        time_unix_nano: T0 + p as u64,
+                                        start_time_unix_nano: T0,
+                                        value: Some(number_data_point::Value::AsInt(p as i64)),
+                                        ..Default::default()
+                                    })
+                                    .collect(),
+                                aggregation_temporality: 2,
+                                is_monotonic: true,
+                            })),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        })
+    }
+
+    /// Replaces the first byte of the only occurrence of `marker` in `body` with
+    /// 0xff, so the string it is in is not UTF-8
+    fn damage_marker(body: &mut [u8], marker: &[u8]) {
+        let at: Vec<usize> = body
+            .windows(marker.len())
+            .enumerate()
+            .filter(|(_, window)| *window == marker)
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(at.len(), 1);
+        body[at[0]] = 0xff;
+    }
+
+    /// Where staging hands its chunks in these tests
+    #[derive(Default)]
+    struct Staged2 {
+        rows: Vec<Value>,
+        bytes: usize,
+        chunks: usize,
+    }
+
+    fn collect(staged: &mut Staged2) -> impl FnMut(Vec<Value>) -> Result<(), PostError> + '_ {
+        |rows| {
+            staged.bytes += rows
+                .iter()
+                .map(|row| crate::otel::sink::row_bytes(row.as_object().unwrap()))
+                .sum::<usize>();
+            staged.chunks += 1;
+            staged.rows.extend(rows);
+            Ok(())
+        }
+    }
+
+    fn target(source: &LogSource) -> OtelTarget<'_> {
+        static NO_FIELDS: std::sync::LazyLock<HashMap<String, String>> =
+            std::sync::LazyLock::new(HashMap::new);
+        OtelTarget {
+            stream_name: "test_stream",
+            log_source: source,
+            p_custom_fields: &NO_FIELDS,
+            telemetry_type: match source {
+                LogSource::OtelLogs => TelemetryType::Logs,
+                LogSource::OtelMetrics => TelemetryType::Metrics,
+                _ => TelemetryType::Traces,
+            },
+            tenant_id: &None,
+        }
+    }
+
+    fn limits(rows: usize, max_expanded: u64) -> StageLimits {
+        StageLimits {
+            chunk: ChunkLimits {
+                rows,
+                bytes: usize::MAX,
+            },
+            max_expanded,
+            flatten: FlattenLimits::DEFAULT,
+        }
+    }
+
+    /// Stages `request` in both encodings with `stage`, the JSON one decoded as
+    /// ingestion decodes it
+    fn stage_both(
+        request: &Req,
+        limits: StageLimits,
+        mut stage: impl FnMut(bool, Vec<Value>) -> Result<(), PostError>,
+    ) -> [(Result<OtelIngested, PostError>, Staged); 2] {
+        let source = request.source();
+        let target = target(&source);
+        let protobuf = stage_otel_protobuf(
+            web::Bytes::from(request.encode_pb()),
+            &target,
+            PROTOBUF_OPTIONS,
+            limits,
+            |rows| stage(true, rows),
+        );
+        let decoded = decode_as(request, false);
+        let json = stage_otel_resources(decoded.resources(), false, limits, |rows| {
+            stage(false, rows)
+        });
+        [protobuf, json]
+    }
+
+    /// The expansion cap is a running total: a request passing it after chunks
+    /// were staged is a partial success, the same in both encodings; one passing
+    /// it in its first chunk is refused, as before anything is staged
+    #[test]
+    fn otel_over_the_expansion_cap_stops_alike_in_both_encodings() {
+        let request = logs_request(2000, 40);
+        let mut all = Staged2::default();
+        let (whole, _) = stage_otel_protobuf(
+            web::Bytes::from(request.encode_pb()),
+            &target(&request.source()),
+            PROTOBUF_OPTIONS,
+            limits(100, u64::MAX),
+            collect(&mut all),
+        );
+        assert_eq!(whole.unwrap(), OtelIngested::Full);
+        assert_eq!(all.rows.len(), 2000);
+
+        // About two fifths of the rows fit under the cap
+        let cap = all.bytes as u64 * 2 / 5;
+        let mut staged = [Staged2::default(), Staged2::default()];
+        let [protobuf, json] = stage_both(&request, limits(100, cap), |protobuf, rows| {
+            collect(&mut staged[usize::from(protobuf)])(rows)
+        });
+        for (outcome, counted) in [&protobuf, &json] {
+            assert!(counted.chunks > 0 && counted.records < 2000, "{counted:?}");
+            let message = format!(
+                "Invalid Request: The rows of the request take more than the {cap} bytes allowed (1024 times P_MAX_EVENT_PAYLOAD_SIZE). Split the batch into smaller requests, or send fewer resource, scope and span attributes per record"
+            );
+            assert_eq!(
+                outcome.as_ref().unwrap(),
+                &OtelIngested::Partial {
+                    rejected: 2000 - counted.records as i64,
+                    message
+                }
+            );
+            assert!(counted.rows as f64 * 1.0 <= 2000.0 * 0.4 + 100.0);
+        }
+        assert_eq!(protobuf.1, json.1);
+        assert_eq!(
+            serde_json::to_vec(&staged[0].rows).unwrap(),
+            serde_json::to_vec(&staged[1].rows).unwrap()
+        );
+        println!(
+            "over the cap: {} of 2000 records staged in {} chunks, {} rejected",
+            protobuf.1.records,
+            protobuf.1.chunks,
+            2000 - protobuf.1.records
+        );
+
+        // Passed in the first chunk: refused as before staging
+        let [protobuf, json] = stage_both(&request, limits(100, 1000), |_, _| Ok(()));
+        for (outcome, counted) in [protobuf, json] {
+            assert_eq!(counted.chunks, 0);
+            let error = outcome.unwrap_err();
+            assert!(matches!(error, PostError::Invalid(_)), "{error:?}");
+            assert!(
+                error
+                    .to_string()
+                    .contains("more than the 1000 bytes allowed")
+            );
+        }
+    }
+
+    /// A record that does not decode, met after chunks were staged, is a partial
+    /// success with prost's error; as the first record, a refusal with it
+    #[test]
+    fn otel_pb_record_damaged_late_is_a_partial_success() {
+        for (damaged, staged_records) in [(999, 900), (0, 0)] {
+            let mut request = logs_request(1000, 5);
+            if let Req::Logs(data) = &mut request {
+                data.resource_logs[0].scope_logs[0].log_records[damaged].severity_text =
+                    "DAMAGEME".into();
+            }
+            let mut body = request.encode_pb();
+            damage_marker(&mut body, b"DAMAGEME");
+            let prost_error = OtelProtobufRequest::decode(&body, &request.source())
+                .unwrap_err()
+                .to_string();
+            let mut staged_rows = Staged2::default();
+            let (outcome, staged) = stage_otel_protobuf(
+                web::Bytes::from(body),
+                &target(&request.source()),
+                PROTOBUF_OPTIONS,
+                limits(100, u64::MAX),
+                collect(&mut staged_rows),
+            );
+            let message =
+                format!("Invalid Request: Ingestion failed for stream test_stream: {prost_error}");
+            assert_eq!(staged.records, staged_records);
+            if staged_records > 0 {
+                assert_eq!(staged.chunks, 9);
+                assert_eq!(
+                    outcome.unwrap(),
+                    OtelIngested::Partial {
+                        rejected: 1000 - staged_records as i64,
+                        message
+                    }
+                );
+            } else {
+                assert_eq!(outcome.unwrap_err().to_string(), message);
+            }
+            println!("damaged record {damaged}: {prost_error}");
+        }
+    }
+
+    /// A record over the decoded size cap, met after chunks were staged, is a
+    /// partial success; it is measured because it is long enough to reach the cap
+    #[test]
+    fn otel_pb_record_over_the_cap_late_is_a_partial_success() {
+        let mut request = logs_request(1000, 5);
+        if let Req::Logs(data) = &mut request {
+            data.resource_logs[0].scope_logs[0].log_records[999].body =
+                string_value("x".repeat(100_000));
+        }
+        let options = ProtobufOptions {
+            max_payload: 4096,
+            flatten_exemplars: false,
+        };
+        let max_record = crate::otel::protobuf_stream::max_record_bytes(options.max_payload);
+        assert!(crate::otel::decoded_size::needs_measuring(
+            100_010,
+            Leaf::LogRecord,
+            max_record
+        ));
+        assert!(!crate::otel::decoded_size::needs_measuring(
+            100,
+            Leaf::LogRecord,
+            max_record
+        ));
+        let (outcome, staged) = stage_otel_protobuf(
+            web::Bytes::from(request.encode_pb()),
+            &target(&request.source()),
+            options,
+            limits(100, u64::MAX),
+            |_| Ok(()),
+        );
+        assert_eq!(staged.records, 900);
+        match outcome.unwrap() {
+            OtelIngested::Partial { rejected, message } => {
+                assert_eq!(rejected, 100);
+                assert!(
+                    message
+                        .contains("one LogRecord of the request would take more than 65536 bytes"),
+                    "{message}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A metrics request stopped after some chunks rejects exactly the data points
+    /// not staged: when staging refuses a chunk (both encodings), when a later
+    /// metric does not decode (its points read from the wire), and a server error
+    /// keeps its status
+    #[test]
+    fn otel_metrics_stopped_after_some_chunks_reject_the_points_not_staged() {
+        let request = metrics_request(10, 37);
+        let refusal = || PostError::Invalid(anyhow::anyhow!("schema conflict"));
+        let mut calls = [0, 0];
+        let [protobuf, json] = stage_both(&request, limits(50, u64::MAX), |protobuf, _| {
+            let calls = &mut calls[usize::from(protobuf)];
+            *calls += 1;
+            if *calls == 4 { Err(refusal()) } else { Ok(()) }
+        });
+        for (outcome, staged) in [protobuf, json] {
+            assert_eq!(staged.points, 150);
+            assert_eq!(staged.records, 4);
+            assert_eq!(
+                outcome.unwrap(),
+                OtelIngested::Partial {
+                    rejected: 370 - 150,
+                    message: "Invalid Request: schema conflict".into()
+                }
+            );
+        }
+
+        // Metric 8 does not decode: metrics 0-7 (296 points) were flattened, 250 of
+        // them in full chunks; its 37 points are read from the wire
+        let mut damaged = request.clone();
+        if let Req::Metrics(data) = &mut damaged {
+            data.resource_metrics[0].scope_metrics[0].metrics[8].name = "DAMAGEME".into();
+        }
+        let mut body = damaged.encode_pb();
+        damage_marker(&mut body, b"DAMAGEME");
+        let body = web::Bytes::from(body);
+        assert_eq!(count_points(&body), 370);
+        let (outcome, staged) = stage_otel_protobuf(
+            body,
+            &target(&request.source()),
+            PROTOBUF_OPTIONS,
+            limits(50, u64::MAX),
+            |_| Ok(()),
+        );
+        assert_eq!((staged.chunks, staged.points), (5, 250));
+        match outcome.unwrap() {
+            OtelIngested::Partial { rejected, message } => {
+                assert_eq!(rejected, 370 - 250);
+                assert!(message.contains("invalid string value"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // A server error after chunks were staged keeps its status
+        let mut calls = 0;
+        let [protobuf, _] = stage_both(&request, limits(50, u64::MAX), |protobuf, _| {
+            calls += usize::from(protobuf);
+            if protobuf && calls == 2 {
+                Err(PostError::JsonFlattenError(JsonFlattenError::CannotFlatten))
+            } else {
+                Ok(())
+            }
+        });
+        let error = protobuf.0.unwrap_err();
+        assert!(
+            actix_web::ResponseError::status_code(&error).is_server_error(),
+            "{error:?}"
+        );
+        assert_eq!(protobuf.1.chunks, 1);
     }
 }
