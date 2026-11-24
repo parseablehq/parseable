@@ -151,12 +151,6 @@ const cases: Case[] = [
     reply: { ...key, expiresAt: '2027-01-06T12:00:00Z' },
   },
   {
-    name: 'get API key',
-    run: (c, s) => c.getApiKey('key/id', s),
-    url: '/api/prism/v1/apikeys/key%2Fid',
-    reply: { ...key, apiKey: 'full-test-key' },
-  },
-  {
     name: 'delete API key',
     run: (c) => c.deleteApiKey('key/id'),
     url: '/api/prism/v1/apikeys/key%2Fid',
@@ -347,7 +341,6 @@ describe('Team HTTP contracts', () => {
     { run: (c) => c.defaultRole(), reply: { role: 'analysts' } },
     { run: (c) => c.listApiKeys(), reply: [{ ...key, roles: 'analysts' }] },
     { run: (c) => c.createApiKey('key', []), reply: { ...key, createdAt: 'invalid' } },
-    { run: (c) => c.getApiKey('key'), reply: { keyId: 'key' } },
     ...[42, 'invalid', '', '2026-10-08', '2026-10-08T12:00:00+02:00'].map((expiresAt) => ({
       run: (c: ParseableClient) => c.listApiKeys(),
       reply: [{ ...key, expiresAt }],

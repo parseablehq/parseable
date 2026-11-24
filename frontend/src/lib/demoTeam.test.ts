@@ -189,7 +189,6 @@ describe('per-client Team demo', () => {
     const client = createDemoClient();
     const key = await client.createApiKey('test-key', ['editors']);
     expect(key.keyId).toMatch(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
-    expect((await client.getApiKey(key.keyId)).apiKey).toBe(key.apiKey);
     expect((await client.listApiKeys()).find((item) => item.keyId === key.keyId)?.apiKey).toBe(
       `****${key.apiKey.slice(-4)}`,
     );
@@ -198,7 +197,7 @@ describe('per-client Team demo', () => {
       'Roles do not exist',
     );
     await client.deleteApiKey(key.keyId);
-    await expect(client.getApiKey(key.keyId)).rejects.toMatchObject({ status: 404 });
+    await expect(client.deleteApiKey(key.keyId)).rejects.toMatchObject({ status: 404 });
     expect(await client.listApiKeys()).toHaveLength(2);
   });
   it.each([1800, 7776000])(
@@ -208,7 +207,6 @@ describe('per-client Team demo', () => {
       const users = await client.listUsers();
       const key = await client.createApiKey('finite-key', ['analysts'], ttlSeconds);
       expect(Date.parse(key.expiresAt!) - Date.parse(key.createdAt)).toBe(ttlSeconds * 1000);
-      expect((await client.getApiKey(key.keyId)).expiresAt).toBe(key.expiresAt);
       expect((await client.listApiKeys()).find((item) => item.keyId === key.keyId)?.expiresAt).toBe(
         key.expiresAt,
       );

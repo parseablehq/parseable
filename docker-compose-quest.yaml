@@ -2,6 +2,12 @@
 # Find pin references: grep -rnE 'issue #151|f4a026e' .
 # Remove the pin in quest-source here and QUEST_SOURCE_REF in
 # .github/workflows/integration-test.yaml; the five extends callers can stay.
+#
+# Quest built straight from this commit fails TestSmokeAPIKeyLifecycle/GetAPIKey:
+# it expects GET /api/prism/v1/apikeys/{id} to return the key, and this server
+# returns it masked. CI applies scripts/ci/quest-api-key-hash.patch before
+# building; for a local run, build an image from a patched checkout and pass it
+# as QUEST_IMAGE.
 services:
   quest-source:
     build:

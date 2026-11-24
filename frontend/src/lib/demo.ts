@@ -717,10 +717,6 @@ export function createDemoClient(): ParseableClient {
       keys.push(key);
       return clone(key);
     },
-    async getApiKey(id, signal) {
-      await ready(signal);
-      return clone(findKey(id));
-    },
     async deleteApiKey(id) {
       await ready();
       const key = findKey(id);

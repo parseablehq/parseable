@@ -1,0 +1,20 @@
+This server stores API keys as hashes, so GET /api/prism/v1/apikeys/{id}
+returns the key masked, as the list does, where upstream Parseable returns
+the key itself. Quest's API key test expects upstream's behaviour; this
+patch makes it expect the mask. It is applied to the pinned Quest source by
+.github/workflows/integration-test.yaml before the test image is built, and
+fails that step if the source no longer matches.
+
+diff --git i/tests/integration/apikey_test.go w/tests/integration/apikey_test.go
+index e4a0297..aec70ea 100644
+--- i/tests/integration/apikey_test.go
++++ w/tests/integration/apikey_test.go
+@@ -163,7 +163,7 @@ func TestSmokeAPIKeyLifecycle(t *testing.T) {
+ 		key, err := readJsonBody[testAPIKeyResponse](response.Body)
+ 		require.NoError(t, err)
+ 		require.Equal(t, created.KeyID, key.KeyID)
+-		require.Equal(t, created.APIKey, key.APIKey)
++		require.Equal(t, "****"+created.APIKey[len(created.APIKey)-4:], key.APIKey)
+ 		require.Equal(t, keyName, key.KeyName)
+ 		require.ElementsMatch(t, []string{role}, key.Roles)
+ 	})

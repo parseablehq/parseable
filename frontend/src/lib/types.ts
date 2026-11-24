@@ -496,6 +496,5 @@ export interface ParseableClient {
   clearDefaultRole(): Promise<void>;
   listApiKeys(signal?: AbortSignal): Promise<ApiKey[]>;
   createApiKey(name: string, roles: string[], ttlSeconds?: number | null): Promise<ApiKey>;
-  getApiKey(id: string, signal?: AbortSignal): Promise<ApiKey>;
   deleteApiKey(id: string): Promise<void>;
 }

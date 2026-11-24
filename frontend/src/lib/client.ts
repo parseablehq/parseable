@@ -457,12 +457,6 @@ export function createClient({
       if (!apiKey(data)) return malformed(keys);
       return data;
     },
-    async getApiKey(id, signal) {
-      const endpoint = `${keys}/${encodeURIComponent(id)}`;
-      const data = await readJson(endpoint, { signal }, onUnauthorized);
-      if (!apiKey(data)) return malformed(endpoint);
-      return data;
-    },
     deleteApiKey: (id) => mutate(`${keys}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     createDataset: (name, options) => {
       const headers: Record<string, string> = { 'X-P-Telemetry-Type': options.telemetryType };
