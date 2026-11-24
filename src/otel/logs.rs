@@ -19,7 +19,7 @@ use super::otel_utils::attribute_capacity;
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
-use super::sink::RowSink;
+use super::sink::{CHUNK_LIMITS, ENTRY_BYTES, RowSink, VALUE_BYTES, heap_bytes};
 use crate::metrics::increment_logs_collected_by_date;
 use crate::utils::json::flatten::{
     FlattenBudget, FlattenCost, JsonFlattenError, expand_generic_flattening, flatten_pipeline_cost,
@@ -174,6 +174,143 @@ fn category_from_body(body_str: &str) -> &'static str {
         .map_or("UNSPECIFIED", |(_, label)| *label)
 }
 
+/// Most memory the JSON text bodies of one log record may be parsed into: four
+/// chunks of rows. JSON text of typical logs parses into about 8 bytes per byte,
+/// so a body of several MiB of such text is accepted.
+pub const MAX_PARSED_BODY_BYTES: usize = 4 * CHUNK_LIMITS.bytes;
+
+/// Most bytes one byte of JSON text parses into: `0,` in an array is a 72 byte
+/// `Value`, in a `Vec` that may have grown to twice its length
+const PARSED_BYTES_PER_TEXT_BYTE: usize = 2 * VALUE_BYTES;
+
+/// Parses every body that is the JSON text of an object, as the fields of the
+/// record are extracted from those only. Bodies are measured before they are
+/// parsed: a body whose text could parse into more than what is left of
+/// `MAX_PARSED_BODY_BYTES` is first scanned without allocating, which finds its
+/// type and the memory parsing it takes. Text that is not an object is not parsed.
+fn parse_json_object_bodies(
+    body_json: &Map<String, Value>,
+) -> Result<Vec<Option<Value>>, JsonFlattenError> {
+    let mut held = 0usize;
+    let mut parsed = Vec::with_capacity(body_json.len());
+    for value in body_json.values() {
+        let Value::String(text) = value else {
+            parsed.push(None);
+            continue;
+        };
+        let most = text.len().saturating_mul(PARSED_BYTES_PER_TEXT_BYTE);
+        if held.saturating_add(most) > MAX_PARSED_BODY_BYTES {
+            match json_object_text_bytes(text) {
+                // Not the JSON text of an object: not parsed, as before
+                None => {
+                    parsed.push(None);
+                    continue;
+                }
+                Some(bytes) => {
+                    held = held.saturating_add(bytes);
+                    if held > MAX_PARSED_BODY_BYTES {
+                        return Err(JsonFlattenError::LogBodyTooLarge(MAX_PARSED_BODY_BYTES));
+                    }
+                }
+            }
+        } else {
+            held += most;
+        }
+        parsed.push(
+            serde_json::from_str::<Value>(text)
+                .ok()
+                .filter(Value::is_object),
+        );
+    }
+    Ok(parsed)
+}
+
+/// Memory `serde_json::from_str::<Value>(text)` takes when `text` is the JSON
+/// text of an object, found without allocating; `None` for any other text
+fn json_object_text_bytes(text: &str) -> Option<usize> {
+    use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+
+    /// Heap bytes of one parsed value, and whether it is an object
+    struct Parsed {
+        bytes: usize,
+        object: bool,
+    }
+
+    impl Parsed {
+        fn scalar(bytes: usize) -> Self {
+            Self {
+                bytes,
+                object: false,
+            }
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Parsed {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_any(ParsedVisitor)
+        }
+    }
+
+    struct ParsedVisitor;
+
+    impl<'de> Visitor<'de> for ParsedVisitor {
+        type Value = Parsed;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("any JSON value")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<Parsed, E> {
+            Ok(Parsed::scalar(0))
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<Parsed, E> {
+            Ok(Parsed::scalar(0))
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<Parsed, E> {
+            Ok(Parsed::scalar(0))
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<Parsed, E> {
+            Ok(Parsed::scalar(0))
+        }
+        fn visit_unit<E>(self) -> Result<Parsed, E> {
+            Ok(Parsed::scalar(0))
+        }
+        fn visit_str<E>(self, s: &str) -> Result<Parsed, E> {
+            Ok(Parsed::scalar(heap_bytes(s.len())))
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Parsed, A::Error> {
+            let mut len = 0usize;
+            let mut bytes = 0usize;
+            while let Some(element) = seq.next_element::<Parsed>()? {
+                len += 1;
+                bytes = bytes.saturating_add(element.bytes);
+            }
+            // The `Vec` grows by doubling
+            Ok(Parsed::scalar(bytes.saturating_add(heap_bytes(
+                len.next_power_of_two().saturating_mul(VALUE_BYTES),
+            ))))
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Parsed, A::Error> {
+            let mut bytes = 0usize;
+            while let Some(key) = map.next_key::<Parsed>()? {
+                let value = map.next_value::<Parsed>()?;
+                bytes = bytes
+                    .saturating_add(ENTRY_BYTES)
+                    .saturating_add(key.bytes)
+                    .saturating_add(value.bytes);
+            }
+            Ok(Parsed {
+                bytes,
+                object: true,
+            })
+        }
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let parsed = Parsed::deserialize(&mut deserializer).ok()?;
+    deserializer.end().ok()?;
+    parsed.object.then_some(parsed.bytes)
+}
+
 /// this function flattens the `LogRecord` object
 /// and returns a `Map` of the flattened json
 /// this function is called recursively for each log record object in the otel logs
@@ -210,15 +347,7 @@ pub fn flatten_log_record(
         let body = &log_record.body;
         let body_json = collect_json_from_values(body, "body");
         // Values that are strings which can be parsed as JSON objects get their fields extracted
-        let parsed_bodies: Vec<Option<Value>> = body_json
-            .values()
-            .map(|value| match value {
-                Value::String(s) => serde_json::from_str::<Value>(s)
-                    .ok()
-                    .filter(Value::is_object),
-                _ => None,
-            })
-            .collect();
+        let parsed_bodies = parse_json_object_bodies(&body_json)?;
         // The rows of every parsed body are merged into this record, but they are all built
         // first, so charge all of them before building any
         let limits = budget.limits();
