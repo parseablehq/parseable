@@ -1,6 +1,6 @@
 #!/bin/sh
 
-DOWNLOAD_BASE_URL="https://github.com/parseablehq/parseable/releases/download"
+DOWNLOAD_BASE_URL="https://cdn.parseable.com/parseablepublicrelease/parseable-enterprise"
 INSTALL_DIR="${HOME}/.parseable"
 BIN_DIR="${INSTALL_DIR}/bin"
 BIN_NAME="${BIN_DIR}/parseable"
@@ -23,17 +23,16 @@ else
     exit 1
 fi
 
-# Match the platform names used by the release assets. Linux commonly reports
-# ARM64 as "aarch64", while macOS reports it as "arm64".
+# Match the platform names used by the enterprise release assets.
 case "${OS}_${CPU_ARCH}" in
     darwin_arm64)
-        PARSEABLE_PREFIX="Parseable_OSS_aarch64-apple-darwin"
+        PARSEABLE_FILENAME="Parseable_Enterprise_aarch64-apple-darwin"
         ;;
     linux_arm64|linux_aarch64)
-        PARSEABLE_PREFIX="Parseable_OSS_aarch64-unknown-linux-gnu"
+        PARSEABLE_FILENAME="Parseable_Enterprise_aarch64-unknown-linux-gnu"
         ;;
     linux_x86_64|linux_amd64)
-        PARSEABLE_PREFIX="Parseable_OSS_x86_64-unknown-linux-gnu"
+        PARSEABLE_FILENAME="Parseable_Enterprise_x86_64-unknown-linux-gnu"
         ;;
     *)
         printf 'Error: unsupported platform %s/%s.\n' "$OS" "$CPU_ARCH" >&2
@@ -60,7 +59,7 @@ if [ "$OS" = "linux" ]; then
     fi
 fi
 
-# Get the latest release tag from the GitHub API.
+# Enterprise releases use the latest Parseable OSS release tag as their version.
 fetch_release() {
     case "$DOWNLOADER" in
         curl)
@@ -83,7 +82,7 @@ fi
 
 printf 'Latest Parseable version: %s\n' "$release_tag"
 
-download_url="${DOWNLOAD_BASE_URL}/${release_tag}/${PARSEABLE_PREFIX}"
+download_url="${DOWNLOAD_BASE_URL}/${release_tag}/${PARSEABLE_FILENAME}"
 
 if [ -d "$INSTALL_DIR" ]; then
     printf "A previous version of Parseable already exists. Run 'parseable --version' to check the version,\n"
@@ -105,7 +104,7 @@ cleanup_install() {
 trap 'cleanup_install' 0
 trap 'cleanup_install; exit 1' 1 2 15
 
-printf 'Downloading Parseable version %s, for OS: %s, CPU architecture: %s\n' "$release_tag" "$OS" "$CPU_ARCH"
+printf 'Downloading Parseable Enterprise version %s, for OS: %s, CPU architecture: %s\n' "$release_tag" "$OS" "$CPU_ARCH"
 printf 'Download URL: %s\n\n' "$download_url"
 
 # Download the selected release asset to the temporary installation path.
@@ -134,7 +133,7 @@ mv "$TEMP_BIN" "$BIN_NAME" || {
 }
 trap - 0 1 2 15
 
-printf 'Parseable Server was successfully installed at: %s\n' "$BIN_NAME"
+printf 'Parseable Enterprise was successfully installed at: %s\n' "$BIN_NAME"
 
 # Use the user's login shell to select its startup file. Do not source that file
 # here: this installer may be running under a different shell via `... | sh`.
