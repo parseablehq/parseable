@@ -46,6 +46,7 @@ services:
       - P_SEND_ANONYMOUS_USAGE_DATA=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=query
+      - P_QUERIER_ENDPOINT=parseable-query:8000
       - RUST_LOG=warn
     networks:
       - parseable-internal

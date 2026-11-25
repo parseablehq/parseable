@@ -83,6 +83,12 @@ use crate::{
     metrics,
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE},
+    schema_registry::{
+        client::resolve_blocking,
+        ingestor::{ResolutionOutcome, ResolutionState, ResolveContext, schema_overrides},
+        merge_schemas_tolerant,
+        view::{ResolvedView, rename_batch},
+    },
     storage::{StreamType, object_storage::to_bytes, retention::Retention},
     sync::FLUSH_AND_CONVERT_RUNTIME,
     utils::{
@@ -415,6 +421,8 @@ pub struct Stream {
     // Ingestion/local sync hold read access; staging cleanup holds write access.
     // Acquire before schema_writer or writer when an operation needs both.
     staging_activity: RwLock<()>,
+    /// Cluster-wide schema resolution state (distributed ingestors only).
+    pub resolution: ResolutionState,
 }
 
 #[derive(Default)]
@@ -475,10 +483,13 @@ struct ActiveMetricForwardFile {
     lanes: Vec<MetricForwardReaderLane>,
     next_batch: usize,
     total_batches: usize,
+    /// Schema with resolved column names, applied to every batch before adapting it.
+    renamed: Option<Arc<Schema>>,
 }
 
 impl ActiveMetricForwardFile {
     fn try_new(plan: ForwardFilePlan, readers_per_file: usize) -> Result<Self, ArrowError> {
+        let renamed = plan.renamed_schema();
         let readers = plan
             .open_lanes(readers_per_file)
             .map_err(|err| ArrowError::IoError(err.to_string(), err))?;
@@ -501,6 +512,7 @@ impl ActiveMetricForwardFile {
             lanes,
             next_batch: 0,
             total_batches,
+            renamed,
         })
     }
 
@@ -624,7 +636,12 @@ impl Iterator for MetricForwardRecordIterator {
             match &mut queued.state {
                 MetricForwardFileState::Ready(active) => {
                     if let Some(batch) = active.next_batch() {
-                        return Some(batch.map(|batch| adapt_batch(self.schema.clone(), &batch)));
+                        let renamed = &active.renamed;
+                        return Some(
+                            batch
+                                .and_then(|batch| rename_batch(renamed, batch))
+                                .map(|batch| adapt_batch(self.schema.clone(), &batch)),
+                        );
                     }
                 }
                 MetricForwardFileState::Failed(_) => {}
@@ -648,11 +665,22 @@ impl Iterator for MetricForwardRecordIterator {
 }
 
 impl ConversionRecordReader {
-    fn for_stream(file_paths: &[PathBuf], forward: bool) -> Self {
+    fn for_stream(file_paths: &[PathBuf], forward: bool, view: &ResolvedView) -> Self {
         if forward {
-            Self::Forward(MergedForwardRecordReader::try_new(file_paths))
+            Self::Forward(MergedForwardRecordReader::try_new_with_view(
+                file_paths, view,
+            ))
         } else {
-            Self::Reverse(MergedReverseRecordReader::try_new(file_paths))
+            Self::Reverse(MergedReverseRecordReader::try_new_with_view(
+                file_paths, view,
+            ))
+        }
+    }
+
+    fn unrenameable_files(&self) -> &[PathBuf] {
+        match self {
+            Self::Forward(reader) => &reader.unrenameable_files,
+            Self::Reverse(reader) => &reader.unrenameable_files,
         }
     }
 
@@ -677,7 +705,7 @@ impl ConversionRecordReader {
         }
     }
 
-    fn merged_schema(&self) -> Schema {
+    fn merged_schema(&self) -> Result<Schema, ArrowError> {
         match self {
             Self::Forward(reader) => reader.merged_schema(),
             Self::Reverse(reader) => reader.merged_schema(),
@@ -724,8 +752,11 @@ impl StartupSyncPlan {
 
         let time_partition = self.stream.get_time_partition();
         let custom_partition = self.stream.get_custom_partition();
+        let staging_files = self
+            .stream
+            .resolve_inprocess_groups(self.staging_files, &self.tenant_id);
         let outcome = self.stream.convert_arrow_file_groups_to_parquet(
-            self.staging_files,
+            staging_files,
             time_partition.as_ref(),
             custom_partition.as_ref(),
             &self.tenant_id,
@@ -745,13 +776,34 @@ impl Stream {
     ) -> StreamRef {
         let stream_name = stream_name.into();
         let data_path = options.local_stream_data_path(&stream_name, tenant_id);
+        let resolving = options.mode == Mode::Ingest && options.schema_resolution;
+        let resolution = if resolving {
+            ResolutionState::load(&data_path)
+        } else {
+            ResolutionState::default()
+        };
+        let mut metadata = metadata;
+        // Re-apply decisions made before a restart, so stale local types are not used
+        // for conflict detection of new events.
+        for field in schema_overrides(&resolution.view(), &metadata.schema) {
+            if metadata.schema.contains_key(field.name()) {
+                metadata.schema.insert(field.name().clone(), field);
+            }
+        }
+        // The in-memory staging buffer only serves queries, which ingestors never run, and
+        // it cannot merge batches across a resolved type change.
+        let writer = if resolving {
+            Writer::without_memory()
+        } else {
+            Writer::default()
+        };
 
         Arc::new(Self {
             stream_name: stream_name.clone(),
             metadata: RwLock::new(metadata),
             data_path,
             options,
-            writer: Mutex::new(Writer::default()),
+            writer: Mutex::new(writer),
             push_queue: Mutex::new(PushQueue::default()),
             push_queue_empty: Condvar::default(),
             #[cfg(test)]
@@ -759,6 +811,7 @@ impl Stream {
             schema_writer: Mutex::new(()),
             ingestor_id,
             staging_activity: RwLock::new(()),
+            resolution,
         })
     }
 
@@ -1071,13 +1124,41 @@ impl Stream {
         init_signal: bool,
         shutdown_signal: bool,
     ) -> Vec<(PathBuf, Vec<PathBuf>)> {
+        self.arrow_files_grouped_for_conversion(
+            exclude,
+            group_minute,
+            init_signal,
+            shutdown_signal,
+            &None,
+        )
+    }
+
+    fn arrow_files_grouped_for_conversion(
+        &self,
+        exclude: SystemTime,
+        group_minute: u128,
+        init_signal: bool,
+        shutdown_signal: bool,
+        tenant_id: &Option<String>,
+    ) -> Vec<(PathBuf, Vec<PathBuf>)> {
         if init_signal {
             // Startup owns only this one-time snapshot of processing files.
             // Root Arrow files are left for regular sync so startup never
             // races a live writer or a periodic cycle for the same file.
-            self.group_inprocess_arrow_files(&Ulid::new().to_string())
+            let groups = self.group_inprocess_arrow_files(&Ulid::new().to_string());
+            self.resolve_inprocess_groups(groups, tenant_id)
         } else {
             let arrow_files = self.fetch_arrow_files_for_conversion(exclude, shutdown_signal);
+            if arrow_files.is_empty() {
+                return Vec::new();
+            }
+            // Resolve before moving: deferred files must stay in the root directory so
+            // the next periodic cycle picks them up again.
+            let arrow_files = if self.schema_resolution_enabled() {
+                self.resolve_arrow_files(arrow_files, tenant_id).ready
+            } else {
+                arrow_files
+            };
             if arrow_files.is_empty() {
                 return Vec::new();
             }
@@ -1104,6 +1185,128 @@ impl Stream {
                 );
             }
             groups
+        }
+    }
+
+    /// True when this stream reconciles new field types with the cluster's schema authority.
+    pub fn schema_resolution_enabled(&self) -> bool {
+        self.options.mode == Mode::Ingest
+            && self.options.schema_resolution
+            && !self.get_static_schema_flag()
+            && self.get_stream_type() != StreamType::Internal
+    }
+
+    /// Rejects ingestion while the stream's schema cannot be reconciled with the cluster.
+    pub fn check_schema_resolution(&self) -> Result<(), String> {
+        if self.resolution.is_blocked() {
+            Err(self
+                .resolution
+                .last_error()
+                .unwrap_or_else(|| "schema resolution pending".to_owned()))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Asks the schema authority about fields in `files` it has not resolved yet and
+    /// aligns the in-memory and staged schemas with the answer. Blocking: call only from
+    /// conversion (blocking) threads.
+    fn resolve_arrow_files(
+        &self,
+        files: Vec<PathBuf>,
+        tenant_id: &Option<String>,
+    ) -> ResolutionOutcome {
+        let resolver = |req| resolve_blocking(req);
+        let node_id = self
+            .ingestor_id
+            .clone()
+            .unwrap_or_else(|| PARSEABLE.options.address.clone());
+        let ctx = ResolveContext {
+            stream: &self.stream_name,
+            tenant_id,
+            node_id,
+            data_path: &self.data_path,
+            max_deferred_cycles: self.options.schema_resolve_max_deferred_cycles,
+            resolver: &resolver,
+        };
+        self.resolution.ensure_resolved(&ctx, files, |view| {
+            let overrides = schema_overrides(view, &self.get_schema_raw());
+            if !overrides.is_empty() {
+                self.overwrite_schema_fields(&overrides);
+            }
+            if let Err(err) = self.stage_schema_file(self.get_schema().as_ref().clone()) {
+                warn!(
+                    "failed to stage resolved schema for stream {}: {err}",
+                    self.stream_name
+                );
+            }
+        })
+    }
+
+    /// Startup path: files are already inside processing directories, so deferred ones
+    /// are moved back to the root directory for the periodic cycle to retry.
+    fn resolve_inprocess_groups(
+        &self,
+        groups: Vec<(PathBuf, Vec<PathBuf>)>,
+        tenant_id: &Option<String>,
+    ) -> Vec<(PathBuf, Vec<PathBuf>)> {
+        if groups.is_empty() || !self.schema_resolution_enabled() {
+            return groups;
+        }
+        let files: Vec<PathBuf> = groups.iter().flat_map(|(_, f)| f.clone()).collect();
+        let outcome = self.resolve_arrow_files(files, tenant_id);
+        if outcome.deferred.is_empty() {
+            return groups;
+        }
+        self.return_files_to_root(&outcome.deferred);
+        let ready: HashSet<PathBuf> = outcome.ready.into_iter().collect();
+        groups
+            .into_iter()
+            .map(|(parquet, files)| {
+                (
+                    parquet,
+                    files.into_iter().filter(|f| ready.contains(f)).collect(),
+                )
+            })
+            .filter(|(_, files): &(PathBuf, Vec<PathBuf>)| !files.is_empty())
+            .collect()
+    }
+
+    fn return_files_to_root(&self, files: &[PathBuf]) {
+        for file in files {
+            let Some(name) = file.file_name() else {
+                continue;
+            };
+            let mut target = self.data_path.join(name);
+            if target.exists()
+                && let Some(stem) = file.file_stem().and_then(|s| s.to_str())
+            {
+                target = self
+                    .data_path
+                    .join(format!("{stem}.{}.{ARROW_FILE_EXTENSION}", Ulid::new()));
+            }
+            if let Err(err) = fs::rename(file, &target) {
+                error!(
+                    "Failed to return deferred arrow file {} to {}: {err}",
+                    file.display(),
+                    target.display()
+                );
+                continue;
+            }
+            if let Some(dir) = file.parent()
+                && dir != self.data_path
+            {
+                let _ = fs::remove_dir(dir);
+            }
+        }
+    }
+
+    /// Replaces field types in the in-memory schema (no merge): used when the schema
+    /// authority decided a different type than this node inferred.
+    pub fn overwrite_schema_fields(&self, fields: &[Arc<Field>]) {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        for field in fields {
+            metadata.schema.insert(field.name().clone(), field.clone());
         }
     }
 
@@ -1348,7 +1551,27 @@ impl Stream {
         let tmp_path = path.with_extension("schema.tmp");
 
         let staging_schemas = self.get_schemas_if_present()?;
-        if !staging_schemas.is_empty() {
+        if self.schema_resolution_enabled() {
+            // Advertise only what the schema authority accepted: an unresolved type in the
+            // per-node schema file would surface the very conflict resolution prevents.
+            let view = self.resolution.view();
+            let keep = |s: Schema| {
+                let fields: Vec<Arc<Field>> = s
+                    .fields()
+                    .iter()
+                    .filter(|f| {
+                        view.fields
+                            .get(f.name())
+                            .is_some_and(|t| t == f.data_type())
+                    })
+                    .cloned()
+                    .collect();
+                Schema::new(fields)
+            };
+            let mut schemas = vec![keep(schema)];
+            schemas.extend(staging_schemas.into_iter().map(keep));
+            schema = merge_schemas_tolerant(&self.stream_name, schemas);
+        } else if !staging_schemas.is_empty() {
             let mut staging_schemas = staging_schemas;
             staging_schemas.push(schema);
             schema = Schema::try_merge(staging_schemas)?;
@@ -2002,8 +2225,13 @@ impl Stream {
 
         let now = SystemTime::now();
         let group_minute = minute_from_system_time(now) - 1;
-        let staging_files =
-            self.arrow_files_grouped_exclude_time(now, group_minute, init_signal, shutdown_signal);
+        let staging_files = self.arrow_files_grouped_for_conversion(
+            now,
+            group_minute,
+            init_signal,
+            shutdown_signal,
+            tenant_id,
+        );
         span.record("file_group_count", staging_files.len());
         self.convert_arrow_file_groups_to_parquet(
             staging_files,
@@ -2120,15 +2348,35 @@ impl Stream {
     ) -> Result<Option<Schema>, StagingError> {
         // Metrics sort every output row group explicitly, so reading their IPC
         // streams forward avoids reverse seeks and a full-column row reversal.
+        // Renames decided by the schema authority are applied per file before merging.
+        // Renames are append-only, so every file converts under the current view exactly
+        // as it did under the view that accepted it.
+        let view = self.resolution.view();
         let record_reader =
-            ConversionRecordReader::for_stream(&arrow_files, self.is_otel_metrics());
+            ConversionRecordReader::for_stream(&arrow_files, self.is_otel_metrics(), &view);
         self.remove_invalid_arrow_files(record_reader.invalid_files(), tenant_id);
+        for file in record_reader.unrenameable_files() {
+            error!(
+                "Arrow file {} of stream {} cannot be renamed to the resolved schema; keeping it unconverted",
+                file.display(),
+                self.stream_name
+            );
+        }
         let readable_arrow_files = record_reader.readable_files().to_vec();
         if record_reader.reader_count() == 0 {
             return Ok(None);
         }
 
-        let merged_schema = record_reader.merged_schema();
+        // A type conflict across files must never panic the conversion thread; keep the
+        // files for a later cycle instead.
+        let merged_schema = record_reader.merged_schema().map_err(|err| {
+            error!(
+                "Schema merge failed for {} of stream {}; arrow files kept for retry: {err}",
+                parquet_path.display(),
+                self.stream_name
+            );
+            StagingError::Arrow(err)
+        })?;
         let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
         let schema = Arc::new(merged_schema.clone());
         let mut part_path = parquet_path.clone();
@@ -2613,9 +2861,15 @@ impl Stream {
             return current_schema;
         }
 
-        let schema = record_reader.merged_schema();
+        let Ok(schema) = record_reader.merged_schema() else {
+            warn!(
+                "staged arrow files of stream {} have conflicting schemas; keeping current schema",
+                self.stream_name
+            );
+            return current_schema;
+        };
 
-        Schema::try_merge(vec![schema, current_schema]).unwrap()
+        Schema::try_merge(vec![schema, current_schema.clone()]).unwrap_or(current_schema)
     }
 
     /// Stores the provided stream metadata in memory mapping
@@ -3601,7 +3855,7 @@ mod tests {
 
         let record_reader =
             ConversionRecordReader::Forward(MergedForwardRecordReader::try_new(&arrow_files));
-        let merged_schema = Arc::new(record_reader.merged_schema());
+        let merged_schema = Arc::new(record_reader.merged_schema().unwrap());
         let props = WriterProperties::builder()
             .set_max_row_group_row_count(Some(5))
             .build();

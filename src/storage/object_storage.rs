@@ -64,6 +64,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use std::time::Instant;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{Instrument, error, info, info_span, warn};
 use ulid::Ulid;
@@ -72,6 +73,29 @@ use ulid::Ulid;
 /// removed locally. These paths remain excluded from upload selection until a
 /// later cleanup attempt removes the local file.
 static UPLOADED_STAGED_FILES_PENDING_CLEANUP: Lazy<DashSet<PathBuf>> = Lazy::new(DashSet::new);
+
+/// Global limits keep standalone ingest + query workloads inside process FD budget.
+/// A per-stream upload limit multiplied concurrency by number of streams.
+static OBJECT_STORE_UPLOAD_SLOTS: Lazy<Arc<Semaphore>> = Lazy::new(|| {
+    Arc::new(Semaphore::new(concurrency_limit(
+        "P_MAX_CONCURRENT_OBJECT_STORE_UPLOADS",
+        100,
+    )))
+});
+static OBJECT_STORE_STREAM_SYNC_SLOTS: Lazy<Arc<Semaphore>> = Lazy::new(|| {
+    Arc::new(Semaphore::new(concurrency_limit(
+        "P_MAX_CONCURRENT_STREAM_SYNCS",
+        16,
+    )))
+});
+
+fn concurrency_limit(variable: &str, default: usize) -> usize {
+    std::env::var(variable)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
 
 /// Claims a staged Parquet for upload unless its remote upload has already
 /// succeeded and only local deletion remains pending.
@@ -861,6 +885,17 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError> {
+        // On the schema authority, serialise this writer of the stream-level `.schema`
+        // with resolutions, and make the authority re-read it afterwards.
+        let _authority_guard = if matches!(PARSEABLE.options.mode, Mode::Query | Mode::Prism) {
+            Some(
+                crate::schema_registry::authority::SCHEMA_AUTHORITY
+                    .lock_and_invalidate(tenant_id, stream_name)
+                    .await,
+            )
+        } else {
+            None
+        };
         let schema = fetch_schema(stream_name, tenant_id).await?;
         let schema_bytes = Bytes::from(serde_json::to_vec(&schema)?);
         // convert to bytes
@@ -1121,7 +1156,6 @@ async fn process_parquet_files(
 ) -> Result<Vec<UploadedParquetFile>, ObjectStorageError> {
     retry_pending_staged_file_cleanup();
 
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
     let mut join_set = JoinSet::new();
     let object_store = PARSEABLE.storage().get_object_store();
 
@@ -1158,7 +1192,7 @@ async fn process_parquet_files(
     for path in parquet_paths {
         spawn_parquet_upload_task(
             &mut join_set,
-            semaphore.clone(),
+            OBJECT_STORE_UPLOAD_SLOTS.clone(),
             object_store.clone(),
             upload_context,
             stream_name,
@@ -1543,11 +1577,21 @@ async fn run_stream_deletion(
             return;
         }
     }
+    // Wait for schema resolutions of this stream in flight, and keep new ones out until its
+    // files are gone: one that already passed its deletion check would otherwise write
+    // `.schema` back after the prefix is removed. Held to the end of this function.
+    let _resolutions = crate::schema_registry::authority::SCHEMA_AUTHORITY
+        .lock_and_invalidate(tenant_id, stream_name)
+        .await;
     match storage.delete_stream(stream_name, tenant_id).await {
         Ok(()) => {
             // Evict and reset stats before clearing the tombstone: once the
             // marker is gone, a replacement can be created under this name.
             streams.delete_if_still_deleting(stream_name, tenant_id);
+            // The authority's cached registry belongs to the deleted stream; a stream
+            // recreated under this name must start from an empty registry.
+            crate::schema_registry::authority::SCHEMA_AUTHORITY
+                .forget_stream(tenant_id, stream_name);
             if let Err(e) =
                 stats::delete_stats_for_mode(options.mode, stream_name, "json", tenant_id)
             {
@@ -1774,6 +1818,11 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
             let span = info_span!("stream_upload", stream_name = %stream_name);
             joinset.spawn_on(
                 async move {
+                    let _stream_sync_permit = OBJECT_STORE_STREAM_SYNC_SLOTS
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .expect("object store stream sync semaphore should remain open");
                     let start = Instant::now();
                     let result = object_store
                         .upload_files_from_staging(&stream_name, id)
@@ -1813,11 +1862,16 @@ pub async fn commit_schema_to_storage(
         .await
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
-    let new_schema = Schema::try_merge(vec![
-        schema,
-        serde_json::from_slice::<Schema>(&stream_schema)?,
-    ])
-    .map_err(|e| ObjectStorageError::Custom(e.to_string()))?;
+    let stored = serde_json::from_slice::<Schema>(&stream_schema)?;
+    let new_schema =
+        if PARSEABLE.options.mode == Mode::Ingest && PARSEABLE.options.schema_resolution {
+            // This node's own file: a type resolved by the schema authority replaces the type
+            // this node uploaded before the resolution.
+            crate::schema_registry::merge_schemas_tolerant(stream_name, [schema, stored])
+        } else {
+            crate::schema_registry::merge_stored_schemas([schema, stored])
+                .map_err(|e| ObjectStorageError::Custom(e.to_string()))?
+        };
 
     PARSEABLE
         .metastore

@@ -343,6 +343,10 @@ where
     Fut: Future<Output = Result<(), E>> + Send,
     E: From<anyhow::Error> + Send + Sync + 'static,
 {
+    if PARSEABLE.options.mode == Mode::All {
+        return Ok(());
+    }
+
     let mut nodes = Vec::new();
 
     let ingestor_infos: Vec<NodeMetadata> = get_node_info(NodeType::Ingestor, tenant_id)
@@ -1125,6 +1129,12 @@ pub async fn get_node_info<T: Metadata + DeserializeOwned>(
     node_type: NodeType,
     tenant_id: &Option<String>,
 ) -> anyhow::Result<Vec<T>> {
+    // Standalone mode owns every service locally. Ignore any stale distributed
+    // node metadata left in a reused object store so no API can contact it.
+    if PARSEABLE.options.mode == Mode::All {
+        return Ok(Vec::new());
+    }
+
     let metadata = PARSEABLE
         .metastore
         .get_node_metadata(node_type, tenant_id)

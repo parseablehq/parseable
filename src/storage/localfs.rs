@@ -48,9 +48,9 @@ use crate::{
 };
 
 use super::{
-    ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
-    PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
-    TOMBSTONE_ROOT_DIRECTORY,
+    ALERTS_ROOT_DIRECTORY, KEYSTONE_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError,
+    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME,
+    STREAM_ROOT_DIRECTORY, TARGETS_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -532,6 +532,8 @@ impl ObjectStorage for LocalFS {
             USERS_ROOT_DIR,
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,
+            TARGETS_ROOT_DIRECTORY,
+            KEYSTONE_ROOT_DIRECTORY,
             TOMBSTONE_ROOT_DIRECTORY,
         ];
 
@@ -546,6 +548,8 @@ impl ObjectStorage for LocalFS {
             PARSEABLE_ROOT_DIRECTORY,
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,
+            TARGETS_ROOT_DIRECTORY,
+            KEYSTONE_ROOT_DIRECTORY,
             TOMBSTONE_ROOT_DIRECTORY,
         ];
 
@@ -909,7 +913,10 @@ mod list_streams_tombstone_tests {
 
     use super::{LocalFS, ObjectStorage};
     use crate::storage::object_storage::{to_bytes, tombstone_path};
-    use crate::storage::{STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY};
+    use crate::storage::{
+        KEYSTONE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        TARGETS_ROOT_DIRECTORY,
+    };
     use relative_path::RelativePathBuf;
 
     // Deliberately not using `object_storage::stream_json_path` here: it
@@ -937,6 +944,17 @@ mod list_streams_tombstone_tests {
 
         let listed = storage.list_streams().await.unwrap();
         assert!(listed.contains("mystream"));
+    }
+
+    #[tokio::test]
+    async fn metadata_directories_are_not_treated_as_streams() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+        std::fs::create_dir_all(dir.path().join(KEYSTONE_ROOT_DIRECTORY)).unwrap();
+        std::fs::create_dir_all(dir.path().join(TARGETS_ROOT_DIRECTORY)).unwrap();
+
+        let listed = storage.list_streams().await.unwrap();
+        assert!(listed.is_empty());
     }
 
     #[tokio::test]

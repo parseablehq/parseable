@@ -1189,10 +1189,14 @@ impl Metastore for ObjectStoreMetastore {
             )
             .await?
             .iter()
-            // we should be able to unwrap as we know the data is valid schema
-            .map(|byte_obj| {
-                serde_json::from_slice(byte_obj)
-                    .unwrap_or_else(|_| panic!("got an invalid schema for stream: {stream_name}"))
+            .filter_map(|byte_obj| match serde_json::from_slice(byte_obj) {
+                Ok(schema) => Some(schema),
+                Err(err) => {
+                    tracing::warn!(
+                        "skipping unreadable schema file of stream {stream_name}: {err}"
+                    );
+                    None
+                }
             })
             .collect())
     }

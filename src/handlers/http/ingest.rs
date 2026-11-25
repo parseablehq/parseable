@@ -20,14 +20,17 @@ use std::collections::{HashMap, HashSet};
 
 use actix_web::http::StatusCode;
 use actix_web::web::{self, Json, Path};
-use actix_web::{HttpRequest, HttpResponse, http::header::ContentType};
+use actix_web::{
+    HttpRequest, HttpResponse,
+    http::header::{ContentType, HeaderMap},
+};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::Utc;
 use once_cell::sync::Lazy;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use tokio::sync::oneshot;
-use tracing::error;
+use tracing::{Span, error, instrument};
 
 use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
@@ -37,8 +40,9 @@ use crate::handlers::http::modal::utils::ingest_utils::{
     ingest_helper, process_otel_content, validate_stream_for_ingestion,
 };
 use crate::handlers::{
-    DatasetTag, EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY,
-    TelemetryType,
+    DATASET_TAGS_KEY, DatasetTag, EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY,
+    TELEMETRY_TYPE_KEY, TelemetryType, parse_dataset_tags,
+    validate_agent_observability_constraints,
 };
 use crate::metadata::SchemaVersion;
 use crate::metastore::MetastoreError;
@@ -53,7 +57,7 @@ use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::{flatten::JsonFlattenError, strict::StrictValue};
 
 use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields_from_header};
+use super::modal::utils::ingest_utils::get_custom_fields_from_header;
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 
@@ -62,6 +66,24 @@ pub static INGESTION_THREADPOOL: Lazy<ThreadPool> = Lazy::new(|| {
         .build()
         .expect("Unable to create Rayon thread pool")
 });
+
+pub fn dataset_tags_from_headers(
+    headers: &HeaderMap,
+    log_source: &LogSource,
+) -> Result<Vec<DatasetTag>, PostError> {
+    let dataset_tags = headers
+        .get(DATASET_TAGS_KEY)
+        .and_then(|value| value.to_str().ok())
+        .map(parse_dataset_tags)
+        .unwrap_or_default();
+
+    if dataset_tags.contains(&DatasetTag::AgentObservability) {
+        validate_agent_observability_constraints(std::slice::from_ref(log_source))
+            .map_err(|message| PostError::Invalid(anyhow::anyhow!(message)))?;
+    }
+
+    Ok(dataset_tags)
+}
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
@@ -74,7 +96,10 @@ pub async fn ingest(
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
     let tenant_id = get_tenant_id_from_request(&req);
-    let stream_name = stream_name.to_str().unwrap().to_owned();
+    let stream_name = stream_name
+        .to_str()
+        .map_err(|_| PostError::Header(ParseHeaderError::InvalidValue))?
+        .to_owned();
     if PARSEABLE
         .get_stream(&stream_name, &tenant_id)
         .is_ok_and(|stream| stream.get_stream_type() == StreamType::Internal)
@@ -124,6 +149,7 @@ pub async fn ingest(
     };
 
     let log_source_entry = LogSourceEntry::new(log_source.clone(), fields);
+    let dataset_tags = dataset_tags_from_headers(req.headers(), &log_source)?;
 
     PARSEABLE
         .create_stream_if_not_exists(
@@ -133,7 +159,7 @@ pub async fn ingest(
             vec![log_source_entry.clone()],
             telemetry_type,
             &tenant_id,
-            vec![],
+            dataset_tags,
             vec![],
         )
         .await
@@ -235,7 +261,10 @@ pub async fn setup_otel_stream(
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
 
-    let stream_name = stream_name.to_str().unwrap().to_owned();
+    let stream_name = stream_name
+        .to_str()
+        .map_err(|_| PostError::Header(ParseHeaderError::InvalidValue))?
+        .to_owned();
 
     let log_source_entry = LogSourceEntry::new(
         log_source.clone(),
@@ -306,16 +335,23 @@ pub async fn setup_otel_stream(
 // Handler for POST /v1/logs to ingest OTEL logs
 // ingests events by extracting stream name from header
 // creates if stream does not exist
+#[instrument(
+    name = "otel_logs_ingestion",
+    level = "info",
+    skip_all,
+    fields(stream_name = tracing::field::Empty, body_size = body.len())
+)]
 pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
+    let dataset_tags = dataset_tags_from_headers(req.headers(), &LogSource::OtelLogs)?;
     let (stream_name, log_source, ..) = setup_otel_stream(
         &req,
         LogSource::OtelLogs,
         &OTEL_LOG_KNOWN_FIELD_LIST,
         TelemetryType::Logs,
-        vec![],
+        dataset_tags,
         vec![],
     )
     .await
@@ -323,6 +359,7 @@ pub async fn handle_otel_logs_ingestion(
         error!("OTEL logs ingestion failed: {e}");
         e
     })?;
+    Span::current().record("stream_name", stream_name.as_str());
 
     process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Logs).await?;
 
@@ -332,16 +369,23 @@ pub async fn handle_otel_logs_ingestion(
 // Handler for POST /v1/metrics to ingest OTEL metrics
 // ingests events by extracting stream name from header
 // creates if stream does not exist
+#[instrument(
+    name = "otel_metrics_ingestion",
+    level = "info",
+    skip_all,
+    fields(stream_name = tracing::field::Empty, body_size = body.len())
+)]
 pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
+    let dataset_tags = dataset_tags_from_headers(req.headers(), &LogSource::OtelMetrics)?;
     let (stream_name, log_source, ..) = setup_otel_stream(
         &req,
         LogSource::OtelMetrics,
         &OTEL_METRICS_KNOWN_FIELD_LIST,
         TelemetryType::Metrics,
-        vec![],
+        dataset_tags,
         vec![],
     )
     .await
@@ -349,6 +393,7 @@ pub async fn handle_otel_metrics_ingestion(
         error!("OTEL metrics ingestion failed: {e}");
         e
     })?;
+    Span::current().record("stream_name", stream_name.as_str());
 
     process_otel_content(
         &req,
@@ -365,16 +410,23 @@ pub async fn handle_otel_metrics_ingestion(
 // Handler for POST /v1/traces to ingest OTEL traces
 // ingests events by extracting stream name from header
 // creates if stream does not exist
+#[instrument(
+    name = "otel_traces_ingestion",
+    level = "info",
+    skip_all,
+    fields(stream_name = tracing::field::Empty, body_size = body.len())
+)]
 pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
+    let dataset_tags = dataset_tags_from_headers(req.headers(), &LogSource::OtelTraces)?;
     let (stream_name, log_source, ..) = setup_otel_stream(
         &req,
         LogSource::OtelTraces,
         &OTEL_TRACES_KNOWN_FIELD_LIST,
         TelemetryType::Traces,
-        vec![],
+        dataset_tags,
         vec![],
     )
     .await
@@ -382,6 +434,7 @@ pub async fn handle_otel_traces_ingestion(
         error!("OTEL traces ingestion failed: {e}");
         e
     })?;
+    Span::current().record("stream_name", stream_name.as_str());
 
     process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Traces).await?;
 
@@ -461,18 +514,15 @@ pub async fn post_event(
         return Err(e);
     }
 
-    if let Err(e) = flatten_and_push_logs(
-        json,
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
-        None,
+    ingest_helper(
+        stream_name,
+        tenant_id,
+        log_source,
         TelemetryType::Logs,
-        &tenant_id,
-    ) {
-        error!("Ingestion failed for stream {stream_name}: {e}");
-        return Err(e);
-    }
+        p_custom_fields,
+        json,
+        None,
+    )?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -582,6 +632,8 @@ impl actix_web::ResponseError for PostError {
 
             StreamNotFound(_) | Event(EventError::StreamNotFound(_)) => StatusCode::NOT_FOUND,
 
+            Event(EventError::SchemaResolutionBlocked(_, _)) => StatusCode::SERVICE_UNAVAILABLE,
+
             Event(_)
             | CreateStream(_)
             | CustomError(_)
@@ -605,6 +657,12 @@ impl actix_web::ResponseError for PostError {
                     .insert_header(ContentType::json())
                     .json(metastore_error.to_detail())
             }
+            PostError::Event(EventError::SchemaResolutionBlocked(_, _)) => {
+                actix_web::HttpResponse::build(self.status_code())
+                    .insert_header(ContentType::plaintext())
+                    .insert_header((actix_web::http::header::RETRY_AFTER, "60"))
+                    .body(self.to_string())
+            }
             _ => actix_web::HttpResponse::build(self.status_code())
                 .insert_header(ContentType::plaintext())
                 .body(self.to_string()),
@@ -615,6 +673,7 @@ impl actix_web::ResponseError for PostError {
 #[cfg(test)]
 mod tests {
 
+    use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
     use arrow::datatypes::Int64Type;
     use arrow_array::{ArrayRef, Float64Array, Int64Array, ListArray, StringArray};
     use arrow_schema::{DataType, Field};
@@ -623,9 +682,55 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use crate::{
-        event::format::{EventFormat, json},
+        event::format::{EventFormat, LogSource, json},
+        handlers::{DATASET_TAGS_KEY, DatasetTag},
         metadata::SchemaVersion,
     };
+
+    #[test]
+    fn dataset_tags_from_headers_accepts_agent_observability_for_traces() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(DATASET_TAGS_KEY),
+            HeaderValue::from_static("agent-observability"),
+        );
+
+        let tags = super::dataset_tags_from_headers(&headers, &LogSource::OtelTraces).unwrap();
+        assert_eq!(tags, vec![DatasetTag::AgentObservability]);
+    }
+
+    #[test]
+    fn dataset_tags_from_headers_rejects_agent_observability_for_metrics() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(DATASET_TAGS_KEY),
+            HeaderValue::from_static("agent-observability"),
+        );
+
+        assert!(matches!(
+            super::dataset_tags_from_headers(&headers, &LogSource::OtelMetrics),
+            Err(super::PostError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn dataset_tags_from_headers_accepts_unrestricted_tags() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(DATASET_TAGS_KEY),
+            HeaderValue::from_static("k8s-observability"),
+        );
+
+        let tags = super::dataset_tags_from_headers(&headers, &LogSource::OtelLogs).unwrap();
+        assert_eq!(tags, vec![DatasetTag::K8sObservability]);
+    }
+
+    #[test]
+    fn dataset_tags_from_headers_defaults_to_empty() {
+        let tags =
+            super::dataset_tags_from_headers(&HeaderMap::new(), &LogSource::OtelLogs).unwrap();
+        assert!(tags.is_empty());
+    }
 
     #[test]
     fn event_stream_not_found_returns_not_found() {

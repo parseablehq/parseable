@@ -152,7 +152,7 @@ pub async fn query_context(
 
 /// Fetches log context after the caller has authorized the dataset and made it
 /// available on the local query node.
-pub(crate) async fn query_context_for_authorized_dataset(
+pub async fn query_context_for_authorized_dataset(
     context_request: LogContextRequest,
     tenant_id: &Option<String>,
 ) -> Result<LogContextResponse, QueryError> {

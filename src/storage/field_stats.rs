@@ -83,6 +83,15 @@ use tracing::{debug, error, warn};
 
 pub const DATASET_STATS_STREAM_NAME: &str = "pstats";
 const DATASET_STATS_CUSTOM_PARTITION: &str = "dataset_name";
+const DATASET_STATS_QUERY_FIELDS: [&str; 7] = [
+    "dataset_name",
+    "field_stats_field_name",
+    "field_stats_distinct_stats_distinct_value",
+    "field_stats_distinct_stats_count",
+    "field_stats_count",
+    "stats_id",
+    "p_timestamp",
+];
 const MIN_TRACKED_DISTINCT_VALUES_PER_FIELD: usize = 1024;
 const MAX_TRACKED_DISTINCT_VALUES_PER_FIELD: usize = 10_000;
 const NULL_VALUE: &str = "NULL";
@@ -847,6 +856,31 @@ pub struct QueryRow {
     distinct_value_count: f64,
 }
 
+fn is_dataset_stats_schema_ready(schema: &Schema) -> bool {
+    DATASET_STATS_QUERY_FIELDS
+        .iter()
+        .all(|field| schema.field_with_name(field).is_ok())
+}
+
+async fn is_dataset_stats_stream_ready(tenant_id: &Option<String>) -> Result<bool, QueryError> {
+    let schema_is_ready = || {
+        PARSEABLE
+            .get_stream(DATASET_STATS_STREAM_NAME, tenant_id)
+            .is_ok_and(|stream| is_dataset_stats_schema_ready(&stream.get_schema()))
+    };
+
+    if schema_is_ready() {
+        return Ok(true);
+    }
+
+    let stream_exists = PARSEABLE
+        .create_stream_and_schema_from_storage(DATASET_STATS_STREAM_NAME, tenant_id)
+        .await
+        .map_err(|error| QueryError::Anyhow(error.into()))?;
+
+    Ok(stream_exists && schema_is_ready())
+}
+
 /// API handler to get the field stats for a dataset
 /// If `fields` is empty, stats for all fields will be returned
 /// If `fields` is provided, stats for those fields will be returned
@@ -857,6 +891,19 @@ pub async fn get_dataset_stats(
     let offset = dataset_stats_request.offset.unwrap_or(0);
     let limit = dataset_stats_request.limit.unwrap_or(5);
     let tenant_id = get_tenant_id_from_request(&req);
+
+    // The pstats stream may be absent when statistics collection is disabled or before the
+    // first parquet file is processed. Until then, field statistics are unavailable rather
+    // than an invalid query. Query and Prism modes may load an existing pstats stream here.
+    if matches!(
+        PARSEABLE.options.mode,
+        Mode::All | Mode::Query | Mode::Prism
+    ) && (!PARSEABLE.options.collect_dataset_stats
+        || !is_dataset_stats_stream_ready(&tenant_id).await?)
+    {
+        return Ok(HttpResponse::Ok().json(HashMap::<String, FieldStats>::new()));
+    }
+
     let sql = if dataset_stats_request.fields.is_empty() {
         build_stats_sql(&dataset_stats_request.dataset_name, None, offset, limit)
     } else {
@@ -1111,8 +1158,9 @@ mod tests {
     use temp_dir::TempDir;
 
     use crate::storage::field_stats::{
-        FieldCountState, NULL_VALUE, build_stats_sql,
+        DATASET_STATS_QUERY_FIELDS, FieldCountState, NULL_VALUE, build_stats_sql,
         collect_all_field_stats_from_parquet_blocking, collect_field_counts,
+        is_dataset_stats_schema_ready,
     };
 
     async fn create_test_parquet_with_data() -> (TempDir, std::path::PathBuf) {
@@ -1266,6 +1314,15 @@ mod tests {
         ])
     }
 
+    fn create_dataset_stats_query_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(
+            DATASET_STATS_QUERY_FIELDS
+                .iter()
+                .map(|name| Field::new(*name, DataType::Utf8, true))
+                .collect::<Vec<_>>(),
+        ))
+    }
+
     #[test]
     fn test_build_stats_sql_uses_file_ids_and_deduped_distinct_values() {
         let sql = build_stats_sql(
@@ -1284,6 +1341,23 @@ mod tests {
         assert!(sql.contains("fd.total_distinct_count AS distinct_count"));
         assert!(!sql.contains("SUM(field_stats_distinct_stats_count) AS total_field_count"));
         assert!(!sql.contains("SUM(field_stats_distinct_count)"));
+    }
+
+    #[test]
+    fn test_dataset_stats_schema_readiness() {
+        assert!(!is_dataset_stats_schema_ready(&Schema::empty()));
+
+        let ready_schema = create_dataset_stats_query_schema();
+        assert!(is_dataset_stats_schema_ready(&ready_schema));
+
+        let incomplete_schema = Schema::new(
+            DATASET_STATS_QUERY_FIELDS
+                .iter()
+                .filter(|name| **name != "stats_id")
+                .map(|name| Field::new(*name, DataType::Utf8, true))
+                .collect::<Vec<_>>(),
+        );
+        assert!(!is_dataset_stats_schema_ready(&incomplete_schema));
     }
 
     #[test]
