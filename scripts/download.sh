@@ -3,7 +3,7 @@
 DOWNLOAD_BASE_URL="https://cdn.parseable.com/parseablepublicrelease/parseable-enterprise"
 INSTALL_DIR="${HOME}/.parseable"
 BIN_DIR="${INSTALL_DIR}/bin"
-BIN_NAME="${BIN_DIR}/parseable"
+BIN_NAME="${BIN_DIR}/parseable-enterprise"
 
 # Get the system's CPU architecture and operating system.
 CPU_ARCH=$(uname -m)
@@ -85,7 +85,7 @@ printf 'Latest Parseable version: %s\n' "$release_tag"
 download_url="${DOWNLOAD_BASE_URL}/${release_tag}/${PARSEABLE_FILENAME}"
 
 if [ -d "$INSTALL_DIR" ]; then
-    printf "A previous version of Parseable already exists. Run 'parseable --version' to check the version,\n"
+    printf "A previous version of Parseable Enterprise already exists. Run 'parseable-enterprise --version' to check the version,\n"
     printf 'or remove %s before installing a new version.\n' "$INSTALL_DIR"
     exit 1
 fi

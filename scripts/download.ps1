@@ -64,7 +64,7 @@ function Write-Env {
 [String]$CPU_ARCH = "x86_64"
 [String]$OS = "windows"
 [String]$INSTALLDIR = "${HOME}\.parseable\bin"
-[String]$BIN = "${INSTALLDIR}\parseable.exe"
+[String]$BIN = "${INSTALLDIR}\parseable-enterprise.exe"
 [String]$DOWNLOAD_BASE_URL = "https://cdn.parseable.com/parseablepublicrelease/parseable-enterprise"
 [String]$PARSEABLE_FILENAME = "Parseable_Enterprise_x86_64-pc-windows-msvc.exe"
 
@@ -80,7 +80,7 @@ function Install-Parseable {
 
     Write-Output "Checking for existing installation..."
     if (Test-Path $BIN) {
-        Write-Error "Parseable is already installed. Run 'parseable --version' to check the version."
+        Write-Error "Parseable Enterprise is already installed. Run 'parseable-enterprise --version' to check the version."
         Write-Error "Remove the existing installation before installing a new version."
         exit 1
     }
@@ -128,4 +128,4 @@ function Install-Parseable {
 Install-Parseable
 
 Write-Output "Parseable Enterprise was downloaded successfully at $INSTALLDIR"
-Write-Output "Restart your terminal/editor, then type `"parseable`"`n"
+Write-Output "Restart your terminal/editor, then type `"parseable-enterprise`"`n"
