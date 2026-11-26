@@ -200,21 +200,7 @@ pub async fn user_auth_for_datasets(
                 Permission::Resource(Action::Query, None) => {
                     authorized = true;
                 }
-                Permission::Resource(action, Some(ParseableResourceType::All))
-                    if ![
-                        Action::All,
-                        Action::PutUser,
-                        Action::PutRole,
-                        Action::DeleteUser,
-                        Action::DeleteRole,
-                        Action::ModifyUserGroup,
-                        Action::CreateUserGroup,
-                        Action::DeleteUserGroup,
-                        Action::DeleteNode,
-                        Action::ResolveSchema,
-                    ]
-                    .contains(action) =>
-                {
+                Permission::Resource(Action::Query, Some(ParseableResourceType::All)) => {
                     authorized = true;
                 }
                 _ => (),
@@ -229,6 +215,37 @@ pub async fn user_auth_for_datasets(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod dataset_authorization_tests {
+    use super::user_auth_for_datasets;
+    use crate::rbac::role::{Action, ParseableResourceType, Permission};
+
+    #[tokio::test]
+    async fn all_datasets_ingestion_permission_does_not_grant_query_access() {
+        let permissions = [Permission::Resource(
+            Action::Ingest,
+            Some(ParseableResourceType::All),
+        )];
+
+        let result =
+            user_auth_for_datasets(&permissions, &["unrelated-stream".to_owned()], &None).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn all_datasets_query_permission_grants_query_access() {
+        let permissions = [Permission::Resource(
+            Action::Query,
+            Some(ParseableResourceType::All),
+        )];
+
+        let result = user_auth_for_datasets(&permissions, &["any-stream".to_owned()], &None).await;
+
+        assert!(result.is_ok());
+    }
 }
 
 pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {

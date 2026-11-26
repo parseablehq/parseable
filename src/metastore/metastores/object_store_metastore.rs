@@ -44,7 +44,7 @@ use crate::{
     },
     handlers::http::{
         modal::{Metadata, NodeMetadata, NodeType},
-        users::USERS_ROOT_DIR,
+        users::{KEYSTONES_DIR, USERS_ROOT_DIR},
     },
     metastore::{
         MetastoreError,
@@ -139,17 +139,52 @@ impl Metastore for ObjectStoreMetastore {
         let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
         let mut keystones = HashMap::new();
         for mut tenant in base_paths {
+            let tenant_id = if tenant.is_empty() {
+                None
+            } else {
+                Some(tenant.clone())
+            };
+            let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
+            let mut objs = Vec::new();
+            for user in self
+                .storage
+                .list_dirs_relative(&users_dir, &tenant_id)
+                .await?
+            {
+                let user_keystones = users_dir.join(&user).join(KEYSTONES_DIR);
+                match self
+                    .storage
+                    .get_objects(
+                        Some(&user_keystones),
+                        Box::new(|file_name| file_name.ends_with(".json")),
+                        &tenant_id,
+                    )
+                    .await
+                {
+                    Ok(stored) => objs.extend(stored),
+                    Err(error) if is_missing_optional_dir(&error) => {}
+                    Err(error) => return Err(MetastoreError::ObjectStorageError(error)),
+                }
+            }
+
+            // Read the legacy global directory as well. Keystones::load migrates
+            // these records after assigning them to the configured super-admin.
             let keystone_path = RelativePathBuf::from_iter([&tenant, ".keystone"]);
-            let objs = self
+            match self
                 .storage
                 .get_objects(
                     Some(&keystone_path),
                     Box::new(|file_name| {
                         file_name.ends_with(".json") && !file_name.starts_with("conv_")
                     }),
-                    &Some(tenant.clone()),
+                    &tenant_id,
                 )
-                .await?;
+                .await
+            {
+                Ok(legacy) => objs.extend(legacy),
+                Err(error) if is_missing_optional_dir(&error) => {}
+                Err(error) => return Err(MetastoreError::ObjectStorageError(error)),
+            }
             if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
@@ -165,16 +200,7 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let id = obj.get_object_id();
-        let path = if let Some(tenant_id) = tenant_id.as_ref() {
-            RelativePathBuf::from_iter([tenant_id, ".keystone", &format!("{id}.json")])
-        } else {
-            RelativePathBuf::from_iter([".keystone", &format!("{id}.json")])
-        };
-        Ok(self
-            .storage
-            .put_object(&path, to_bytes(obj), tenant_id)
-            .await?)
+        self.put_object(obj, tenant_id).await
     }
 
     /// Delete a keystone
@@ -183,13 +209,24 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let id = obj.get_object_id();
+        self.delete_object(obj, tenant_id).await
+    }
+
+    async fn delete_legacy_keystone(
+        &self,
+        id: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError> {
         let path = if let Some(tenant_id) = tenant_id.as_ref() {
             RelativePathBuf::from_iter([tenant_id, ".keystone", &format!("{id}.json")])
         } else {
             RelativePathBuf::from_iter([".keystone", &format!("{id}.json")])
         };
-        Ok(self.storage.delete_object(&path, tenant_id).await?)
+        match self.storage.delete_object(&path, tenant_id).await {
+            Ok(()) => Ok(()),
+            Err(error) if is_missing_optional_dir(&error) => Ok(()),
+            Err(error) => Err(MetastoreError::ObjectStorageError(error)),
+        }
     }
 
     /// This function fetches all the conversations from the underlying object store
@@ -197,17 +234,35 @@ impl Metastore for ObjectStoreMetastore {
         let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
         let mut conversations = HashMap::new();
         for mut tenant in base_paths {
-            let conv_path = RelativePathBuf::from_iter([&tenant, ".keystone"]);
-            let objs = self
+            let tenant_id = if tenant.is_empty() {
+                None
+            } else {
+                Some(tenant.clone())
+            };
+            let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
+            let mut objs = Vec::new();
+            for user in self
                 .storage
-                .get_objects(
-                    Some(&conv_path),
-                    Box::new(|file_name| {
-                        file_name.ends_with(".json") && file_name.starts_with("conv_")
-                    }),
-                    &Some(tenant.clone()),
-                )
-                .await?;
+                .list_dirs_relative(&users_dir, &tenant_id)
+                .await?
+            {
+                let user_keystones = users_dir.join(&user).join(KEYSTONES_DIR);
+                match self
+                    .storage
+                    .get_objects(
+                        Some(&user_keystones),
+                        Box::new(|file_name| {
+                            file_name.ends_with(".json") && file_name.starts_with("conv_")
+                        }),
+                        &tenant_id,
+                    )
+                    .await
+                {
+                    Ok(stored) => objs.extend(stored),
+                    Err(error) if is_missing_optional_dir(&error) => {}
+                    Err(error) => return Err(MetastoreError::ObjectStorageError(error)),
+                }
+            }
             if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
@@ -217,22 +272,48 @@ impl Metastore for ObjectStoreMetastore {
         Ok(conversations)
     }
 
+    async fn get_legacy_conversations(
+        &self,
+    ) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
+        let mut conversations = HashMap::new();
+        for mut tenant in base_paths {
+            let tenant_id = if tenant.is_empty() {
+                None
+            } else {
+                Some(tenant.clone())
+            };
+            let conv_path = RelativePathBuf::from_iter([&tenant, ".keystone"]);
+            let objs = match self
+                .storage
+                .get_objects(
+                    Some(&conv_path),
+                    Box::new(|file_name| {
+                        file_name.ends_with(".json") && file_name.starts_with("conv_")
+                    }),
+                    &tenant_id,
+                )
+                .await
+            {
+                Ok(stored) => stored,
+                Err(error) if is_missing_optional_dir(&error) => Vec::new(),
+                Err(error) => return Err(MetastoreError::ObjectStorageError(error)),
+            };
+            if tenant.is_empty() {
+                tenant.clone_from(&DEFAULT_TENANT.to_string());
+            }
+            conversations.insert(tenant, objs);
+        }
+        Ok(conversations)
+    }
+
     /// This function puts a conversation in the object store at the given path
     async fn put_conversation(
         &self,
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let id = obj.get_object_id();
-        let path = if let Some(tenant_id) = tenant_id.as_ref() {
-            RelativePathBuf::from_iter([tenant_id, ".keystone", &format!("conv_{id}.json")])
-        } else {
-            RelativePathBuf::from_iter([".keystone", &format!("conv_{id}.json")])
-        };
-        Ok(self
-            .storage
-            .put_object(&path, to_bytes(obj), tenant_id)
-            .await?)
+        self.put_object(obj, tenant_id).await
     }
 
     /// Delete a conversation
@@ -241,13 +322,24 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let id = obj.get_object_id();
+        self.delete_object(obj, tenant_id).await
+    }
+
+    async fn delete_legacy_conversation(
+        &self,
+        id: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError> {
         let path = if let Some(tenant_id) = tenant_id.as_ref() {
             RelativePathBuf::from_iter([tenant_id, ".keystone", &format!("conv_{id}.json")])
         } else {
             RelativePathBuf::from_iter([".keystone", &format!("conv_{id}.json")])
         };
-        Ok(self.storage.delete_object(&path, tenant_id).await?)
+        match self.storage.delete_object(&path, tenant_id).await {
+            Ok(()) => Ok(()),
+            Err(error) if is_missing_optional_dir(&error) => Ok(()),
+            Err(error) => Err(MetastoreError::ObjectStorageError(error)),
+        }
     }
 
     /// This function fetches all the alerts from the underlying object store

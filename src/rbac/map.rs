@@ -337,116 +337,25 @@ impl Sessions {
         context_resource: Option<&str>,
         context_user: Option<&str>,
     ) -> Option<Response> {
-        self.active_sessions
-            .get(key)
-            .map(|(username, tenant_id, perms)| {
-                let mut perms: HashSet<Permission> = HashSet::from_iter(perms.clone());
-                perms.extend(aggregate_group_permissions(username, tenant_id));
+        let (username, tenant_id, permissions) = self.active_sessions.get(key)?;
+        let mut permissions: HashSet<Permission> = HashSet::from_iter(permissions.clone());
+        permissions.extend(aggregate_group_permissions(username, tenant_id));
 
-                if perms.iter().any(|user_perm| {
-                    match *user_perm {
-                        // if any action is ALL then we we authorize
-                        Permission::Unit(action) => {
-                            action == required_action
-                                || action == Action::All
-                                || action == Action::SuperAdmin
-                        }
-                        Permission::Resource(action, ref resource_type) => {
-                            if let Some(resource_type) = resource_type.as_ref() {
-                                // default flow for all actions other than global-ingestion (ingestion action without any dataset restriction)
-                                match resource_type {
-                                    ParseableResourceType::Stream(resource_id)
-                                    | ParseableResourceType::Llm(resource_id) => {
-                                        let ok_resource =
-                                            if let Some(context_resource_id) = context_resource {
-                                                let is_internal = PARSEABLE
-                                                    .get_stream(
-                                                        context_resource_id,
-                                                        &Some(tenant_id.to_owned()),
-                                                    )
-                                                    .is_ok_and(|stream| {
-                                                        stream.get_stream_type().eq(
-                                                            &crate::storage::StreamType::Internal,
-                                                        )
-                                                    });
-                                                resource_id == context_resource_id
-                                                    || resource_id == "*"
-                                                    || is_internal
-                                            } else {
-                                                // if no resource to match then resource check is not needed
-                                                // WHEN IS THIS VALID??
-                                                true
-                                            };
-                                        (action == required_action
-                                            || action == Action::All
-                                            || action == Action::SuperAdmin)
-                                            && ok_resource
-                                    }
-                                    ParseableResourceType::All => {
-                                        action == required_action
-                                            || action == Action::All
-                                            || action == Action::SuperAdmin
-                                    }
-                                }
-                            } else if resource_type.is_none()
-                                && matches!(
-                                    action,
-                                    Action::Ingest
-                                        | Action::Query
-                                        | Action::ListStream
-                                        | Action::GetSchema
-                                        | Action::GetStats
-                                        | Action::GetRetention
-                                        | Action::PutRetention
-                                        | Action::GetLLM
-                                        | Action::QueryLLM
-                                        | Action::ListLLM
-                                )
-                            {
-                                // flow for global-ingestion / global-query / global-reader / global-writer
-                                let ok_resource =
-                                    if let Some(context_resource_id) = context_resource {
-                                        let is_internal = PARSEABLE
-                                            .get_stream(
-                                                context_resource_id,
-                                                &Some(tenant_id.to_owned()),
-                                            )
-                                            .is_ok_and(|stream| {
-                                                stream
-                                                    .get_stream_type()
-                                                    .eq(&crate::storage::StreamType::Internal)
-                                            });
-                                        !is_internal
-                                    } else {
-                                        // if no resource to match then resource check is not needed
-                                        // WHEN IS THIS VALID??
-                                        true
-                                    };
-                                action == required_action && ok_resource
-                            } else {
-                                // the default flow (some resource_type and an action) was covered in the first if
-                                // if the resource type is also None and action is not ingest then return with false
-                                false
-                            }
-                        }
-                        Permission::SelfUser
-                            if matches!(
-                                required_action,
-                                Action::GetUserRoles
-                                    | Action::GetUserPreferences
-                                    | Action::PutUserPreferences
-                            ) =>
-                        {
-                            context_user.map(|x| x == username).unwrap_or_default()
-                        }
-                        _ => false,
-                    }
-                }) {
-                    Response::Authorized
-                } else {
-                    Response::UnAuthorized
-                }
-            })
+        let authorized = permissions.iter().any(|permission| {
+            permission_authorizes(
+                permission,
+                required_action,
+                context_resource,
+                context_user,
+                username,
+                tenant_id,
+            )
+        });
+        Some(if authorized {
+            Response::Authorized
+        } else {
+            Response::UnAuthorized
+        })
     }
 
     pub fn get_user_and_tenant_id(&self, key: &SessionKey) -> Option<(String, String)> {
@@ -463,6 +372,125 @@ impl Sessions {
             );
         }
     }
+}
+
+fn permission_authorizes(
+    permission: &Permission,
+    required_action: Action,
+    context_resource: Option<&str>,
+    context_user: Option<&str>,
+    username: &str,
+    tenant_id: &str,
+) -> bool {
+    match permission {
+        Permission::Unit(action) => action_authorizes(*action, required_action),
+        Permission::Resource(action, resource_type) => resource_permission_authorizes(
+            *action,
+            resource_type.as_ref(),
+            required_action,
+            context_resource,
+            tenant_id,
+        ),
+        Permission::SelfUser => {
+            self_user_permission_authorizes(required_action, context_user, username)
+        }
+    }
+}
+
+fn resource_permission_authorizes(
+    action: Action,
+    resource_type: Option<&ParseableResourceType>,
+    required_action: Action,
+    context_resource: Option<&str>,
+    tenant_id: &str,
+) -> bool {
+    match resource_type {
+        Some(ParseableResourceType::Stream(resource_id)) => {
+            is_stream_resource_action(action)
+                && action_authorizes(action, required_action)
+                && stream_resource_matches(resource_id, context_resource, tenant_id)
+        }
+        Some(ParseableResourceType::Llm(resource_id)) => {
+            is_llm_resource_action(action)
+                && action_authorizes(action, required_action)
+                && named_resource_matches(resource_id, context_resource)
+        }
+        Some(ParseableResourceType::All) => action_authorizes(action, required_action),
+        None => {
+            is_global_resource_action(action)
+                && action == required_action
+                && context_resource
+                    .is_none_or(|resource_id| !is_internal_stream(resource_id, tenant_id))
+        }
+    }
+}
+
+fn action_authorizes(action: Action, required_action: Action) -> bool {
+    matches!(action, Action::All | Action::SuperAdmin) || action == required_action
+}
+
+fn stream_resource_matches(
+    permitted_resource: &str,
+    context_resource: Option<&str>,
+    tenant_id: &str,
+) -> bool {
+    context_resource.is_none_or(|resource_id| {
+        named_resource_matches(permitted_resource, Some(resource_id))
+            || is_internal_stream(resource_id, tenant_id)
+    })
+}
+
+fn named_resource_matches(permitted_resource: &str, context_resource: Option<&str>) -> bool {
+    context_resource
+        .is_none_or(|resource_id| permitted_resource == resource_id || permitted_resource == "*")
+}
+
+fn is_internal_stream(resource_id: &str, tenant_id: &str) -> bool {
+    PARSEABLE
+        .get_stream(resource_id, &Some(tenant_id.to_owned()))
+        .is_ok_and(|stream| stream.get_stream_type() == crate::storage::StreamType::Internal)
+}
+
+fn self_user_permission_authorizes(
+    required_action: Action,
+    context_user: Option<&str>,
+    username: &str,
+) -> bool {
+    matches!(
+        required_action,
+        Action::GetUserRoles | Action::GetUserPreferences | Action::PutUserPreferences
+    ) && context_user == Some(username)
+}
+
+fn is_global_resource_action(action: Action) -> bool {
+    is_stream_resource_action(action) || is_llm_resource_action(action)
+}
+
+fn is_stream_resource_action(action: Action) -> bool {
+    matches!(
+        action,
+        Action::Ingest
+            | Action::Query
+            | Action::CreateStream
+            | Action::DeleteStream
+            | Action::GetStreamInfo
+            | Action::ListStream
+            | Action::GetSchema
+            | Action::DetectSchema
+            | Action::GetStats
+            | Action::GetRetention
+            | Action::PutRetention
+            | Action::PutHotTierEnabled
+            | Action::GetHotTierEnabled
+            | Action::DeleteHotTierEnabled
+    )
+}
+
+fn is_llm_resource_action(action: Action) -> bool {
+    matches!(
+        action,
+        Action::AddLLM | Action::DeleteLLM | Action::GetLLM | Action::QueryLLM | Action::ListLLM
+    )
 }
 
 // UserMap is a map of [(username, tenant_id) --> User]
@@ -568,5 +596,19 @@ impl From<Vec<UserGroup>> for UserGroups {
         //         .map(|group| (group.name.to_owned(), group)),
         // );
         map
+    }
+}
+
+#[cfg(test)]
+mod resource_scope_tests {
+    use super::{is_llm_resource_action, is_stream_resource_action};
+    use crate::rbac::role::Action;
+
+    #[test]
+    fn llm_and_stream_resource_actions_do_not_overlap() {
+        assert!(is_llm_resource_action(Action::QueryLLM));
+        assert!(!is_llm_resource_action(Action::Query));
+        assert!(is_stream_resource_action(Action::Query));
+        assert!(!is_stream_resource_action(Action::QueryLLM));
     }
 }
