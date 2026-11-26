@@ -222,7 +222,11 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             RelativePathBuf::from_iter([".keystone", &format!("{id}.json")])
         };
-        Ok(self.storage.delete_object(&path, tenant_id).await?)
+        match self.storage.delete_object(&path, tenant_id).await {
+            Ok(()) => Ok(()),
+            Err(error) if is_missing_optional_dir(&error) => Ok(()),
+            Err(error) => Err(MetastoreError::ObjectStorageError(error)),
+        }
     }
 
     /// This function fetches all the conversations from the underlying object store
