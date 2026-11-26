@@ -72,6 +72,8 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
 
     /// conversations
     async fn get_conversations(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
+    async fn get_legacy_conversations(&self)
+    -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
     async fn put_conversation(
         &self,
         obj: &dyn MetastoreObject,
@@ -80,6 +82,11 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn delete_conversation(
         &self,
         obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_legacy_conversation(
+        &self,
+        id: &str,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
 
