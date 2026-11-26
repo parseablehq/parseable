@@ -64,6 +64,11 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
+    async fn delete_legacy_keystone(
+        &self,
+        id: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// conversations
     async fn get_conversations(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;

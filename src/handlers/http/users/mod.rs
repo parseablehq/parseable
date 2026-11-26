@@ -22,4 +22,5 @@ pub mod preferences;
 
 pub const USERS_ROOT_DIR: &str = ".users";
 pub const DASHBOARDS_DIR: &str = "dashboards";
+pub const KEYSTONES_DIR: &str = "keystones";
 pub const FILTER_DIR: &str = "filters";

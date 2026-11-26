@@ -61,13 +61,13 @@ use crate::handlers::http::fetch_schema;
 use crate::metastore::MetastoreError;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
+use crate::rbac::Users;
 use crate::rbac::map::{SessionKey, sessions};
-use crate::rbac::{Response, Users, role::Action};
 use crate::sse::{SSE_HANDLER, SSEAlertInfo, SSEEvent};
 use crate::storage;
 use crate::storage::ObjectStorageError;
 use crate::sync::alert_runtime;
-use crate::utils::{get_tenant_id_from_key, user_auth_for_query};
+use crate::utils::{get_tenant_id_from_key, user_auth_for_datasets, user_auth_for_query};
 
 // these types describe the scheduled task for an alert
 pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
@@ -188,14 +188,9 @@ pub async fn user_auth_for_alert_config(
                 ));
             };
 
-            if Users.authorize(session.clone(), Action::Query, Some(dataset), None)
-                != Response::Authorized
-            {
-                return Err(actix_web::error::ErrorUnauthorized(format!(
-                    "User does not have access to stream- {dataset}"
-                )));
-            }
-            Ok(())
+            let tenant_id = get_tenant_id_from_key(session);
+            let permissions = Users.get_permissions(session);
+            user_auth_for_datasets(&permissions, std::slice::from_ref(dataset), &tenant_id).await
         }
     }
 }

@@ -355,8 +355,10 @@ impl Sessions {
                             if let Some(resource_type) = resource_type.as_ref() {
                                 // default flow for all actions other than global-ingestion (ingestion action without any dataset restriction)
                                 match resource_type {
-                                    ParseableResourceType::Stream(resource_id)
-                                    | ParseableResourceType::Llm(resource_id) => {
+                                    ParseableResourceType::Stream(resource_id) => {
+                                        if !is_stream_resource_action(action) {
+                                            return false;
+                                        }
                                         let ok_resource =
                                             if let Some(context_resource_id) = context_resource {
                                                 let is_internal = PARSEABLE
@@ -382,6 +384,20 @@ impl Sessions {
                                             || action == Action::SuperAdmin)
                                             && ok_resource
                                     }
+                                    ParseableResourceType::Llm(resource_id) => {
+                                        if !is_llm_resource_action(action) {
+                                            return false;
+                                        }
+                                        let ok_resource =
+                                            context_resource.is_none_or(|context_resource_id| {
+                                                resource_id == context_resource_id
+                                                    || resource_id == "*"
+                                            });
+                                        (action == required_action
+                                            || action == Action::All
+                                            || action == Action::SuperAdmin)
+                                            && ok_resource
+                                    }
                                     ParseableResourceType::All => {
                                         action == required_action
                                             || action == Action::All
@@ -389,19 +405,8 @@ impl Sessions {
                                     }
                                 }
                             } else if resource_type.is_none()
-                                && matches!(
-                                    action,
-                                    Action::Ingest
-                                        | Action::Query
-                                        | Action::ListStream
-                                        | Action::GetSchema
-                                        | Action::GetStats
-                                        | Action::GetRetention
-                                        | Action::PutRetention
-                                        | Action::GetLLM
-                                        | Action::QueryLLM
-                                        | Action::ListLLM
-                                )
+                                && (is_stream_resource_action(action)
+                                    || is_llm_resource_action(action))
                             {
                                 // flow for global-ingestion / global-query / global-reader / global-writer
                                 let ok_resource =
@@ -463,6 +468,33 @@ impl Sessions {
             );
         }
     }
+}
+
+fn is_stream_resource_action(action: Action) -> bool {
+    matches!(
+        action,
+        Action::Ingest
+            | Action::Query
+            | Action::CreateStream
+            | Action::DeleteStream
+            | Action::GetStreamInfo
+            | Action::ListStream
+            | Action::GetSchema
+            | Action::DetectSchema
+            | Action::GetStats
+            | Action::GetRetention
+            | Action::PutRetention
+            | Action::PutHotTierEnabled
+            | Action::GetHotTierEnabled
+            | Action::DeleteHotTierEnabled
+    )
+}
+
+fn is_llm_resource_action(action: Action) -> bool {
+    matches!(
+        action,
+        Action::AddLLM | Action::DeleteLLM | Action::GetLLM | Action::QueryLLM | Action::ListLLM
+    )
 }
 
 // UserMap is a map of [(username, tenant_id) --> User]
@@ -568,5 +600,19 @@ impl From<Vec<UserGroup>> for UserGroups {
         //         .map(|group| (group.name.to_owned(), group)),
         // );
         map
+    }
+}
+
+#[cfg(test)]
+mod resource_scope_tests {
+    use super::{is_llm_resource_action, is_stream_resource_action};
+    use crate::rbac::role::Action;
+
+    #[test]
+    fn llm_and_stream_resource_actions_do_not_overlap() {
+        assert!(is_llm_resource_action(Action::QueryLLM));
+        assert!(!is_llm_resource_action(Action::Query));
+        assert!(is_stream_resource_action(Action::Query));
+        assert!(!is_stream_resource_action(Action::QueryLLM));
     }
 }

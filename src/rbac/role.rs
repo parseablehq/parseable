@@ -113,6 +113,9 @@ impl RoleBuilder {
     pub fn build(self) -> Vec<Permission> {
         let mut perms = Vec::new();
         for action in self.actions {
+            if !action_applies_to_resource(action, self.resource_type.as_ref()) {
+                continue;
+            }
             let perm = match action {
                 Action::Login
                 | Action::Metrics
@@ -129,16 +132,10 @@ impl RoleBuilder {
                 | Action::GetRole
                 | Action::DeleteRole
                 | Action::ListRole
-                | Action::CreateStream
-                | Action::DeleteStream
-                | Action::GetStreamInfo
                 | Action::ListCluster
                 | Action::ListClusterMetrics
                 | Action::DeleteNode
                 | Action::ResolveSchema
-                | Action::PutHotTierEnabled
-                | Action::GetHotTierEnabled
-                | Action::DeleteHotTierEnabled
                 | Action::ListDashboard
                 | Action::GetDashboard
                 | Action::CreateDashboard
@@ -162,12 +159,18 @@ impl RoleBuilder {
                 | Action::GetLLM
                 | Action::ListLLM
                 | Action::Ingest
+                | Action::CreateStream
+                | Action::DeleteStream
+                | Action::GetStreamInfo
                 | Action::ListStream
                 | Action::GetSchema
                 | Action::DetectSchema
                 | Action::GetStats
                 | Action::GetRetention
                 | Action::PutRetention
+                | Action::PutHotTierEnabled
+                | Action::GetHotTierEnabled
+                | Action::DeleteHotTierEnabled
                 | Action::All
                 | Action::SuperAdmin => Permission::Resource(action, self.resource_type.clone()),
             };
@@ -175,6 +178,33 @@ impl RoleBuilder {
         }
         perms.push(Permission::SelfUser);
         perms
+    }
+}
+
+fn action_applies_to_resource(
+    action: Action,
+    resource_type: Option<&ParseableResourceType>,
+) -> bool {
+    match resource_type {
+        Some(ParseableResourceType::Llm(_)) => matches!(
+            action,
+            Action::Login
+                | Action::GetAbout
+                | Action::GetLLM
+                | Action::QueryLLM
+                | Action::ListLLM
+                | Action::GetUserRoles
+                | Action::PatchUser
+        ),
+        Some(ParseableResourceType::Stream(_)) => !matches!(
+            action,
+            Action::AddLLM
+                | Action::DeleteLLM
+                | Action::GetLLM
+                | Action::QueryLLM
+                | Action::ListLLM
+        ),
+        Some(ParseableResourceType::All) | None => true,
     }
 }
 
@@ -454,5 +484,43 @@ pub mod model {
             actions: vec![Action::Ingest],
             resource_type: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Action, ParseableResourceType, Permission, RoleBuilder};
+    use crate::rbac::role::model::DefaultPrivilege;
+
+    #[test]
+    fn llm_reader_does_not_receive_stream_or_alert_permissions() {
+        let resource = ParseableResourceType::Llm("*".to_owned());
+        let permissions = RoleBuilder::from(&DefaultPrivilege::Reader {
+            resource: Some(resource.clone()),
+        })
+        .build();
+
+        assert!(permissions.contains(&Permission::Resource(Action::QueryLLM, Some(resource))));
+        assert!(!permissions.iter().any(|permission| matches!(
+            permission,
+            Permission::Resource(Action::Query | Action::GetStreamInfo, _)
+                | Permission::Unit(Action::GetStreamInfo | Action::GetAlert)
+        )));
+    }
+
+    #[test]
+    fn stream_reader_keeps_stream_permissions_resource_scoped() {
+        let resource = ParseableResourceType::Stream("logs".to_owned());
+        let permissions = RoleBuilder::from(&DefaultPrivilege::Reader {
+            resource: Some(resource.clone()),
+        })
+        .build();
+
+        assert!(permissions.contains(&Permission::Resource(Action::Query, Some(resource.clone()))));
+        assert!(permissions.contains(&Permission::Resource(Action::GetStreamInfo, Some(resource))));
+        assert!(!permissions.iter().any(|permission| matches!(
+            permission,
+            Permission::Resource(Action::GetLLM | Action::QueryLLM | Action::ListLLM, _)
+        )));
     }
 }
