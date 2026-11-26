@@ -1311,12 +1311,11 @@ async fn fetch_cluster_metrics(tenant_id: &Option<String>) -> Result<Vec<Metrics
     ];
     // if enterprise, then skip Prism, else skip querier
     let self_type = if QUERIER_META.initialized() {
-        // node_result.retain_mut(|e| e.1.ne(&NodeType::Querier));
         NodeType::Querier
     } else {
-        // node_result.retain_mut(|e| e.1.ne(&NodeType::Prism));
         NodeType::Prism
     };
+
     let mut all_metrics = Vec::new();
     let mut metadatas = vec![];
     for (res, node_type) in node_metas {
@@ -1337,7 +1336,12 @@ async fn fetch_cluster_metrics(tenant_id: &Option<String>) -> Result<Vec<Metrics
             let sample = prometheus_parse::Scrape::parse(lines.into_iter())
                 .map_err(|err| PostError::CustomError(err.to_string()))?
                 .samples;
-            all_metrics.push(Metrics::from_local_prometheus_samples(sample, &meta[0]));
+
+            // skip adding metrics in case mode is All
+            // meta[0] will panic in that case
+            if PARSEABLE.options.mode.ne(&Mode::All) {
+                all_metrics.push(Metrics::from_local_prometheus_samples(sample, &meta[0]));
+            }
         } else {
             metadatas.push(meta)
         }

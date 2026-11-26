@@ -166,10 +166,13 @@ impl Metrics {
         samples: Vec<PromSample>,
         metadata: &T,
     ) -> Result<Self, PostError> {
-        let (commit_id, staging) = Self::from_about_api_response(metadata).await.map_err(|err| {
-            error!("Fatal: failed to get server info: {:?}", err);
-            PostError::Invalid(err.into())
-        })?;
+        let (commit_id, staging) =
+            Self::from_about_api_response(metadata)
+                .await
+                .map_err(|err| {
+                    error!("Fatal: failed to get server info: {:?}", err);
+                    PostError::Invalid(err.into())
+                })?;
         Ok(Self::from_samples_with_about(
             samples, metadata, commit_id, staging,
         ))
