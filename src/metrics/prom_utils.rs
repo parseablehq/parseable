@@ -166,6 +166,32 @@ impl Metrics {
         samples: Vec<PromSample>,
         metadata: &T,
     ) -> Result<Self, PostError> {
+        let (commit_id, staging) = Self::from_about_api_response(metadata).await.map_err(|err| {
+            error!("Fatal: failed to get server info: {:?}", err);
+            PostError::Invalid(err.into())
+        })?;
+        Ok(Self::from_samples_with_about(
+            samples, metadata, commit_id, staging,
+        ))
+    }
+
+    /// Same as `from_prometheus_samples`, for the node itself: commit and
+    /// staging are read in-process instead of via a request to its own address.
+    pub fn from_local_prometheus_samples<T: Metadata>(
+        samples: Vec<PromSample>,
+        metadata: &T,
+    ) -> Self {
+        let commit_id = crate::about::current().commit_hash;
+        let staging = PARSEABLE.options.staging_dir().display().to_string();
+        Self::from_samples_with_about(samples, metadata, commit_id, staging)
+    }
+
+    fn from_samples_with_about<T: Metadata>(
+        samples: Vec<PromSample>,
+        metadata: &T,
+        commit_id: String,
+        staging: String,
+    ) -> Self {
         let mut prom_dress = Metrics::new(
             metadata.domain_name().to_string(),
             metadata.node_type().to_string(),
@@ -221,18 +247,10 @@ impl Metrics {
                 }
             }
         }
-        let (commit_id, staging) =
-            Self::from_about_api_response(metadata)
-                .await
-                .map_err(|err| {
-                    error!("Fatal: failed to get server info: {:?}", err);
-                    PostError::Invalid(err.into())
-                })?;
-
         prom_dress.commit = commit_id;
         prom_dress.staging = staging;
 
-        Ok(prom_dress)
+        prom_dress
     }
 
     pub async fn from_about_api_response<T: Metadata>(
