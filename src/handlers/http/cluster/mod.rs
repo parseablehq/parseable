@@ -44,7 +44,9 @@ use utils::{IngestionStats, QueriedStats, StorageStats, check_liveness, to_url_s
 
 use crate::INTRA_CLUSTER_CLIENT;
 use crate::handlers::http::modal::ingest::SyncRole;
+use crate::handlers::http::modal::query_server::QUERIER_META;
 use crate::handlers::http::query::{Query, QueryError, TIME_ELAPSED_HEADER};
+use crate::metrics::get_metrics_helper;
 use crate::metrics::prom_utils::Metrics;
 use crate::option::Mode;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
@@ -60,6 +62,7 @@ use super::logstream::error::StreamError;
 use super::modal::{IngestorMetadata, Metadata, NodeMetadata, NodeType, QuerierMetadata};
 use super::rbac::RBACError;
 use super::role::RoleError;
+use futures::stream::FuturesUnordered;
 
 pub const PMETA_STREAM_NAME: &str = "pmeta";
 pub const BILLING_METRICS_STREAM_NAME: &str = "pbilling";
@@ -1292,7 +1295,7 @@ where
 /// fetches metrics for all nodes
 /// combines all metrics into a single vector
 async fn fetch_cluster_metrics(tenant_id: &Option<String>) -> Result<Vec<Metrics>, PostError> {
-    // Get ingestor and indexer metadata concurrently
+    // Get node metadata concurrently
     let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
         get_node_info(NodeType::Prism, tenant_id),
         get_node_info(NodeType::Querier, tenant_id),
@@ -1300,62 +1303,59 @@ async fn fetch_cluster_metrics(tenant_id: &Option<String>) -> Result<Vec<Metrics
         get_node_info(NodeType::Indexer, tenant_id),
     )
     .await;
+    let node_metas: Vec<(Result<Vec<NodeMetadata>, anyhow::Error>, NodeType)> = vec![
+        (prism_result, NodeType::Prism),
+        (querier_result, NodeType::Querier),
+        (ingestor_result, NodeType::Ingestor),
+        (indexer_result, NodeType::Indexer),
+    ];
+    // if enterprise, then skip Prism, else skip querier
+    let self_type = if QUERIER_META.initialized() {
+        NodeType::Querier
+    } else {
+        NodeType::Prism
+    };
 
-    // Handle prism metadata result
-    let prism_metadata: Vec<NodeMetadata> = prism_result.map_err(|err| {
-        error!("Fatal: failed to get prism info: {:?}", err);
-        PostError::Invalid(err)
-    })?;
-
-    // Handle querier metadata result
-    let querier_metadata: Vec<NodeMetadata> = querier_result.map_err(|err| {
-        error!("Fatal: failed to get querier info: {:?}", err);
-        PostError::Invalid(err)
-    })?;
-    // Handle ingestor metadata result
-    let ingestor_metadata: Vec<NodeMetadata> = ingestor_result.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        PostError::Invalid(err)
-    })?;
-    // Handle indexer metadata result
-    let indexer_metadata: Vec<NodeMetadata> = indexer_result.map_err(|err| {
-        error!("Fatal: failed to get indexer info: {:?}", err);
-        PostError::Invalid(err)
-    })?;
-    // Fetch metrics from ingestors and indexers concurrently
-    let (prism_metrics, querier_metrics, ingestor_metrics, indexer_metrics) = future::join4(
-        fetch_nodes_metrics(prism_metadata),
-        fetch_nodes_metrics(querier_metadata),
-        fetch_nodes_metrics(ingestor_metadata),
-        fetch_nodes_metrics(indexer_metadata),
-    )
-    .await;
-
-    // Combine all metrics
     let mut all_metrics = Vec::new();
+    let mut metadatas = vec![];
+    for (res, node_type) in node_metas {
+        let meta = res.map_err(|err| {
+            error!("Fatal: failed to get {node_type:?} info: {:?}", err);
+            PostError::Invalid(err)
+        })?;
+        if node_type.eq(&self_type) {
+            // fetch metrics using function
+            // self metrics
+            let text = String::from_utf8(
+                get_metrics_helper().map_err(|e| PostError::CustomError(e.to_string()))?,
+            )
+            .map_err(|e| PostError::CustomError(e.to_string()))?;
+            let lines: Vec<Result<String, std::io::Error>> =
+                text.lines().map(|line| Ok(line.to_owned())).collect_vec();
 
-    // Add prism metrics
-    match prism_metrics {
-        Ok(metrics) => all_metrics.extend(metrics),
-        Err(err) => return Err(err),
+            let sample = prometheus_parse::Scrape::parse(lines.into_iter())
+                .map_err(|err| PostError::CustomError(err.to_string()))?
+                .samples;
+
+            // skip adding metrics in case mode is All
+            // meta[0] will panic in that case
+            if PARSEABLE.options.mode.ne(&Mode::All) {
+                all_metrics.push(Metrics::from_local_prometheus_samples(sample, &meta[0]));
+            }
+        } else {
+            metadatas.push(meta)
+        }
     }
-
-    // Add querier metrics
-    match querier_metrics {
-        Ok(metrics) => all_metrics.extend(metrics),
-        Err(err) => return Err(err),
+    let mut handlers = FuturesUnordered::new();
+    for meta in metadatas {
+        handlers.push(fetch_nodes_metrics(meta));
     }
-
-    // Add ingestor metrics
-    match ingestor_metrics {
-        Ok(metrics) => all_metrics.extend(metrics),
-        Err(err) => return Err(err),
-    }
-
-    // Add indexer metrics
-    match indexer_metrics {
-        Ok(metrics) => all_metrics.extend(metrics),
-        Err(err) => return Err(err),
+    // Combine all metrics
+    while let Some(next) = handlers.next().await {
+        match next {
+            Ok(metrics) => all_metrics.extend(metrics),
+            Err(err) => return Err(err),
+        }
     }
 
     Ok(all_metrics)
