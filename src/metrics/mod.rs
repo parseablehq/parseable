@@ -1341,6 +1341,14 @@ use actix_web::HttpResponse;
 use prometheus::Encoder;
 
 pub async fn get() -> Result<impl Responder, MetricsError> {
+    let buffer = get_metrics_helper()?;
+
+    Ok(HttpResponse::Ok()
+        .content_type("text/plain; version=0.0.4")
+        .body(buffer))
+}
+
+pub fn get_metrics_helper() -> Result<Vec<u8>, MetricsError> {
     let mut buffer = Vec::new();
     let encoder = prometheus::TextEncoder::new();
     let metric_families = METRICS_REGISTRY.gather();
@@ -1350,10 +1358,7 @@ pub async fn get() -> Result<impl Responder, MetricsError> {
             actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
         )
     })?;
-
-    Ok(HttpResponse::Ok()
-        .content_type("text/plain; version=0.0.4")
-        .body(buffer))
+    Ok(buffer)
 }
 
 pub mod error {

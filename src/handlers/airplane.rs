@@ -44,7 +44,7 @@ use crate::utils::arrow::flight::{
     send_to_ingester,
 };
 use crate::utils::time::TimeRange;
-use crate::utils::user_auth_for_datasets;
+use crate::utils::{get_tenant_id_from_key, user_auth_for_datasets};
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
     HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc, SchemaResult, Ticket,
@@ -108,11 +108,36 @@ impl FlightService for AirServiceImpl {
         &self,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<SchemaResult>, Status> {
-        let table_name = request.into_inner().path;
-        let table_name = table_name[0].clone();
+        let key = extract_session_key(request.metadata())
+            .map_err(|e| Status::unauthenticated(e.to_string()))?;
+        let table_name = request
+            .into_inner()
+            .path
+            .into_iter()
+            .next()
+            .ok_or_else(|| Status::invalid_argument("Flight descriptor path must not be empty"))?;
+
+        match Users.authorize(
+            key.clone(),
+            rbac::role::Action::GetSchema,
+            Some(&table_name),
+            None,
+        ) {
+            rbac::Response::Authorized => (),
+            rbac::Response::UnAuthorized => {
+                return Err(Status::permission_denied(
+                    "user is not authorized to access this resource",
+                ));
+            }
+            rbac::Response::ReloadRequired => {
+                return Err(Status::unauthenticated("reload required"));
+            }
+            rbac::Response::Suspended(_) => return Err(Status::permission_denied("Suspended")),
+        }
+        let tenant_id = get_tenant_id_from_key(&key);
 
         let schema = PARSEABLE
-            .get_stream(&table_name, &None)
+            .get_stream(&table_name, &tenant_id)
             .map_err(|err| Status::failed_precondition(err.to_string()))?
             .get_schema();
 

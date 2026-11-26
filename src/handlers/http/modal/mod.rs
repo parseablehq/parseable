@@ -16,7 +16,15 @@
  *
  */
 
-use std::{fmt, path::Path, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use actix_web::{App, HttpServer, http::KeepAlive, middleware::from_fn, web::ServiceConfig};
 use actix_web_prometheus::PrometheusMetrics;
@@ -39,7 +47,7 @@ use crate::{
     cli::Options,
     hottier::{GLOBAL_HOTTIER, HotTierManager, StreamHotTier},
     metastore::metastore_traits::MetastoreObject,
-    oauth::{OAuthProvider, connect_oidc},
+    oauth::{GlobalClient, OAuthProvider, connect_oidc},
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
@@ -58,6 +66,40 @@ pub mod ssl_acceptor;
 pub mod utils;
 
 pub static OIDC_CLIENT: OnceCell<Arc<RwLock<Box<dyn OAuthProvider>>>> = OnceCell::new();
+
+/// True while OIDC is configured but the provider has not been discovered yet. The login endpoint then answers
+/// 503 (try again) instead of behaving as if OIDC were not configured at all.
+pub static OIDC_PENDING: AtomicBool = AtomicBool::new(false);
+
+const OIDC_RETRY_INITIAL: Duration = Duration::from_secs(1);
+const OIDC_RETRY_MAX: Duration = Duration::from_secs(60);
+
+fn set_oidc_client(client: GlobalClient) {
+    OIDC_CLIENT.get_or_init(|| Arc::new(RwLock::new(Box::new(client) as Box<dyn OAuthProvider>)));
+    OIDC_PENDING.store(false, Ordering::Release);
+}
+
+/// Discovers the OIDC provider, retrying with capped exponential backoff until it answers.
+///
+/// Startup used to fail outright when the provider was unreachable, so an outage of the identity provider (or
+/// simply starting Parseable before it) kept Parseable down and took basic-auth logins and ingestion with it.
+async fn retry_oidc_discovery(config: crate::oidc::OpenidConfig) {
+    let mut delay = OIDC_RETRY_INITIAL;
+    loop {
+        tokio::time::sleep(delay).await;
+        match connect_oidc(config.clone()).await {
+            Ok(client) => {
+                set_oidc_client(client);
+                info!(issuer = %config.issuer, "OIDC provider discovered; OIDC login is enabled");
+                return;
+            }
+            Err(e) => {
+                delay = (delay * 2).min(OIDC_RETRY_MAX);
+                warn!(issuer = %config.issuer, retry_in_secs = delay.as_secs(), "OIDC discovery failed: {e}");
+            }
+        }
+    }
+}
 
 // to be decided on what the Default version should be
 pub const DEFAULT_VERSION: &str = "v4";
@@ -92,9 +134,17 @@ pub trait ParseableServer {
         Self: Sized,
     {
         if let Some(config) = oidc_client {
-            let gc = connect_oidc(config).await?;
-            OIDC_CLIENT
-                .get_or_init(|| Arc::new(RwLock::new(Box::new(gc) as Box<dyn OAuthProvider>)));
+            match connect_oidc(config.clone()).await {
+                Ok(gc) => set_oidc_client(gc),
+                Err(e) => {
+                    warn!(
+                        issuer = %config.issuer,
+                        "OIDC discovery failed: {e}; starting without OIDC login and retrying in the background"
+                    );
+                    OIDC_PENDING.store(true, Ordering::Release);
+                    tokio::spawn(retry_oidc_discovery(config));
+                }
+            }
         }
 
         // get the ssl stuff
