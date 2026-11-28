@@ -27,7 +27,7 @@ use base64::Engine;
 use chrono::Utc;
 use http::header::AUTHORIZATION;
 use itertools::Itertools;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tracing::{error, trace, warn};
@@ -49,6 +49,31 @@ pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
     target_configs: RwLock::new(HashMap::new()),
     mutation_lock: AsyncMutex::new(()),
 });
+
+#[async_trait]
+pub trait SlackAppNotificationSender: Send + Sync {
+    async fn validate(
+        &self,
+        tenant_id: &Option<String>,
+        channel_id: Option<&str>,
+    ) -> Result<(), String>;
+
+    async fn send(
+        &self,
+        tenant_id: &Option<String>,
+        channel_id: Option<&str>,
+        context: &Context,
+    ) -> Result<(), String>;
+}
+
+static SLACK_APP_NOTIFICATION_SENDER: OnceCell<Arc<dyn SlackAppNotificationSender>> =
+    OnceCell::new();
+
+pub fn register_slack_app_notification_sender(
+    sender: Arc<dyn SlackAppNotificationSender>,
+) -> Result<(), Arc<dyn SlackAppNotificationSender>> {
+    SLACK_APP_NOTIFICATION_SENDER.set(sender)
+}
 
 #[derive(Debug)]
 pub struct TargetConfigs {
@@ -240,6 +265,17 @@ impl Target {
                     .into());
                 }
             }
+            TargetType::SlackApp(target) => {
+                let sender = SLACK_APP_NOTIFICATION_SENDER.get().ok_or_else(|| {
+                    AlertError::CustomError(
+                        "Slack Agent alert targets are unavailable in this server build".to_owned(),
+                    )
+                })?;
+                sender
+                    .validate(tenant_id, target.channel_id.as_deref())
+                    .await
+                    .map_err(AlertError::CustomError)?;
+            }
         }
 
         Ok(())
@@ -294,6 +330,12 @@ impl Target {
                     })
                 }
             }
+            TargetType::SlackApp(target) => json!({
+                "name": self.name,
+                "type": "slackApp",
+                "channelId": target.channel_id,
+                "id": self.id,
+            }),
         }
     }
 
@@ -500,6 +542,8 @@ pub enum TargetType {
     Other(OtherWebHook),
     #[serde(rename = "alertManager")]
     AlertManager(AlertManager),
+    #[serde(rename = "slackApp")]
+    SlackApp(SlackAppTarget),
 }
 
 impl TargetType {
@@ -508,6 +552,32 @@ impl TargetType {
             TargetType::Slack(target) => target.call(tenant_id, payload).await,
             TargetType::Other(target) => target.call(tenant_id, payload).await,
             TargetType::AlertManager(target) => target.call(tenant_id, payload).await,
+            TargetType::SlackApp(target) => target.call(tenant_id, payload).await,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SlackAppTarget {
+    /// When absent, Enterprise resolves the integration's current default
+    /// alert channel at delivery time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+}
+
+#[async_trait]
+impl CallableTarget for SlackAppTarget {
+    async fn call(&self, tenant_id: &Option<String>, payload: &Context) {
+        let Some(sender) = SLACK_APP_NOTIFICATION_SENDER.get() else {
+            warn!("Slack App alert target is unavailable in this server build");
+            return;
+        };
+        if let Err(error) = sender
+            .send(tenant_id, self.channel_id.as_deref(), payload)
+            .await
+        {
+            warn!(%error, "Slack App alert notification delivery failed");
         }
     }
 }
@@ -854,5 +924,48 @@ mod tests {
             masked_str.contains("********"),
             "Expected redaction marker not found!"
         );
+    }
+
+    #[test]
+    fn slack_app_target_round_trips_without_webhook_credentials() {
+        let id = Ulid::new();
+        let target = serde_json::from_value::<Target>(json!({
+            "name": "Parseable Slack Agent",
+            "type": "slackApp",
+            "id": id,
+            "channelId": "C0123456789"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            target.target,
+            TargetType::SlackApp(SlackAppTarget {
+                channel_id: Some("C0123456789".to_owned()),
+            })
+        );
+        assert_eq!(
+            target.mask(),
+            json!({
+                "name": "Parseable Slack Agent",
+                "type": "slackApp",
+                "channelId": "C0123456789",
+                "id": id,
+            })
+        );
+    }
+
+    #[test]
+    fn slack_app_target_uses_dynamic_default_channel_when_omitted() {
+        let target = serde_json::from_value::<Target>(json!({
+            "name": "Parseable Slack Agent",
+            "type": "slackApp"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            target.target,
+            TargetType::SlackApp(SlackAppTarget { channel_id: None })
+        );
+        assert!(target.mask().get("channelId").is_some_and(Value::is_null));
     }
 }
