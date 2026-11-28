@@ -253,7 +253,11 @@ mod tests {
                     ..Default::default()
                 };
                 storage
-                    .put_object(&manifest_path, encode_manifest(&manifest).unwrap(), &tenant)
+                    .put_object(
+                        &manifest_path,
+                        crate::catalog::manifest::encode_manifest(&manifest).unwrap(),
+                        &tenant,
+                    )
                     .await
                     .unwrap();
                 let loaded = reader

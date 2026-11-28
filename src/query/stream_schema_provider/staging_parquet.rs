@@ -19,6 +19,13 @@ pub(super) struct CapturedFile {
     file: PartitionedFile,
 }
 
+pub(super) struct LeasedFile {
+    original: PathBuf,
+    leased: PathBuf,
+    size: u64,
+    lease: Arc<StagingLease>,
+}
+
 const LEASE_PREFIX: &str = ".query-parquet-";
 const OWNER_LOCK: &str = ".owner.lock";
 
@@ -139,7 +146,7 @@ fn capture_error(path: &Path, error: impl std::fmt::Display) -> DataFusionError 
     ))
 }
 
-pub(super) fn capture_staging_parquet(directory: &Path) -> Result<Vec<CapturedFile>> {
+pub(super) fn lease_staging_parquet(directory: &Path) -> Result<Vec<LeasedFile>> {
     reclaim_staging_leases(directory);
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
@@ -164,7 +171,12 @@ pub(super) fn capture_staging_parquet(directory: &Path) -> Result<Vec<CapturedFi
     capture_paths(directory, paths)
 }
 
-/// Exercise the production capture callback from stream publication tests without
+#[cfg(test)]
+fn capture_staging_parquet(directory: &Path) -> Result<Vec<CapturedFile>> {
+    validate_staging_parquet(lease_staging_parquet(directory)?)
+}
+
+/// Exercise lease acquisition and validation from stream publication tests without
 /// exposing query capture internals outside test builds.
 #[cfg(test)]
 pub(crate) fn capture_staging_parquet_for_test(directory: &Path) -> Result<Vec<PartitionedFile>> {
@@ -172,7 +184,7 @@ pub(crate) fn capture_staging_parquet_for_test(directory: &Path) -> Result<Vec<P
         .map(|files| files.into_iter().map(|captured| captured.file).collect())
 }
 
-fn capture_paths(directory: &Path, paths: Vec<PathBuf>) -> Result<Vec<CapturedFile>> {
+fn capture_paths(directory: &Path, paths: Vec<PathBuf>) -> Result<Vec<LeasedFile>> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -191,6 +203,25 @@ fn capture_paths(directory: &Path, paths: Vec<PathBuf>) -> Result<Vec<CapturedFi
         if !metadata.is_file() {
             return Err(capture_error(&original, "not a regular file"));
         }
+        files.push(LeasedFile {
+            original,
+            leased,
+            size: metadata.len(),
+            lease: Arc::clone(&lease),
+        });
+    }
+    Ok(files)
+}
+
+pub(super) fn validate_staging_parquet(files: Vec<LeasedFile>) -> Result<Vec<CapturedFile>> {
+    let mut captured = Vec::with_capacity(files.len());
+    for LeasedFile {
+        original,
+        leased,
+        size,
+        lease,
+    } in files
+    {
         // Validate only the retained immutable inode. The uploader uses the
         // same predicate: corrupt footers and zero-row files remain excluded,
         // while stat/open/read failures fail the query clearly.
@@ -202,14 +233,13 @@ fn capture_paths(directory: &Path, paths: Vec<PathBuf>) -> Result<Vec<CapturedFi
         }
         let location = object_store::path::Path::from_absolute_path(&leased)
             .map_err(|error| capture_error(&original, error))?;
-        let file = PartitionedFile::new(location.to_string(), metadata.len())
-            .with_extension(Arc::clone(&lease));
-        files.push(CapturedFile { original, file });
+        let file = PartitionedFile::new(location.to_string(), size).with_extension(lease);
+        captured.push(CapturedFile { original, file });
     }
     // FileScanConfig and ParquetFileReader retain PartitionedFile extensions.
     // Their Arc clones keep these links alive even if the plan is dropped while
     // its stream is still running. No execution wrapper or custom reader needed.
-    Ok(files)
+    Ok(captured)
 }
 
 pub(super) fn exclude_uploaded(
@@ -461,11 +491,13 @@ mod tests {
         .unwrap();
         write_file(directory.path(), "empty.parquet", vec![]);
         let valid = write_file(directory.path(), "valid.parquet", vec![1, 2, 3]);
-        let files = capture_staging_parquet(directory.path()).unwrap();
+        let leases = lease_staging_parquet(directory.path()).unwrap();
+        assert_eq!(leases.len(), 3, "file validation follows lease acquisition");
+        fs::remove_file(valid).unwrap();
+        let files = validate_staging_parquet(leases).unwrap();
         assert_eq!(files.len(), 1, "only valid, nonempty Parquet is eligible");
         let context = SessionContext::new();
         let scan = plan(&context, take_files(files)).await;
-        fs::remove_file(valid).unwrap();
         assert_eq!(
             count_sum(&collect(scan, context.task_ctx()).await.unwrap()),
             (3, 6)

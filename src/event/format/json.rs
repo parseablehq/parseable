@@ -71,19 +71,22 @@ impl PartitionedEvents {
     }
 
     pub(crate) fn process(self) -> Result<(), crate::event::error::EventError> {
-        self.process_with(
+        let mut totals = DateTotals::default();
+        let result = self.process_with(
             |event| event.clone().stage_without_observers(),
             |event, offset, size, timestamp| {
-                event.observe(size, 1, timestamp);
+                totals.add(event, size, timestamp);
                 crate::livetail::LIVETAIL.process_row(&event.stream_name, &event.rb, offset);
             },
-        )
+        );
+        totals.observe();
+        result
     }
 
-    fn process_with<E>(
-        &self,
+    fn process_with<'s, E>(
+        &'s self,
         mut stage: impl FnMut(&super::Event) -> Result<(), E>,
-        mut observe: impl FnMut(&super::Event, usize, u64, NaiveDateTime),
+        mut observe: impl FnMut(&'s super::Event, usize, u64, NaiveDateTime),
     ) -> Result<(), E> {
         let mut completed = 0;
         let mut result = Ok(());
@@ -102,6 +105,53 @@ impl PartitionedEvents {
             }
         }
         result
+    }
+}
+
+/// Per-date accounting totals for one `PartitionedEvents::process` call.
+///
+/// Stats and billing counters are labelled by stream, origin, tenant,
+/// telemetry type and date, and every counter is additive, so one `observe`
+/// per distinct label set with the summed size and row count records exactly
+/// what one call per row did, without a Prometheus label lookup per row.
+/// Events of one request share everything but the date; label sets keep
+/// first-seen order and requests almost always hit a single date, so a linear
+/// scan is cheapest.
+#[derive(Default)]
+struct DateTotals<'a> {
+    // (date, representative event, total size, row count, first timestamp)
+    dates: Vec<(NaiveDate, &'a super::Event, u64, usize, NaiveDateTime)>,
+}
+
+impl<'a> DateTotals<'a> {
+    fn add(&mut self, event: &'a super::Event, size: u64, timestamp: NaiveDateTime) {
+        let date = timestamp.date();
+        if let Some(entry) = self.dates.iter_mut().rev().find(|entry| {
+            entry.0 == date
+                && entry.1.stream_name == event.stream_name
+                && entry.1.origin_format == event.origin_format
+                && entry.1.telemetry_type == event.telemetry_type
+                && entry.1.tenant_id == event.tenant_id
+        }) {
+            entry.2 += size;
+            entry.3 += 1;
+        } else {
+            self.dates.push((date, event, size, 1, timestamp));
+        }
+    }
+
+    #[cfg(test)]
+    fn totals(&self) -> Vec<(NaiveDate, u64, usize)> {
+        self.dates
+            .iter()
+            .map(|&(date, _, size, rows, _)| (date, size, rows))
+            .collect()
+    }
+
+    fn observe(self) {
+        for (_, event, size, rows, timestamp) in self.dates {
+            event.observe(size, rows, timestamp);
+        }
     }
 }
 
@@ -1943,6 +1993,66 @@ mod partition_batching_tests {
         );
         // Group a (rows 1,3) is staged; both rows must be accounted.
         assert_eq!(delivered, vec![old[0].rb.clone(), old[2].rb.clone()]);
+    }
+
+    /// `process` observes once per date with the summed size and row count
+    /// of exactly the rows the per-row observer would have counted, including
+    /// partial failures.
+    #[test]
+    fn date_totals_batch_observations_per_date() {
+        let records = vec![
+            json!({"service":"a", "id":1}),
+            json!({"service":"b", "id":2}),
+            json!({"service":"a", "id":3}),
+        ];
+        let events = regression(records, true).unwrap();
+        let mut totals = DateTotals::default();
+        let mut per_row: Vec<(NaiveDate, u64)> = Vec::new();
+        events
+            .process_with(
+                |_| Ok::<_, ()>(()),
+                |event, _, size, timestamp| {
+                    totals.add(event, size, timestamp);
+                    per_row.push((timestamp.date(), size));
+                },
+            )
+            .unwrap();
+        let day = per_row[0].0;
+        assert!(per_row.iter().all(|&(date, _)| date == day));
+        let sum: u64 = per_row.iter().map(|&(_, size)| size).sum();
+        assert_eq!(totals.totals(), vec![(day, sum, 3)]);
+
+        // A second date gets its own entry; dates keep first-seen order and
+        // rows of an earlier date still merge into its entry.
+        let next = (day + chrono::Days::new(1)).and_hms_opt(0, 0, 0).unwrap();
+        totals.add(&events[0], 7, next);
+        totals.add(&events[1], 5, day.and_hms_opt(23, 59, 59).unwrap());
+        totals.add(&events[0], 1, next);
+        assert_eq!(
+            totals.totals(),
+            vec![(day, sum + 5, 4), (next.date(), 8, 2)]
+        );
+
+        // A row of another stream never merges into this stream's entry.
+        let mut other = events[0].clone();
+        other.stream_name = "another_stream".to_owned();
+        totals.add(&other, 3, next);
+        assert_eq!(
+            totals.totals(),
+            vec![(day, sum + 5, 4), (next.date(), 8, 2), (next.date(), 3, 1)]
+        );
+
+        // Partial failure: only the rows of completed groups are counted.
+        let mut totals = DateTotals::default();
+        let mut stages = 0;
+        let _ = events.process_with(
+            |_| {
+                stages += 1;
+                if stages == 2 { Err(()) } else { Ok(()) }
+            },
+            |event, _, size, timestamp| totals.add(event, size, timestamp),
+        );
+        assert_eq!(totals.totals(), vec![(day, per_row[0].1 + per_row[2].1, 2)]);
     }
 
     #[test]

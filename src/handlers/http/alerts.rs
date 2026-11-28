@@ -420,6 +420,7 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     // delete the scheduled task
     alerts.delete_task(alert_id).await?;
     crate::alerts::promql_alerts::forget_lifecycle(alert_id);
+    crate::alerts::alert_types::forget_persisted_alert(alert_id, &tenant_id);
 
     Ok(format!("Deleted alert with ID- {alert_id}"))
 }
@@ -661,6 +662,7 @@ pub async fn modify_alert(
     new_alert.validate(&session_key).await?;
 
     // Perform I/O operations
+    crate::alerts::alert_types::forget_persisted_alert(alert_id, &tenant_id);
     PARSEABLE
         .metastore
         .put_alert(&new_alert.to_alert_config(), &tenant_id)

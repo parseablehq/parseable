@@ -234,7 +234,10 @@ impl Users {
     }
 
     pub fn get_permissions(&self, session: &SessionKey) -> Vec<Permission> {
-        let mut permissions = sessions().get(session).cloned().unwrap_or_default();
+        let mut permissions = match session {
+            SessionKey::Ephemeral(ephemeral) => ephemeral.permissions.clone(),
+            session => sessions().get(session).cloned().unwrap_or_default(),
+        };
 
         let Some((userid, tenant_id)) = self.get_userid_from_session(session) else {
             return permissions.into_iter().collect_vec();
@@ -260,11 +263,19 @@ impl Users {
         permissions.into_iter().collect_vec()
     }
 
+    /// A request-local session exists for as long as it has not expired.
     pub fn session_exists(&self, session: &SessionKey) -> bool {
-        sessions().get(session).is_some()
+        match session {
+            SessionKey::Ephemeral(ephemeral) => !ephemeral.is_expired(),
+            session => sessions().get(session).is_some(),
+        }
     }
 
+    /// A request-local session was never tracked, so there is nothing to remove.
     pub fn remove_session(&self, session: &SessionKey) -> Option<String> {
+        if matches!(session, SessionKey::Ephemeral(_)) {
+            return None;
+        }
         mut_sessions().remove_session(session)
     }
 
@@ -292,6 +303,10 @@ impl Users {
         context_stream: Option<&str>,
         context_user: Option<&str>,
     ) -> Response {
+        // A request-local session carries its own grants: no SESSIONS lock.
+        if let SessionKey::Ephemeral(ephemeral) = &key {
+            return map::check_ephemeral_auth(ephemeral, action, context_stream, context_user);
+        }
         // try fetch from auth map for faster auth flow
         if let Some(res) = sessions().check_auth(&key, action, context_stream, context_user) {
             return res;
@@ -406,6 +421,43 @@ impl Users {
             .collect()
     }
 
+    /// For Basic credentials that `authorize` already verified and tracked as a
+    /// session: the tenant that session is in and the stored tenant of the
+    /// native user it belongs to, provided that user is still stored there.
+    ///
+    /// Such a session is only created after the password verified, is checked
+    /// for expiry here, and is removed whenever the user's password changes or
+    /// the user is replaced or deleted, so it is the same trust `authorize`
+    /// itself extends to repeat requests. It lets tenant lookups skip the
+    /// Argon2 verification on every request after the first.
+    fn live_basic_session_user(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Option<(String, Option<String>)> {
+        let key = SessionKey::BasicAuth {
+            username: username.to_owned(),
+            password: password.to_owned(),
+        };
+        let tenant = {
+            let sessions = sessions();
+            let (userid, tenant) = sessions.get_user_and_tenant_id(&key)?;
+            if userid != username || sessions.is_session_expired(&key) {
+                return None;
+            }
+            tenant
+        };
+        // SESSIONS is released before USERS is read; see the lock order in `map`.
+        let users = users();
+        let user = users.get(&tenant)?.get(username)?;
+        match &user.ty {
+            UserType::Native(basic) if basic.username == username => {
+                Some((tenant, user.tenant.clone()))
+            }
+            _ => None,
+        }
+    }
+
     #[inline(always)]
     pub fn validate_basic_user_tenant_id(
         &self,
@@ -413,6 +465,14 @@ impl Users {
         password: &str,
         tenant_id: &str,
     ) -> bool {
+        // A live session in another tenant proves nothing here: the same
+        // username may exist in several tenants, so verify as before.
+        if self
+            .live_basic_session_user(username, password)
+            .is_some_and(|(session_tenant, _)| session_tenant == tenant_id)
+        {
+            return true;
+        }
         self.native_users_named(username, Some(tenant_id))
             .par_iter()
             .any(|(_, _, basic)| basic.verify_password(password))
@@ -435,10 +495,21 @@ impl Users {
     }
 
     pub fn get_userid_from_session(&self, session: &SessionKey) -> Option<(String, String)> {
-        sessions().get_user_and_tenant_id(session)
+        match session {
+            SessionKey::Ephemeral(ephemeral) => {
+                Some((ephemeral.userid.clone(), ephemeral.tenant.clone()))
+            }
+            session => sessions().get_user_and_tenant_id(session),
+        }
     }
 
     pub fn get_user_tenant_from_basic(&self, username: &str, password: &str) -> Option<String> {
+        // Only a session of a user with a stored tenant answers directly; a
+        // tenant-less user never matches, so another tenant's user of the
+        // same name and password must still be searched for.
+        if let Some((_, Some(user_tenant))) = self.live_basic_session_user(username, password) {
+            return Some(user_tenant);
+        }
         // A user without a tenant never matches, so skip its password check.
         self.native_users_named(username, None)
             .into_iter()
@@ -960,6 +1031,127 @@ mod lock_order_tests {
         );
     }
 
+    /// A request-local session for `user`, as the API-key and intra-cluster
+    /// paths build one: its grants are the user's roles at that moment.
+    fn ephemeral_for(user: &User, expires_in: TimeDelta) -> SessionKey {
+        let tenant = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
+        SessionKey::Ephemeral(Arc::new(map::EphemeralSession {
+            id: Ulid::new(),
+            userid: user.userid().to_owned(),
+            tenant: tenant.to_owned(),
+            expires_at: Utc::now() + expires_in,
+            permissions: roles_to_permission(user.roles(), tenant),
+        }))
+    }
+
+    // Request-local sessions are answered from the session itself: every
+    // lookup finishes while another thread holds SESSIONS for writing, and
+    // none of them enters SESSIONS. Decisions match a tracked session's,
+    // including grants that only come from a group.
+    #[test]
+    fn ephemeral_sessions_never_touch_sessions() {
+        let _serial = auth_state();
+        let tenant = tenant();
+        let group_name = format!("group-{}", Ulid::new());
+        let (direct, _) = native_user(&tenant, &[ROLE]);
+        let (mut grouped, _) = basic_user(&tenant, &[]);
+        grouped.user_groups.insert(group_name.clone());
+        mut_users().insert(grouped.clone());
+        let (outsider, _) = native_user(&tenant, &[]);
+        write_user_groups().insert(
+            UserGroup::new(
+                group_name,
+                HashSet::from([ROLE.to_owned()]),
+                HashSet::from([GroupUser::from_user(&grouped)]),
+            ),
+            &tenant,
+        );
+        let tracked = sessions().get_active_sessions().len();
+
+        let keys = [&direct, &grouped, &outsider].map(|user| {
+            (
+                user.userid().to_owned(),
+                ephemeral_for(user, TimeDelta::minutes(5)),
+            )
+        });
+        let expired = ephemeral_for(&direct, TimeDelta::seconds(-1));
+        let tenant_for_check = tenant.clone();
+
+        let writer = mut_sessions();
+        let checks = spawn(move || {
+            let decisions = keys
+                .iter()
+                .map(|(userid, key)| {
+                    assert_eq!(
+                        Users.get_userid_from_session(key),
+                        Some((userid.clone(), tenant_for_check.clone()))
+                    );
+                    assert!(Users.session_exists(key));
+                    assert_eq!(Users.remove_session(key), None);
+                    let _ = Users.get_permissions(key);
+                    Users.authorize(key.clone(), Action::Query, None, None)
+                })
+                .collect::<Vec<_>>();
+            // Expiry is the session's own; like a tracked session's
+            // `check_auth`, the decision itself does not look at it.
+            assert!(!Users.session_exists(&expired));
+            let expired_decision = Users.authorize(expired, Action::Query, None, None);
+            (decisions, expired_decision)
+        });
+        let (decisions, expired_decision) = finish(&checks, "request-local session checks");
+        drop(writer);
+
+        assert_eq!(
+            decisions,
+            vec![
+                Response::Authorized,
+                Response::Authorized,
+                Response::UnAuthorized
+            ]
+        );
+        assert_eq!(expired_decision, Response::Authorized);
+        assert_eq!(sessions().get_active_sessions().len(), tracked);
+
+        // The SESSIONS-level helpers agree without needing an entry.
+        let key = ephemeral_for(&direct, TimeDelta::minutes(5));
+        let expired = ephemeral_for(&direct, TimeDelta::seconds(-1));
+        let sessions = sessions();
+        assert!(!sessions.is_session_expired(&key));
+        assert!(sessions.is_session_expired(&expired));
+        assert!(sessions.get(&key).is_some());
+        assert_eq!(
+            sessions.check_auth(&key, Action::Query, None, None),
+            Some(Response::Authorized)
+        );
+        assert_eq!(
+            sessions.get_user_and_tenant_id(&key),
+            Some((direct.userid().to_owned(), tenant.clone()))
+        );
+    }
+
+    // Request-local sessions compare and hash by their id alone, and are
+    // never equal to a tracked session key with the same id.
+    #[test]
+    fn ephemeral_session_keys_compare_by_id() {
+        use std::hash::{BuildHasher, RandomState};
+        let session = |id| {
+            SessionKey::Ephemeral(Arc::new(map::EphemeralSession {
+                id,
+                userid: format!("user-{}", Ulid::new()),
+                tenant: DEFAULT_TENANT.to_owned(),
+                expires_at: Utc::now(),
+                permissions: Vec::new(),
+            }))
+        };
+        let id = Ulid::new();
+        let (first, second) = (session(id), session(id));
+        let hasher = RandomState::new();
+        assert_eq!(first, second);
+        assert_eq!(hasher.hash_one(&first), hasher.hash_one(&second));
+        assert_ne!(first, session(Ulid::new()));
+        assert_ne!(first, SessionKey::SessionId(id));
+    }
+
     // A password change that lands while a first login is verifying the old
     // password must not leave a session keyed by the old password.
     #[test]
@@ -1229,6 +1421,96 @@ mod lock_order_tests {
         assert!(req.headers().get(TENANT_ID).is_none());
     }
 
+    // After a first Basic login, tenant lookups for the same credentials are
+    // answered from its session without re-verifying the password. The
+    // stored hash below is of a different password, so any answer that
+    // re-ran the verification would be a rejection.
+    #[test]
+    fn basic_tenant_lookups_use_a_live_session_before_rehashing() {
+        let _serial = auth_state();
+        let other_tenant = tenant();
+        let tenant = tenant();
+        let (mut user, login) = basic_user(&tenant, &[ROLE]);
+        if let UserType::Native(basic) = &mut user.ty {
+            basic.password_hash = cheap_hash("a-different-password");
+        }
+        mut_users().insert(user.clone());
+        let (username, password) = credentials(&login);
+        let track = |expiry: DateTime<Utc>, session_tenant: &str| {
+            mut_sessions().track_new(
+                username.to_owned(),
+                login.clone(),
+                expiry,
+                Vec::new(),
+                &Some(session_tenant.to_owned()),
+            );
+        };
+
+        // No session yet: the password is verified, and does not match.
+        assert!(!Users.validate_basic_user_tenant_id(username, password, &tenant));
+        assert_eq!(Users.get_user_tenant_from_basic(username, password), None);
+
+        // A live session for these credentials answers both lookups.
+        track(DateTime::<Utc>::MAX_UTC, &tenant);
+        assert!(Users.validate_basic_user_tenant_id(username, password, &tenant));
+        assert_eq!(
+            Users.get_user_tenant_from_basic(username, password),
+            Some(tenant.clone())
+        );
+        // Only for its own tenant and its exact credentials.
+        assert!(!Users.validate_basic_user_tenant_id(username, password, &other_tenant));
+        assert!(!Users.validate_basic_user_tenant_id(username, "wrong", &tenant));
+        assert_eq!(Users.get_user_tenant_from_basic(username, "wrong"), None);
+
+        // An expired session is not trusted.
+        track(Utc::now() - TimeDelta::seconds(1), &tenant);
+        assert!(!Users.validate_basic_user_tenant_id(username, password, &tenant));
+        assert_eq!(Users.get_user_tenant_from_basic(username, password), None);
+
+        // Nor a session whose user is no longer stored in its tenant.
+        track(DateTime::<Utc>::MAX_UTC, &tenant);
+        assert!(Users.validate_basic_user_tenant_id(username, password, &tenant));
+        if let Some(users) = mut_users().get_mut(&tenant) {
+            users.remove(username);
+        }
+        assert!(!Users.validate_basic_user_tenant_id(username, password, &tenant));
+        assert_eq!(Users.get_user_tenant_from_basic(username, password), None);
+
+        // Revocation through the normal paths removes the session, so the
+        // lookups fall back to verifying the stored hash again.
+        mut_users().insert(user.clone());
+        assert!(Users.validate_basic_user_tenant_id(username, password, &tenant));
+        Users.change_password_hash(
+            user.userid(),
+            &cheap_hash("a-different-password"),
+            &user.tenant,
+        );
+        assert!(!Users.session_exists(&login));
+        assert!(!Users.validate_basic_user_tenant_id(username, password, &tenant));
+        assert_eq!(Users.get_user_tenant_from_basic(username, password), None);
+    }
+
+    // A real first login creates the session the lookups then reuse, and a
+    // wrong password never gets one.
+    #[test]
+    fn first_basic_login_enables_cached_tenant_lookups() {
+        let _serial = auth_state();
+        let tenant = tenant();
+        let (_, login) = native_user(&tenant, &[ROLE]);
+        let (username, password) = credentials(&login);
+        assert!(!Users.session_exists(&login));
+        assert!(Users.validate_basic_user_tenant_id(username, password, &tenant));
+
+        assert_eq!(finish(&first_login(&login), "login"), Response::Authorized);
+        assert!(Users.session_exists(&login));
+        assert!(Users.validate_basic_user_tenant_id(username, password, &tenant));
+        assert_eq!(
+            Users.get_user_tenant_from_basic(username, password),
+            Some(tenant.clone())
+        );
+        assert!(!Users.validate_basic_user_tenant_id(username, "wrong", &tenant));
+    }
+
     // A role change that lands while a first login is verifying must apply to
     // the session that login creates.
     #[test]
@@ -1359,7 +1641,7 @@ mod lock_order_tests {
     fn credentials(key: &SessionKey) -> (&str, &str) {
         match key {
             SessionKey::BasicAuth { username, password } => (username, password),
-            SessionKey::SessionId(_) => unreachable!(),
+            SessionKey::SessionId(_) | SessionKey::Ephemeral(_) => unreachable!(),
         }
     }
 

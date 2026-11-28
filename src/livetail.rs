@@ -18,7 +18,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock, Weak},
+    sync::{
+        Arc, RwLock, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::Poll,
 };
 
@@ -36,21 +39,42 @@ pub type LiveTailRegistry = RwLock<HashMap<String, Vec<SenderPipe>>>;
 
 pub struct LiveTail {
     pipes: Arc<LiveTailRegistry>,
+    /// Number of sender pipes in `pipes`, across all streams. Only changed
+    /// while holding the registry's write lock, so it equals the registry
+    /// size whenever no writer is active. Lets the per-row ingest path skip
+    /// the registry lock and the stream-name hash when nobody is tailing.
+    active_pipes: Arc<AtomicUsize>,
 }
 
 impl LiveTail {
     pub fn new_pipe(&self, id: String, stream: String) -> ReceiverPipe {
-        let (sender, revc) = channel(id, stream.clone(), Arc::downgrade(&self.pipes));
-        self.pipes
-            .write()
-            .unwrap()
-            .entry(stream)
-            .or_default()
-            .push(sender);
+        let (sender, revc) = channel(
+            id,
+            stream.clone(),
+            Arc::downgrade(&self.pipes),
+            Arc::clone(&self.active_pipes),
+        );
+        let mut pipes = self.pipes.write().unwrap();
+        pipes.entry(stream).or_default().push(sender);
+        self.active_pipes.fetch_add(1, Ordering::Relaxed);
         revc
     }
 
+    /// Whether any live-tail pipe is registered for any stream.
+    #[inline]
+    fn any_subscribers(&self) -> bool {
+        self.active_pipes.load(Ordering::Relaxed) != 0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_pipes(&self) -> usize {
+        self.active_pipes.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn has_subscribers(&self, stream_name: &str) -> bool {
+        if !self.any_subscribers() {
+            return false;
+        }
         self.pipes
             .read()
             .unwrap()
@@ -59,6 +83,9 @@ impl LiveTail {
     }
 
     pub(crate) fn process_row(&self, stream_name: &str, rb: &RecordBatch, offset: usize) {
+        if !self.any_subscribers() {
+            return;
+        }
         let read = self.pipes.read().unwrap();
         if let Some(pipes) = read.get(stream_name) {
             for pipe in pipes {
@@ -68,6 +95,9 @@ impl LiveTail {
     }
 
     pub fn process(&self, stream_name: &str, rb: &RecordBatch) {
+        if !self.any_subscribers() {
+            return;
+        }
         let read = self.pipes.read().unwrap();
         let Some(pipes) = read.get(stream_name) else {
             return;
@@ -82,6 +112,7 @@ impl Default for LiveTail {
     fn default() -> Self {
         Self {
             pipes: Arc::new(RwLock::default()),
+            active_pipes: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -120,12 +151,14 @@ pub struct ReceiverPipe {
     inner: Receiver<RecordBatch>,
     command: UnboundedReceiver<Command>,
     _ref: Weak<LiveTailRegistry>,
+    active_pipes: Arc<AtomicUsize>,
 }
 
 fn channel(
     id: String,
     stream: String,
     weak_ptr: Weak<LiveTailRegistry>,
+    active_pipes: Arc<AtomicUsize>,
 ) -> (SenderPipe, ReceiverPipe) {
     let (command_tx, command_rx) = mpsc::unbounded_channel::<Command>();
     let (rb_tx, rb_rx) = mpsc::channel::<RecordBatch>(1000);
@@ -140,6 +173,7 @@ fn channel(
             id,
             stream,
             _ref: weak_ptr,
+            active_pipes,
             inner: rb_rx,
             command: command_rx,
         },
@@ -181,7 +215,75 @@ impl Drop for ReceiverPipe {
             && let Ok(mut guard) = map.write()
             && let Some(pipes) = guard.get_mut(&self.stream)
         {
-            pipes.retain(|x| x.id != self.id)
+            let before = pipes.len();
+            pipes.retain(|x| x.id != self.id);
+            let removed = before - pipes.len();
+            if pipes.is_empty() {
+                guard.remove(&self.stream);
+            }
+            // Updated under the write lock, like the insert in `new_pipe`.
+            self.active_pipes.fetch_sub(removed, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::{ArrayRef, Int64Array};
+    use futures_util::StreamExt;
+
+    fn batch(values: &[i64]) -> RecordBatch {
+        let column: ArrayRef = Arc::new(Int64Array::from(values.to_vec()));
+        RecordBatch::try_from_iter([("v", column)]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn active_pipe_counter_tracks_registry_and_gates_delivery() {
+        let tail = LiveTail::default();
+        assert_eq!(tail.active_pipes(), 0);
+        assert!(!tail.has_subscribers("a"));
+        // No subscribers: fast exit, nothing to deliver.
+        tail.process_row("a", &batch(&[1]), 0);
+        tail.process("a", &batch(&[1]));
+
+        let mut first = tail.new_pipe("1".into(), "a".into());
+        let second = tail.new_pipe("2".into(), "a".into());
+        let other = tail.new_pipe("3".into(), "b".into());
+        assert_eq!(tail.active_pipes(), 3);
+        assert!(tail.has_subscribers("a"));
+        assert!(!tail.has_subscribers("c"));
+
+        let rb = batch(&[10, 20, 30]);
+        tail.process_row("a", &rb, 1);
+        assert_eq!(first.next().await, Some(Message::Record(rb.slice(1, 1))));
+
+        drop(second);
+        assert_eq!(tail.active_pipes(), 2);
+        assert!(tail.has_subscribers("a"));
+        drop(first);
+        assert_eq!(tail.active_pipes(), 1);
+        assert!(!tail.has_subscribers("a"));
+        assert!(tail.pipes.read().unwrap().get("a").is_none());
+        drop(other);
+        assert_eq!(tail.active_pipes(), 0);
+        assert!(tail.pipes.read().unwrap().is_empty());
+
+        // A pipe registered after the counter returned to zero still receives.
+        let mut again = tail.new_pipe("4".into(), "a".into());
+        assert_eq!(tail.active_pipes(), 1);
+        tail.process("a", &rb);
+        assert_eq!(again.next().await, Some(Message::Record(rb.clone())));
+    }
+
+    #[test]
+    fn dropping_receiver_after_registry_is_gone_does_not_underflow() {
+        let tail = LiveTail::default();
+        let receiver = tail.new_pipe("1".into(), "a".into());
+        let counter = Arc::clone(&tail.active_pipes);
+        drop(tail);
+        drop(receiver);
+        // The registry is gone, so nothing was removed and the count is unchanged.
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 }

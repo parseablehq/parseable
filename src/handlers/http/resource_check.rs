@@ -18,6 +18,8 @@
 
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use std::sync::{Arc, LazyLock, atomic::AtomicBool};
 
 use actix_web::{
@@ -34,7 +36,7 @@ use tokio::{
 };
 use tracing::{info, trace, warn};
 
-use crate::analytics::{SYS_INFO, refresh_sys_info};
+use crate::analytics::{SYS_INFO, refresh_process_info};
 use crate::metrics::{record_disk_metrics, record_process_metrics_sample};
 use crate::parseable::PARSEABLE;
 
@@ -73,8 +75,27 @@ fn cgroup_directory(pathname: &str, root: &str, mount_point: &Path) -> Option<Pa
     Some(mount_point.join(pathname.strip_prefix(root).ok()?))
 }
 
+/// Where this process's CPU quota is read from. The cgroup a process is in,
+/// and where its hierarchy is mounted, do not change while it runs, but the
+/// quota in these files can (an in-place resize), so only the location is
+/// resolved once and the files are read on every sample.
 #[cfg(target_os = "linux")]
-fn cgroup_cpu_limit_cores() -> Result<Option<f64>, ()> {
+#[derive(Debug, Clone, PartialEq)]
+enum CgroupCpuFiles {
+    V2 { cpu_max: PathBuf },
+    V1 { quota: PathBuf, period: PathBuf },
+}
+
+/// `None` when the process has no CPU cgroup this code can read, which is
+/// as permanent as a resolved location.
+#[cfg(target_os = "linux")]
+static CGROUP_CPU_FILES: OnceLock<Option<CgroupCpuFiles>> = OnceLock::new();
+
+/// Finds the CPU quota files from `/proc/self/cgroup` and
+/// `/proc/self/mountinfo`. `Err` when those cannot be read, which may be
+/// transient and is not remembered.
+#[cfg(target_os = "linux")]
+fn resolve_cgroup_cpu_files() -> Result<Option<CgroupCpuFiles>, ()> {
     let process = procfs::process::Process::myself().map_err(|_| ())?;
     let cgroups = process.cgroups().map_err(|_| ())?.0;
     let mounts = process.mountinfo().map_err(|_| ())?.0;
@@ -83,28 +104,63 @@ fn cgroup_cpu_limit_cores() -> Result<Option<f64>, ()> {
         cgroups.iter().find(|group| group.hierarchy == 0),
         mounts.iter().find(|mount| mount.fs_type == "cgroup2"),
     ) {
-        let directory =
-            cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
-        let cpu_max =
-            std::fs::read_to_string(directory.join(CGROUP_V2_CPU_MAX_FILE)).map_err(|_| ())?;
-        let mut values = cpu_max.split_whitespace();
-        return cpu_quota_cores(values.next().ok_or(())?, values.next().ok_or(())?);
+        return Ok(
+            cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).map(|directory| {
+                CgroupCpuFiles::V2 {
+                    cpu_max: directory.join(CGROUP_V2_CPU_MAX_FILE),
+                }
+            }),
+        );
     }
 
-    let cgroup = cgroups
+    let Some(cgroup) = cgroups
         .iter()
         .find(|group| group.controllers.iter().any(|item| item == "cpu"))
-        .ok_or(())?;
-    let mount = mounts
+    else {
+        return Ok(None);
+    };
+    let Some(mount) = mounts
         .iter()
         .find(|mount| mount.fs_type == "cgroup" && mount.super_options.contains_key("cpu"))
-        .ok_or(())?;
-    let directory = cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).ok_or(())?;
-    let quota =
-        std::fs::read_to_string(directory.join(CGROUP_V1_CPU_QUOTA_FILE)).map_err(|_| ())?;
-    let period =
-        std::fs::read_to_string(directory.join(CGROUP_V1_CPU_PERIOD_FILE)).map_err(|_| ())?;
-    cpu_quota_cores(&quota, &period)
+    else {
+        return Ok(None);
+    };
+    Ok(
+        cgroup_directory(&cgroup.pathname, &mount.root, &mount.mount_point).map(|directory| {
+            CgroupCpuFiles::V1 {
+                quota: directory.join(CGROUP_V1_CPU_QUOTA_FILE),
+                period: directory.join(CGROUP_V1_CPU_PERIOD_FILE),
+            }
+        }),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn read_cgroup_cpu_limit(files: &CgroupCpuFiles) -> Result<Option<f64>, ()> {
+    match files {
+        CgroupCpuFiles::V2 { cpu_max } => {
+            let cpu_max = std::fs::read_to_string(cpu_max).map_err(|_| ())?;
+            let mut values = cpu_max.split_whitespace();
+            cpu_quota_cores(values.next().ok_or(())?, values.next().ok_or(())?)
+        }
+        CgroupCpuFiles::V1 { quota, period } => {
+            let quota = std::fs::read_to_string(quota).map_err(|_| ())?;
+            let period = std::fs::read_to_string(period).map_err(|_| ())?;
+            cpu_quota_cores(&quota, &period)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_cpu_limit_cores() -> Result<Option<f64>, ()> {
+    let files = match CGROUP_CPU_FILES.get() {
+        Some(files) => files,
+        None => {
+            let resolved = resolve_cgroup_cpu_files()?;
+            CGROUP_CPU_FILES.get_or_init(|| resolved)
+        }
+    };
+    read_cgroup_cpu_limit(files.as_ref().ok_or(())?)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -121,20 +177,20 @@ pub fn cpu_limit_cores() -> f64 {
 }
 
 async fn sample_process_metrics() {
-    refresh_sys_info();
+    // Refreshing and reading `/proc` blocks, so all of it runs off the
+    // async workers.
     let process_metrics = tokio::task::spawn_blocking(|| {
-        let process_metrics = {
-            let sys = SYS_INFO.lock().unwrap();
+        let process_metrics = sysinfo::get_current_pid().ok().and_then(|pid| {
+            let mut sys = SYS_INFO.lock().unwrap();
+            refresh_process_info(&mut sys, pid);
             let total_mem = if let Some(cgroup) = sys.cgroup_limits() {
                 cgroup.total_memory
             } else {
                 sys.total_memory()
             };
-            sysinfo::get_current_pid()
-                .ok()
-                .and_then(|pid| sys.process(pid))
+            sys.process(pid)
                 .map(|process| (process.cpu_usage() as f64, process.memory(), total_mem))
-        };
+        });
 
         process_metrics.map(|(cpu_usage, memory_bytes, total_mem)| {
             (cpu_usage, memory_bytes, total_mem, cpu_limit_cores())
@@ -158,6 +214,21 @@ async fn sample_process_metrics() {
     .unwrap();
 }
 
+/// Whether memory use is within `memory_threshold` (a fraction) of the
+/// cgroup limit, or of host memory outside a cgroup. Blocking: it reads
+/// `/proc` and the cgroup files.
+fn memory_within_threshold(memory_threshold: f64) -> bool {
+    // Created with memory already refreshed.
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+    );
+    if let Some(cgroup) = system.cgroup_limits() {
+        (cgroup.rss as f64) <= memory_threshold * (cgroup.total_memory as f64)
+    } else {
+        (system.used_memory() as f64) <= memory_threshold * (system.total_memory() as f64)
+    }
+}
+
 /// Spawn a background task to monitor system resources
 pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
     tokio::spawn(async move {
@@ -174,23 +245,19 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                     if !PARSEABLE.options.resource_check_enabled {
                         continue;
                     }
-                    refresh_sys_info();
 
-                    let mut resource_ok = true;
-
-                    let mut s = System::new_with_specifics(
-                        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
-                    );
-                    if let Some(cgroup) = s.cgroup_limits() {
-                        if (cgroup.rss as f64) > memory_threshold * (cgroup.total_memory as f64) {
-                            resource_ok = false;
+                    // Off the async workers: it reads `/proc` and cgroup files.
+                    let resource_ok = match tokio::task::spawn_blocking(move || {
+                        memory_within_threshold(memory_threshold)
+                    })
+                    .await
+                    {
+                        Ok(resource_ok) => resource_ok,
+                        Err(error) => {
+                            warn!("Resource check failed, keeping the previous state: {error}");
+                            continue;
                         }
-                    } else {
-                        s.refresh_memory();
-                        if (s.used_memory() as f64) > memory_threshold * (s.total_memory() as f64) {
-                            resource_ok = false;
-                        }
-                    }
+                    };
                     SERVER_OK.store(resource_ok, std::sync::atomic::Ordering::SeqCst);
 
                     // Log state changes
@@ -254,7 +321,10 @@ pub async fn check_resource_utilization_middleware(
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::cpu_quota_cores;
+    use super::{
+        CGROUP_CPU_FILES, CgroupCpuFiles, cgroup_cpu_limit_cores, cpu_quota_cores,
+        read_cgroup_cpu_limit, resolve_cgroup_cpu_files,
+    };
 
     #[test]
     fn parses_limited_and_unlimited_cpu_quotas() {
@@ -267,5 +337,52 @@ mod tests {
     fn rejects_invalid_cpu_quotas() {
         assert_eq!(cpu_quota_cores("invalid", "100000"), Err(()));
         assert_eq!(cpu_quota_cores("50000", "0"), Err(()));
+    }
+
+    #[test]
+    fn cached_cgroup_location_rereads_the_quota_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let cpu_max = directory.path().join("cpu.max");
+        let v2 = CgroupCpuFiles::V2 {
+            cpu_max: cpu_max.clone(),
+        };
+        // A missing file is an error, as before.
+        assert_eq!(read_cgroup_cpu_limit(&v2), Err(()));
+        std::fs::write(&cpu_max, "50000 100000\n").unwrap();
+        assert_eq!(read_cgroup_cpu_limit(&v2), Ok(Some(0.5)));
+        // A changed quota is seen on the next read of the same location.
+        std::fs::write(&cpu_max, "max 100000\n").unwrap();
+        assert_eq!(read_cgroup_cpu_limit(&v2), Ok(None));
+        std::fs::write(&cpu_max, "200000 100000\n").unwrap();
+        assert_eq!(read_cgroup_cpu_limit(&v2), Ok(Some(2.0)));
+        std::fs::write(&cpu_max, "50000\n").unwrap();
+        assert_eq!(read_cgroup_cpu_limit(&v2), Err(()));
+
+        let quota = directory.path().join("cpu.cfs_quota_us");
+        let period = directory.path().join("cpu.cfs_period_us");
+        let v1 = CgroupCpuFiles::V1 {
+            quota: quota.clone(),
+            period: period.clone(),
+        };
+        std::fs::write(&quota, "25000\n").unwrap();
+        assert_eq!(read_cgroup_cpu_limit(&v1), Err(()));
+        std::fs::write(&period, "100000\n").unwrap();
+        assert_eq!(read_cgroup_cpu_limit(&v1), Ok(Some(0.25)));
+        std::fs::write(&quota, "-1\n").unwrap();
+        assert_eq!(read_cgroup_cpu_limit(&v1), Ok(None));
+    }
+
+    #[test]
+    fn cgroup_location_is_resolved_once() {
+        // Whatever this host has, repeated reads agree with a fresh resolution.
+        let first = cgroup_cpu_limit_cores();
+        let resolved = CGROUP_CPU_FILES.get().cloned();
+        if let Ok(fresh) = resolve_cgroup_cpu_files() {
+            assert_eq!(resolved, Some(fresh.clone()));
+            let expected = fresh.as_ref().ok_or(()).and_then(read_cgroup_cpu_limit);
+            assert_eq!(first, expected);
+        }
+        assert_eq!(cgroup_cpu_limit_cores(), first);
+        assert_eq!(CGROUP_CPU_FILES.get().cloned(), resolved);
     }
 }

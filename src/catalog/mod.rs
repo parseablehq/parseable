@@ -338,9 +338,7 @@ async fn handle_existing_partition(
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
     {
         // Update existing manifest
-        for change in partition_changes {
-            manifest.apply_change(change);
-        }
+        manifest.apply_changes(partition_changes);
         PARSEABLE
             .metastore
             .put_manifest(

@@ -58,7 +58,7 @@ use crate::{
         target::Target,
     },
     catalog::{
-        manifest::{Manifest, decode_manifest_blocking, encode_manifest},
+        manifest::{Manifest, decode_manifest_blocking, encode_manifest_blocking},
         partition_path,
     },
     handlers::http::{
@@ -1201,10 +1201,9 @@ impl Metastore for $name {
         let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id)
             .join(&manifest_file_name);
 
-        Ok(self
-            .storage
-            .put_object(&path, encode_manifest(manifest)?, tenant_id)
-            .await?)
+        let encoded = encode_manifest_blocking(manifest.clone()).await?;
+
+        Ok(self.storage.put_object(&path, encoded, tenant_id).await?)
     }
 
     async fn delete_manifest(

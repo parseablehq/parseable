@@ -24,6 +24,7 @@ use crate::rbac::user::{User, UserGroup};
 use crate::{parseable::PARSEABLE, storage::StorageMetadata};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::Response;
 use super::{
@@ -194,13 +195,73 @@ pub fn init(metadata: &StorageMetadata) {
         .expect("Unable to create UserGroups map from storage");
 }
 
+/// A session that lives only as long as the request it authenticates: the
+/// per-request session of an API key or of a forwarded intra-cluster request.
+/// It carries everything a tracked session would hold, so it is never entered
+/// into SESSIONS and authenticating with it takes no SESSIONS lock.
+#[derive(Debug)]
+pub struct EphemeralSession {
+    pub id: ulid::Ulid,
+    pub userid: String,
+    pub tenant: String,
+    pub expires_at: DateTime<Utc>,
+    pub permissions: Vec<Permission>,
+}
+
+impl EphemeralSession {
+    pub fn is_expired(&self) -> bool {
+        self.expires_at <= Utc::now()
+    }
+}
+
 // A session is loosly active mapping to permissions
 // this is lazily initialized and
 // cleanup of unused session is done when a new session is added
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SessionKey {
-    BasicAuth { username: String, password: String },
+    BasicAuth {
+        username: String,
+        password: String,
+    },
     SessionId(ulid::Ulid),
+    /// Request-local; never stored in SESSIONS and never serialized.
+    #[serde(skip)]
+    Ephemeral(Arc<EphemeralSession>),
+}
+
+impl PartialEq for SessionKey {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                SessionKey::BasicAuth { username, password },
+                SessionKey::BasicAuth {
+                    username: other_username,
+                    password: other_password,
+                },
+            ) => username == other_username && password == other_password,
+            (SessionKey::SessionId(id), SessionKey::SessionId(other)) => id == other,
+            (SessionKey::Ephemeral(session), SessionKey::Ephemeral(other)) => {
+                session.id == other.id
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for SessionKey {}
+
+impl std::hash::Hash for SessionKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            SessionKey::BasicAuth { username, password } => {
+                username.hash(state);
+                password.hash(state);
+            }
+            SessionKey::SessionId(id) => id.hash(state),
+            SessionKey::Ephemeral(session) => session.id.hash(state),
+        }
+    }
 }
 
 pub type UserSessionMap = HashMap<String, Vec<(SessionKey, DateTime<Utc>)>>;
@@ -232,6 +293,9 @@ impl Sessions {
 
     // only checks if the session is expired or not
     pub fn is_session_expired(&self, key: &SessionKey) -> bool {
+        if let SessionKey::Ephemeral(session) = key {
+            return session.is_expired();
+        }
         let Some((userid, tenant_id, _)) = self.active_sessions.get(key) else {
             return false;
         };
@@ -252,6 +316,13 @@ impl Sessions {
         permissions: Vec<Permission>,
         tenant_id: &Option<String>,
     ) {
+        if matches!(key, SessionKey::Ephemeral(_)) {
+            debug_assert!(
+                false,
+                "ephemeral sessions are request-local and must not be tracked in SESSIONS"
+            );
+            return;
+        }
         // let tenant_id = get_tenant_id_from_key(&key);
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         self.remove_expired_session(&user, tenant_id);
@@ -326,7 +397,10 @@ impl Sessions {
     }
 
     // get permission related to this session
-    pub fn get(&self, key: &SessionKey) -> Option<&Vec<Permission>> {
+    pub fn get<'a>(&'a self, key: &'a SessionKey) -> Option<&'a Vec<Permission>> {
+        if let SessionKey::Ephemeral(session) = key {
+            return Some(&session.permissions);
+        }
         self.active_sessions.get(key).map(|(_, _, perms)| perms)
     }
 
@@ -339,124 +413,177 @@ impl Sessions {
         context_resource: Option<&str>,
         context_user: Option<&str>,
     ) -> Option<Response> {
+        if let SessionKey::Ephemeral(session) = key {
+            return Some(check_ephemeral_auth(
+                session,
+                required_action,
+                context_resource,
+                context_user,
+            ));
+        }
         self.active_sessions
             .get(key)
             .map(|(username, tenant_id, perms)| {
-                let mut perms: HashSet<Permission> = HashSet::from_iter(perms.clone());
-                perms.extend(aggregate_group_permissions(username, tenant_id));
-
-                if perms.iter().any(|user_perm| {
-                    match *user_perm {
-                        // if any action is ALL then we we authorize
-                        Permission::Unit(action) => {
-                            action == required_action
-                                || action == Action::All
-                                || action == Action::SuperAdmin
-                        }
-                        Permission::Resource(action, ref resource_type) => {
-                            if let Some(resource_type) = resource_type.as_ref() {
-                                // default flow for all actions other than global-ingestion (ingestion action without any dataset restriction)
-                                match resource_type {
-                                    ParseableResourceType::Stream(resource_id)
-                                    | ParseableResourceType::Llm(resource_id) => {
-                                        let ok_resource =
-                                            if let Some(context_resource_id) = context_resource {
-                                                let is_internal = PARSEABLE
-                                                    .get_stream(
-                                                        context_resource_id,
-                                                        &Some(tenant_id.to_owned()),
-                                                    )
-                                                    .is_ok_and(|stream| {
-                                                        stream.get_stream_type().eq(
-                                                            &crate::storage::StreamType::Internal,
-                                                        )
-                                                    });
-                                                resource_id == context_resource_id
-                                                    || resource_id == "*"
-                                                    || is_internal
-                                            } else {
-                                                // if no resource to match then resource check is not needed
-                                                // WHEN IS THIS VALID??
-                                                true
-                                            };
-                                        (action == required_action
-                                            || action == Action::All
-                                            || action == Action::SuperAdmin)
-                                            && ok_resource
-                                    }
-                                    ParseableResourceType::All => {
-                                        action == required_action
-                                            || action == Action::All
-                                            || action == Action::SuperAdmin
-                                    }
-                                }
-                            } else if resource_type.is_none()
-                                && matches!(
-                                    action,
-                                    Action::Ingest
-                                        | Action::Query
-                                        | Action::ListStream
-                                        | Action::GetSchema
-                                        | Action::GetStats
-                                        | Action::GetRetention
-                                        | Action::PutRetention
-                                        | Action::GetLLM
-                                        | Action::QueryLLM
-                                        | Action::ListLLM
-                                )
-                            {
-                                // flow for global-ingestion / global-query / global-reader / global-writer
-                                let ok_resource =
-                                    if let Some(context_resource_id) = context_resource {
-                                        let is_internal = PARSEABLE
-                                            .get_stream(
-                                                context_resource_id,
-                                                &Some(tenant_id.to_owned()),
-                                            )
-                                            .is_ok_and(|stream| {
-                                                stream
-                                                    .get_stream_type()
-                                                    .eq(&crate::storage::StreamType::Internal)
-                                            });
-                                        !is_internal
-                                    } else {
-                                        // if no resource to match then resource check is not needed
-                                        // WHEN IS THIS VALID??
-                                        true
-                                    };
-                                action == required_action && ok_resource
-                            } else {
-                                // the default flow (some resource_type and an action) was covered in the first if
-                                // if the resource type is also None and action is not ingest then return with false
-                                false
-                            }
-                        }
-                        Permission::SelfUser if required_action == Action::GetUserRoles => {
-                            context_user.map(|x| x == username).unwrap_or_default()
-                        }
-                        _ => false,
-                    }
-                }) {
-                    Response::Authorized
-                } else {
-                    Response::UnAuthorized
-                }
+                check_permissions(
+                    username,
+                    tenant_id,
+                    perms,
+                    required_action,
+                    context_resource,
+                    context_user,
+                )
             })
     }
 
     pub fn get_user_and_tenant_id(&self, key: &SessionKey) -> Option<(String, String)> {
+        if let SessionKey::Ephemeral(session) = key {
+            return Some((session.userid.clone(), session.tenant.clone()));
+        }
         self.active_sessions
             .get(key)
             .map(|(userid, tenant_id, _)| (userid.clone(), tenant_id.clone()))
     }
 
     pub fn mutate_request_with_tenant(&self, key: &SessionKey, req: &mut ServiceRequest) {
-        if let Some((_, tenant, _)) = self.active_sessions.get(key) {
+        let tenant = match key {
+            SessionKey::Ephemeral(session) => Some(&session.tenant),
+            key => self.active_sessions.get(key).map(|(_, tenant, _)| tenant),
+        };
+        if let Some(tenant) = tenant {
             req.headers_mut().insert(
                 HeaderName::from_static(TENANT_ID),
                 HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
             );
         }
+    }
+}
+
+/// Authorizes a request-local session from the grants it carries, exactly as
+/// `Sessions::check_auth` authorizes a tracked one, without taking SESSIONS.
+/// Like `check_auth` it does not look at expiry; callers that admit a request
+/// check `EphemeralSession::is_expired` first.
+pub fn check_ephemeral_auth(
+    session: &EphemeralSession,
+    required_action: Action,
+    context_resource: Option<&str>,
+    context_user: Option<&str>,
+) -> Response {
+    check_permissions(
+        &session.userid,
+        &session.tenant,
+        &session.permissions,
+        required_action,
+        context_resource,
+        context_user,
+    )
+}
+
+/// The authorization decision shared by tracked and request-local sessions.
+/// Takes USERS, USER_GROUPS and ROLES (for group grants), so the caller must
+/// hold no guard later than SESSIONS in the lock order.
+fn check_permissions(
+    username: &str,
+    tenant_id: &String,
+    perms: &[Permission],
+    required_action: Action,
+    context_resource: Option<&str>,
+    context_user: Option<&str>,
+) -> Response {
+    let grants = |user_perm: &Permission| {
+        match *user_perm {
+            // if any action is ALL then we we authorize
+            Permission::Unit(action) => {
+                action == required_action || action == Action::All || action == Action::SuperAdmin
+            }
+            Permission::Resource(action, ref resource_type) => {
+                if let Some(resource_type) = resource_type.as_ref() {
+                    // default flow for all actions other than global-ingestion (ingestion action without any dataset restriction)
+                    match resource_type {
+                        ParseableResourceType::Stream(resource_id)
+                        | ParseableResourceType::Llm(resource_id) => {
+                            let ok_resource = if let Some(context_resource_id) = context_resource {
+                                let is_internal = PARSEABLE
+                                    .get_stream(context_resource_id, &Some(tenant_id.to_owned()))
+                                    .is_ok_and(|stream| {
+                                        stream
+                                            .get_stream_type()
+                                            .eq(&crate::storage::StreamType::Internal)
+                                    });
+                                resource_id == context_resource_id
+                                    || resource_id == "*"
+                                    || is_internal
+                            } else {
+                                // if no resource to match then resource check is not needed
+                                // WHEN IS THIS VALID??
+                                true
+                            };
+                            (action == required_action
+                                || action == Action::All
+                                || action == Action::SuperAdmin)
+                                && ok_resource
+                        }
+                        ParseableResourceType::All => {
+                            action == required_action
+                                || action == Action::All
+                                || action == Action::SuperAdmin
+                        }
+                    }
+                } else if resource_type.is_none()
+                    && matches!(
+                        action,
+                        Action::Ingest
+                            | Action::Query
+                            | Action::ListStream
+                            | Action::GetSchema
+                            | Action::GetStats
+                            | Action::GetRetention
+                            | Action::PutRetention
+                            | Action::GetLLM
+                            | Action::QueryLLM
+                            | Action::ListLLM
+                    )
+                {
+                    // flow for global-ingestion / global-query / global-reader / global-writer
+                    let ok_resource = if let Some(context_resource_id) = context_resource {
+                        let is_internal = PARSEABLE
+                            .get_stream(context_resource_id, &Some(tenant_id.to_owned()))
+                            .is_ok_and(|stream| {
+                                stream
+                                    .get_stream_type()
+                                    .eq(&crate::storage::StreamType::Internal)
+                            });
+                        !is_internal
+                    } else {
+                        // if no resource to match then resource check is not needed
+                        // WHEN IS THIS VALID??
+                        true
+                    };
+                    action == required_action && ok_resource
+                } else {
+                    // the default flow (some resource_type and an action) was covered in the first if
+                    // if the resource type is also None and action is not ingest then return with false
+                    false
+                }
+            }
+            Permission::SelfUser if required_action == Action::GetUserRoles => {
+                context_user.map(|x| x == username).unwrap_or_default()
+            }
+            _ => false,
+        }
+    };
+
+    // The session's own grants are checked in place; group grants are only
+    // gathered (taking USERS, USER_GROUPS and ROLES) when none of them
+    // applies. Checking the two sets one after the other decides exactly as
+    // checking their union did.
+    if perms.iter().any(grants)
+        || aggregate_group_permissions(username, tenant_id)
+            .iter()
+            .any(grants)
+    {
+        Response::Authorized
+    } else {
+        Response::UnAuthorized
     }
 }
 
@@ -496,40 +623,30 @@ impl From<Vec<User>> for Users {
 fn aggregate_group_permissions(username: &str, tenant_id: &String) -> HashSet<Permission> {
     let mut group_perms = HashSet::new();
 
-    let user = if let Some(tenant_users) = users().get(tenant_id)
+    // Only the group names are copied out, and only when there are any, so
+    // the common case of a user without groups clones nothing. USERS is
+    // released before USER_GROUPS is taken, as before.
+    let user_groups = if let Some(tenant_users) = users().get(tenant_id)
         && let Some(user) = tenant_users.get(username)
         && !user.protected
+        && !user.user_groups.is_empty()
     {
-        user.to_owned()
+        user.user_groups.clone()
     } else {
         return group_perms;
     };
-    // let Some(user) = users().get(username).cloned() else {
-    //     return group_perms;
-    // };
 
-    if user.user_groups.is_empty() {
-        return group_perms;
-    }
-
-    for group_name in &user.user_groups {
+    for group_name in &user_groups {
         if let Some(groups) = read_user_groups().get(tenant_id)
             && let Some(group) = groups.get(group_name)
         {
             for role_name in group.roles.iter() {
-                let roles = if let Some(tenant_roles) = roles().get(tenant_id)
+                if let Some(tenant_roles) = roles().get(tenant_id)
                     && let Some(role) = tenant_roles.get(role_name)
                 {
-                    role.clone()
-                } else {
-                    continue;
-                };
-                // let Some(privileges) = roles().get(role_name).cloned() else {
-                //     continue;
-                // };
-
-                for role in roles.privileges() {
-                    group_perms.extend(RoleBuilder::from(role).build());
+                    for privilege in role.privileges() {
+                        group_perms.extend(RoleBuilder::from(privilege).build());
+                    }
                 }
             }
         } else {

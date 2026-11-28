@@ -27,6 +27,9 @@ use actix_web_httpauth::extractors::basic::BasicAuth;
 use crate::rbac::map::SessionKey;
 
 pub fn extract_session_key(req: &mut ServiceRequest) -> Result<SessionKey, Error> {
+    if let Some(session) = req.extensions().get::<SessionKey>() {
+        return Ok(session.clone());
+    }
     // Extract username and password from the request using basic auth extractor.
     let creds = req.extract::<BasicAuth>().into_inner();
     let basic = creds.map(|creds| {
@@ -39,8 +42,6 @@ pub fn extract_session_key(req: &mut ServiceRequest) -> Result<SessionKey, Error
 
     if let Ok(basic) = basic {
         Ok(basic)
-    } else if let Some(session) = req.extensions().get::<SessionKey>() {
-        Ok(session.clone())
     } else if let Some(cookie) = req.cookie("session") {
         let ulid = ulid::Ulid::from_string(cookie.value())
             .map_err(|_| ErrorUnprocessableEntity("Cookie is tampered with or invalid"))?;
@@ -51,6 +52,9 @@ pub fn extract_session_key(req: &mut ServiceRequest) -> Result<SessionKey, Error
 }
 
 pub fn extract_session_key_from_req(req: &HttpRequest) -> Result<SessionKey, Error> {
+    if let Some(session) = req.extensions().get::<SessionKey>() {
+        return Ok(session.clone());
+    }
     // Extract username and password from the request using basic auth extractor.
     let creds = BasicAuth::extract(req).into_inner();
     let basic = creds.map(|creds| {
@@ -63,8 +67,6 @@ pub fn extract_session_key_from_req(req: &HttpRequest) -> Result<SessionKey, Err
 
     if let Ok(basic) = basic {
         Ok(basic)
-    } else if let Some(session) = req.extensions().get::<SessionKey>() {
-        Ok(session.clone())
     } else if let Some(cookie) = req.cookie("session") {
         let ulid = ulid::Ulid::from_string(cookie.value())
             .map_err(|_| ErrorUnprocessableEntity("Cookie is tampered with or invalid"))?;

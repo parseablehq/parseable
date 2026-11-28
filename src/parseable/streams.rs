@@ -111,6 +111,33 @@ static METRIC_PARQUET_THREADPOOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
         .expect("Metric Parquet thread pool should be constructible")
 });
 
+/// Bounded pool for Arrow-to-Parquet conversion of staged groups. Conversion
+/// runs at every minute boundary; on the global Rayon pool it competed with
+/// the HTTP ingest jobs spawned there and caused tail-latency spikes at `:00`.
+/// Nested Rayon work inside a conversion stays on this pool.
+static LOG_CONVERSION_THREADPOOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
+    let threads = log_conversion_threads(
+        std::env::var(LOG_CONVERSION_THREADS_VAR).ok().as_deref(),
+        num_cpus::get(),
+    );
+    #[cfg(test)]
+    let threads = threads.max(6);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(|index| format!("log-conversion-{index}"))
+        .build()
+        .expect("Log conversion thread pool should be constructible")
+});
+const LOG_CONVERSION_THREADS_VAR: &str = "LOG_CONVERSION_THREADS";
+
+/// Threads for `LOG_CONVERSION_THREADPOOL`: a positive override, else half the
+/// CPUs clamped to 2..=8 so conversion cannot take every core from ingest.
+fn log_conversion_threads(var: Option<&str>, cpus: usize) -> usize {
+    var.and_then(|var| var.trim().parse::<usize>().ok())
+        .filter(|&threads| threads > 0)
+        .unwrap_or_else(|| (cpus / 2).clamp(2, 8))
+}
+
 const INPROCESS_DIR_PREFIX: &str = "processing_";
 const METRIC_NAME_BLOOM_FILTER_NDV: u64 = 32768;
 const MAX_PERIODIC_PARQUET_GROUPS_PER_STREAM: usize = 2;
@@ -376,6 +403,53 @@ fn minute_from_system_time(time: SystemTime) -> u128 {
         / 60000
 }
 
+/// What ingest reads from a stream's metadata to stage one request, see
+/// `Stream::ingest_snapshot`
+pub(crate) struct IngestSnapshot {
+    pub time_partition_limit: Option<NonZeroU32>,
+    pub static_schema_flag: bool,
+    pub custom_partition: Option<String>,
+    pub schema_version: SchemaVersion,
+    pub schema: Arc<HashMap<String, Arc<Field>>>,
+    pub infer_timestamp: bool,
+}
+
+/// Whether `cached` holds exactly the entries of `current`, each key mapped to
+/// the very same `Arc<Field>`. Allocation-free, and linear only in pointer and
+/// short key comparisons.
+///
+/// A clone of a map iterates in the same order as the map it was cloned from,
+/// so an unchanged schema matches pairwise in one pass. Any mutation since then
+/// (insert, replace, remove, reassignment) changes the length, an entry, or the
+/// order, and reports a mismatch: equal sequences of entries mean equal maps, so
+/// a match is never wrong, and a mismatch only costs a fresh clone.
+fn same_schema_entries(
+    cached: &HashMap<String, Arc<Field>>,
+    current: &HashMap<String, Arc<Field>>,
+) -> bool {
+    if cached.len() != current.len() {
+        return false;
+    }
+    if cached
+        .iter()
+        .zip(current)
+        .all(|((cached_key, cached_field), (key, field))| {
+            Arc::ptr_eq(cached_field, field) && cached_key == key
+        })
+    {
+        return true;
+    }
+    current
+        .iter()
+        .all(|(key, field)| cached.get(key).is_some_and(|cv| Arc::ptr_eq(cv, field)))
+}
+
+#[derive(Default)]
+struct WrittenParquetArtifacts {
+    parquet_metadata: Option<Arc<parquet::file::metadata::ParquetMetaData>>,
+    field_stats: Option<(usize, Vec<crate::storage::field_stats::FieldStat>)>,
+}
+
 /// All state associated with a single logstream in Parseable.
 pub struct Stream {
     pub stream_name: String,
@@ -403,6 +477,11 @@ pub struct Stream {
     part_lifecycle: RwLock<()>,
     // Last schema durably staged by conversion; ingest writes invalidate it.
     schema_writer: Mutex<Option<Schema>>,
+    /// Shared copy of `metadata.schema` last handed out by `ingest_snapshot`,
+    /// so ingest requests share one map instead of each deep-cloning it.
+    /// Revalidated against the live schema on every use, so it can never be
+    /// stale whichever code mutates `metadata`.
+    schema_snapshot: RwLock<Arc<HashMap<String, Arc<Field>>>>,
     // Serializes inventory with journal install/removal, without holding claims
     // across a full scan or any durability barrier. Lock order: inventory, claims.
     journal_inventory: Mutex<()>,
@@ -952,6 +1031,7 @@ impl Stream {
             publication: RwLock::new(()),
             part_lifecycle: RwLock::new(()),
             schema_writer: Mutex::new(None),
+            schema_snapshot: RwLock::default(),
             journal_inventory: Mutex::new(()),
             conversion_claims: Arc::default(),
             #[cfg(test)]
@@ -2655,12 +2735,15 @@ impl Stream {
         };
         let results: Vec<_> = match execution {
             // Startup groups are ordered oldest-first and remain sequential so
-            // recovery memory stays bounded.
+            // recovery memory stays bounded. They run on the calling thread.
             ArrowGroupExecution::Sequential => staging_files.into_iter().map(convert).collect(),
             // A periodic processing directory can contain many overdue minute
             // groups. Convert only two at a time so a single stream cannot
-            // flood the shared Rayon pool with column-encoding work.
-            ArrowGroupExecution::Parallel => {
+            // flood the conversion pool with column-encoding work. Periodic
+            // conversion runs on the dedicated conversion pool, never on the
+            // global Rayon pool that HTTP ingest uses; nested parallel work
+            // stays there too.
+            ArrowGroupExecution::Parallel => LOG_CONVERSION_THREADPOOL.install(|| {
                 let mut results = Vec::with_capacity(staging_files.len());
                 for group_batch in staging_files.chunks(MAX_PERIODIC_PARQUET_GROUPS_PER_STREAM) {
                     results.extend(
@@ -2672,7 +2755,7 @@ impl Stream {
                     );
                 }
                 results
-            }
+            }),
         };
 
         let mut failed_dirs = HashSet::new();
@@ -2798,12 +2881,13 @@ impl Stream {
             time_partition,
             cluster_key,
         );
-        match write_result {
-            Ok(true) => {
+        let artifacts = match write_result {
+            Ok(Some(artifacts)) => {
                 #[cfg(test)]
                 self.lifecycle_phase(LifecyclePhase::ParquetPartWritten(part_path.clone()));
+                artifacts
             }
-            Ok(false) => {
+            Ok(None) => {
                 Self::remove_partial_parquet_file(&part_path);
                 return Ok(None);
             }
@@ -2826,7 +2910,7 @@ impl Stream {
                 }
                 return Err(err);
             }
-        }
+        };
 
         let mut schema_error = None;
         let journal_result = (|| {
@@ -2863,6 +2947,16 @@ impl Stream {
         };
         self.conversion_phase(ConversionPhase::JournalInstalled);
         self.publish_parquet(&part_path, &parquet_path, &readable_arrow_files)?;
+        if let Some(metadata) = artifacts.parquet_metadata {
+            crate::catalog::manifest::cache_parquet_metadata(&parquet_path, metadata);
+        }
+        if let Some((max_field_statistics, stats)) = artifacts.field_stats {
+            crate::storage::field_stats::cache_staged_field_stats(
+                &parquet_path,
+                max_field_statistics,
+                stats,
+            );
+        }
         self.retire_conversion_sources(&journal, tenant_id)?;
         if let Some(err) = schema_error {
             return Err(err);
@@ -2880,7 +2974,7 @@ impl Stream {
         props: &WriterProperties,
         time_partition: Option<&String>,
         cluster_key: Option<LogClusterKey>,
-    ) -> Result<bool, StagingError> {
+    ) -> Result<Option<WrittenParquetArtifacts>, StagingError> {
         let _span = info_span!(
             "write_parquet_part_file",
             stream_name = %self.stream_name,
@@ -2894,7 +2988,10 @@ impl Stream {
             .map_err(|_| StagingError::Create)?;
         #[cfg(test)]
         self.lifecycle_phase(LifecyclePhase::ParquetPartCreated(part_path.to_path_buf()));
-        if self.is_otel_metrics() {
+        let collect_stats = self.options.collect_dataset_stats
+            && self.stream_name != crate::storage::field_stats::DATASET_STATS_STREAM_NAME;
+        let max_field_statistics = self.options.max_field_statistics;
+        let artifacts = if self.is_otel_metrics() {
             self.write_metric_parquet_part_file(
                 part_path,
                 &mut part_file,
@@ -2902,7 +2999,8 @@ impl Stream {
                 schema,
                 props,
                 time_partition,
-            )?;
+                collect_stats.then_some(max_field_statistics),
+            )?
         } else if let Some(key) = cluster_key {
             let stats = log_clustering::write_clustered_log_parquet(
                 &mut part_file,
@@ -2920,14 +3018,30 @@ impl Stream {
                 cluster_ms = stats.cluster_duration.as_secs_f64() * 1000.0,
                 "Clustered log Arrow-to-Parquet conversion"
             );
+            WrittenParquetArtifacts::default()
         } else {
+            let mut stats_acc = collect_stats.then(|| {
+                crate::storage::field_stats::FieldStatsAccumulator::new(
+                    &self.stream_name,
+                    schema.as_ref(),
+                    max_field_statistics,
+                )
+            });
             let mut writer =
                 ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
             for record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
-                writer.write(&record?)?;
+                let batch = record?;
+                if let Some(acc) = stats_acc.as_mut() {
+                    acc.update(&batch);
+                }
+                writer.write(&batch)?;
             }
-            writer.close()?;
-        }
+            let parquet_metadata = Arc::new(writer.close()?);
+            WrittenParquetArtifacts {
+                parquet_metadata: Some(parquet_metadata),
+                field_stats: stats_acc.map(|acc| (max_field_statistics, acc.finish())),
+            }
+        };
 
         drop(part_file);
         #[cfg(test)]
@@ -2939,14 +3053,15 @@ impl Stream {
                 stream_name = &self.stream_name
             );
             Self::remove_partial_parquet_file(part_path);
-            return Ok(false);
+            return Ok(None);
         }
         trace!("Parquet file successfully constructed");
-        Ok(true)
+        Ok(Some(artifacts))
     }
 
     /// Writes a metric conversion group with pipelined row-group preparation
     /// and encoding while preserving row-group output order.
+    #[allow(clippy::too_many_arguments)]
     fn write_metric_parquet_part_file(
         &self,
         part_path: &Path,
@@ -2955,7 +3070,8 @@ impl Stream {
         schema: &Arc<Schema>,
         props: &WriterProperties,
         time_partition: Option<&String>,
-    ) -> Result<(), StagingError> {
+        collect_stats_max: Option<usize>,
+    ) -> Result<WrittenParquetArtifacts, StagingError> {
         let conversion_started = Instant::now();
         let source_arrow_files = record_reader.readable_files().len();
         let source_arrow_bytes = record_reader
@@ -2997,6 +3113,16 @@ impl Stream {
             time_partition_field,
             target,
         );
+        let mut stats_acc = collect_stats_max.map(|max_stats| {
+            (
+                max_stats,
+                crate::storage::field_stats::FieldStatsAccumulator::new(
+                    &self.stream_name,
+                    schema.as_ref(),
+                    max_stats,
+                ),
+            )
+        });
         let mut preparation_complete = false;
         let mut next_row_group_index = writer.flushed_row_groups().len();
         let mut pending_encodings = VecDeque::with_capacity(*METRIC_ROW_GROUP_ENCODE_IN_FLIGHT);
@@ -3018,6 +3144,9 @@ impl Stream {
                                 prepared.batch.num_rows()
                             ))
                             .into());
+                        }
+                        if let Some((_, acc)) = stats_acc.as_mut() {
+                            acc.update(&prepared.batch);
                         }
                         let preparation = MetricRowGroupPreparationTimings {
                             arrow_read_decode_duration: prepared.arrow_read_decode_duration,
@@ -3059,7 +3188,7 @@ impl Stream {
         }
 
         let close_started = Instant::now();
-        writer.close()?;
+        let parquet_metadata = Arc::new(writer.close()?);
         timings.parquet_close_duration = close_started.elapsed();
         let total_duration = conversion_started.elapsed();
         let output_bytes = part_file
@@ -3091,7 +3220,10 @@ impl Stream {
             parquet_close_ms = timings.parquet_close_duration.as_secs_f64() * 1000.0,
             "Metric Arrow-to-Parquet phase timings"
         );
-        Ok(())
+        Ok(WrittenParquetArtifacts {
+            parquet_metadata: Some(parquet_metadata),
+            field_stats: stats_acc.map(|(max_stats, acc)| (max_stats, acc.finish())),
+        })
     }
 
     /// Removes a temporary Parquet output left by a failed conversion.
@@ -3345,6 +3477,49 @@ impl Stream {
 
     pub fn get_schema_raw(&self) -> HashMap<String, Arc<Field>> {
         self.metadata.read().expect(LOCK_EXPECT).schema.clone()
+    }
+
+    /// The metadata ingest needs to stage a request, read under one lock. The
+    /// schema is shared rather than cloned while it is unchanged.
+    pub(crate) fn ingest_snapshot(&self) -> IngestSnapshot {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        let schema = self.shared_schema(&metadata.schema);
+        IngestSnapshot {
+            time_partition_limit: metadata.time_partition_limit,
+            static_schema_flag: metadata.static_schema_flag,
+            custom_partition: metadata.custom_partition.clone(),
+            schema_version: metadata.schema_version,
+            schema,
+            infer_timestamp: metadata.infer_timestamp,
+        }
+    }
+
+    /// A shared map equal to `current` (the live schema, read-locked by the
+    /// caller): the cached one while it still holds exactly the same entries,
+    /// otherwise a fresh clone that becomes the cached one.
+    fn shared_schema(
+        &self,
+        current: &HashMap<String, Arc<Field>>,
+    ) -> Arc<HashMap<String, Arc<Field>>> {
+        {
+            let cached = self
+                .schema_snapshot
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            if same_schema_entries(&cached, current) {
+                return Arc::clone(&*cached);
+            }
+        }
+        let mut cached = self
+            .schema_snapshot
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if same_schema_entries(&cached, current) {
+            return Arc::clone(&*cached);
+        }
+        let fresh = Arc::new(current.clone());
+        *cached = Arc::clone(&fresh);
+        fresh
     }
 
     pub fn set_retention(&self, retention: Retention) {
@@ -4085,6 +4260,125 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+
+    #[test]
+    fn log_conversion_pool_is_bounded_and_named() {
+        assert_eq!(log_conversion_threads(None, 1), 2);
+        assert_eq!(log_conversion_threads(None, 4), 2);
+        assert_eq!(log_conversion_threads(None, 10), 5);
+        assert_eq!(log_conversion_threads(None, 64), 8);
+        assert_eq!(log_conversion_threads(Some("3"), 64), 3);
+        assert_eq!(log_conversion_threads(Some(" 12 "), 4), 12);
+        // Invalid overrides fall back to the default
+        assert_eq!(log_conversion_threads(Some("0"), 64), 8);
+        assert_eq!(log_conversion_threads(Some("many"), 4), 2);
+
+        // Parallel work inside the pool, nested included, runs on its own
+        // threads and never on the global Rayon pool.
+        let names: Vec<String> = LOG_CONVERSION_THREADPOOL.install(|| {
+            (0..64)
+                .into_par_iter()
+                .flat_map_iter(|_| {
+                    (0..4)
+                        .into_par_iter()
+                        .map(|_| std::thread::current().name().unwrap_or_default().to_owned())
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        });
+        assert!(
+            names.iter().all(|name| name.starts_with("log-conversion-")),
+            "{names:?}"
+        );
+        assert_eq!(
+            LOG_CONVERSION_THREADPOOL.current_num_threads(),
+            log_conversion_threads(
+                std::env::var(LOG_CONVERSION_THREADS_VAR).ok().as_deref(),
+                num_cpus::get()
+            )
+        );
+    }
+
+    #[test]
+    fn ingest_snapshot_shares_schema_until_it_changes() {
+        let dir = TempDir::new().unwrap();
+        let stream = Stream::new(
+            Arc::new(Options {
+                local_staging_path: dir.path().to_path_buf(),
+                ..Default::default()
+            }),
+            "ingest-snapshot",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        let a = Arc::new(Field::new("a", DataType::Utf8, true));
+        let b = Arc::new(Field::new("b", DataType::Int64, true));
+        {
+            let mut metadata = stream.metadata.write().unwrap();
+            metadata.schema.insert("a".into(), a.clone());
+            metadata.schema.insert("b".into(), b.clone());
+            metadata.custom_partition = Some("a".into());
+            metadata.static_schema_flag = true;
+            metadata.infer_timestamp = false;
+            metadata.schema_version = SchemaVersion::V1;
+            metadata.time_partition_limit = NonZeroU32::new(3);
+        }
+        let first = stream.ingest_snapshot();
+        assert_eq!(*first.schema, stream.get_schema_raw());
+        assert_eq!(first.custom_partition, stream.get_custom_partition());
+        assert_eq!(first.static_schema_flag, stream.get_static_schema_flag());
+        assert_eq!(first.infer_timestamp, stream.get_infer_timestamp());
+        assert_eq!(first.schema_version, stream.get_schema_version());
+        assert_eq!(
+            first.time_partition_limit,
+            stream.get_time_partition_limit()
+        );
+        // Unchanged: the same map is shared
+        let second = stream.ingest_snapshot();
+        assert!(Arc::ptr_eq(&first.schema, &second.schema));
+
+        // An added field
+        let c = Arc::new(Field::new("c", DataType::Boolean, true));
+        stream
+            .metadata
+            .write()
+            .unwrap()
+            .schema
+            .insert("c".into(), c.clone());
+        let third = stream.ingest_snapshot();
+        assert!(!Arc::ptr_eq(&second.schema, &third.schema));
+        assert_eq!(*third.schema, stream.get_schema_raw());
+        assert_eq!(
+            *second.schema,
+            HashMap::from([("a".into(), a.clone()), ("b".into(), b.clone())])
+        );
+
+        // A field replaced in place under the same name, same length
+        let b_float = Arc::new(Field::new("b", DataType::Float64, true));
+        stream
+            .metadata
+            .write()
+            .unwrap()
+            .schema
+            .insert("b".into(), b_float.clone());
+        let fourth = stream.ingest_snapshot();
+        assert_eq!(fourth.schema.len(), third.schema.len());
+        assert!(!Arc::ptr_eq(&third.schema, &fourth.schema));
+        assert!(Arc::ptr_eq(&fourth.schema["b"], &b_float));
+
+        // The schema replaced wholesale with equal entries: still correct
+        let replacement = stream.get_schema_raw();
+        stream.metadata.write().unwrap().schema = replacement;
+        let fifth = stream.ingest_snapshot();
+        assert_eq!(*fifth.schema, stream.get_schema_raw());
+        let sixth = stream.ingest_snapshot();
+        assert!(Arc::ptr_eq(&fifth.schema, &sixth.schema));
+
+        // Cleared
+        stream.metadata.write().unwrap().schema.clear();
+        assert!(stream.ingest_snapshot().schema.is_empty());
+    }
 
     #[test]
     fn bloom_filter_conversion_round_trip() {
@@ -5254,6 +5548,7 @@ mod tests {
                     None,
                 )
                 .unwrap()
+                .is_some()
         );
 
         let reader = SerializedFileReader::new(File::open(parquet_path).unwrap()).unwrap();
@@ -6993,9 +7288,12 @@ mod tests {
 
     /// Like `LifecycleHarness`, but gates are added while threads run and
     /// match on phase contents, because parallel conversion groups run on
+    static CONVERSION_HARNESS_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
     /// unnamed Rayon workers. Each gate fires once. Dropping the harness
     /// releases every blocked thread. Timeouts only guard against a hang.
     struct ConversionHarness {
+        _serial_guard: std::sync::MutexGuard<'static, ()>,
         events: std::sync::mpsc::Receiver<(String, LifecyclePhase)>,
         log: Vec<(String, LifecyclePhase)>,
         consumed: HashSet<usize>,
@@ -7006,6 +7304,9 @@ mod tests {
 
     impl ConversionHarness {
         fn install(staging: &StreamRef) -> Self {
+            let serial_guard = CONVERSION_HARNESS_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let (events_tx, events) = std::sync::mpsc::channel();
             let gates: Arc<Mutex<Vec<(usize, PhaseMatcher, GateAction)>>> = Arc::default();
             let hook_gates = Arc::clone(&gates);
@@ -7029,6 +7330,7 @@ mod tests {
             });
             *staging.lifecycle_hook.lock().unwrap() = Some(hook);
             Self {
+                _serial_guard: serial_guard,
                 events,
                 log: Vec::new(),
                 consumed: HashSet::new(),

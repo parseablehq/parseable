@@ -11,8 +11,8 @@ use crate::{
     parseable::{DEFAULT_TENANT, PARSEABLE},
     promql::Labels,
     rbac::{
-        Response,
-        map::{SessionKey, Sessions, sessions, users},
+        Response, Users,
+        map::{SessionKey, Sessions, users},
         role::Action,
         roles_to_permission,
     },
@@ -126,7 +126,7 @@ pub fn capture_identity(config: &mut AlertConfig, session: &SessionKey) -> Resul
     fields.remove("promqlRuntime");
     fields.remove("executionIdentity");
     if config.query_type == AlertQueryType::Promql {
-        let (user, tenant) = sessions().get_user_and_tenant_id(session).ok_or_else(|| {
+        let (user, tenant) = Users.get_userid_from_session(session).ok_or_else(|| {
             AlertError::ValidationFailure("Unable to identify alert owner".into())
         })?;
         if tenant != config.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT) {
@@ -250,6 +250,13 @@ impl Runtime {
             }
         }
         self.trim_deliveries()
+    }
+    /// After a delivery round: forget deliveries that succeeded, keep failed
+    /// and untried ones, and bound the outbox.
+    fn settle_deliveries(&mut self) {
+        self.deliveries
+            .retain(|delivery| delivery.error.is_some() || delivery.attempts == 0);
+        self.trim_deliveries();
     }
     /// Bound the outbox without ever blocking state evaluation: keep the newest
     /// retryable deliveries, and only the most recent exhausted ones. Returns
@@ -459,6 +466,17 @@ fn notifications_allowed(state: &NotificationState, now: DateTime<Utc>) -> bool 
     }
 }
 
+/// The runtime to store after a delivery round, or `None` when the round
+/// changed nothing (no delivery was attempted or retired), so the runtime
+/// `committed` before it is still the stored one.
+fn delivery_round_result(
+    runtime: &Runtime,
+    committed: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, serde_json::Error> {
+    let settled = serde_json::to_value(runtime)?;
+    Ok((settled != *committed).then_some(settled))
+}
+
 pub async fn evaluate(id: Ulid, tenant_id: &Option<String>) -> Result<(), AlertError> {
     let lifecycle = lifecycle(id);
     let manager = super::get_alert_manager().await;
@@ -542,6 +560,9 @@ pub async fn evaluate(id: Ulid, tenant_id: &Option<String>) -> Result<(), AlertE
             return Ok(());
         }
         *guard += 1;
+        // Written here rather than through `ThresholdAlert`, whose record of
+        // what it last wrote would otherwise go stale.
+        super::alert_types::forget_persisted_alert(updated.id, &updated.tenant_id);
         PARSEABLE
             .metastore
             .put_alert(&updated, &updated.tenant_id)
@@ -656,10 +677,14 @@ pub async fn evaluate(id: Ulid, tenant_id: &Option<String>) -> Result<(), AlertE
                 }
             }
         }
-        runtime
-            .deliveries
-            .retain(|delivery| delivery.error.is_some() || delivery.attempts == 0);
-        runtime.trim_deliveries();
+        runtime.settle_deliveries();
+        // Without a delivery attempted or retired, the runtime committed
+        // above is still current and is already stored, so the alert is not
+        // re-read and rewritten. Changes made meanwhile by others were
+        // persisted by whoever made them.
+        let Some(settled) = delivery_round_result(&runtime, &committed)? else {
+            return Ok(());
+        };
         // Re-read the alert so that changes made during delivery, such as a
         // new notification state, are kept. Delivery results are only
         // recorded if nothing replaced or reset the runtime meanwhile.
@@ -674,8 +699,9 @@ pub async fn evaluate(id: Ulid, tenant_id: &Option<String>) -> Result<(), AlertE
         if fields.get("promqlRuntime") != Some(&committed) {
             return Ok(());
         }
-        fields.insert("promqlRuntime".into(), serde_json::to_value(&runtime)?);
+        fields.insert("promqlRuntime".into(), settled);
         *guard += 1;
+        super::alert_types::forget_persisted_alert(current.id, &current.tenant_id);
         PARSEABLE
             .metastore
             .put_alert(&current, &current.tenant_id)
@@ -1021,6 +1047,58 @@ mod tests {
         let restored: Runtime =
             serde_json::from_value(serde_json::to_value(&runtime).unwrap()).unwrap();
         assert_eq!(restored.deliveries.len(), runtime.deliveries.len());
+    }
+    #[test]
+    fn quiet_delivery_rounds_need_no_second_write() {
+        let mut config = config();
+        config.targets = vec![ulid::Ulid::new()];
+        config.other_fields.as_mut().unwrap().insert(
+            "promqlConfig".into(),
+            serde_json::json!({"holdDuration":"0s"}),
+        );
+        let now = Utc::now();
+        let mut runtime = Runtime::default();
+
+        // A quiet evaluation: nothing to deliver, so nothing changes.
+        let transitions = runtime
+            .observe_transactionally(vec![sample("a", 1.0)], &config, now)
+            .unwrap();
+        assert!(transitions.is_empty());
+        assert_eq!(runtime.enqueue(&transitions, &config.targets), 0);
+        let committed = serde_json::to_value(&runtime).unwrap();
+        runtime.settle_deliveries();
+        assert_eq!(delivery_round_result(&runtime, &committed).unwrap(), None);
+
+        // A transition queues a delivery; attempting it is a change to store.
+        let transitions = runtime
+            .observe_transactionally(vec![sample("a", 9.0)], &config, now)
+            .unwrap();
+        assert_eq!(transitions.len(), 1);
+        runtime.enqueue(&transitions, &config.targets);
+        let committed = serde_json::to_value(&runtime).unwrap();
+        runtime.deliveries[0].attempts += 1;
+        runtime.deliveries[0].error = Some("failed".into());
+        runtime.settle_deliveries();
+        let settled = delivery_round_result(&runtime, &committed)
+            .unwrap()
+            .expect("a failed attempt is recorded");
+        assert_eq!(settled, serde_json::to_value(&runtime).unwrap());
+
+        // A successful delivery leaves the outbox, which is also a change.
+        let committed = serde_json::to_value(&runtime).unwrap();
+        runtime.deliveries[0].attempts = u32::MAX;
+        runtime.deliveries[0].error = None;
+        runtime.settle_deliveries();
+        assert!(runtime.deliveries.is_empty());
+        assert!(
+            delivery_round_result(&runtime, &committed)
+                .unwrap()
+                .is_some()
+        );
+        // And once settled, the next quiet round has nothing to write.
+        let committed = serde_json::to_value(&runtime).unwrap();
+        runtime.settle_deliveries();
+        assert_eq!(delivery_round_result(&runtime, &committed).unwrap(), None);
     }
     #[test]
     fn mute_suppresses_delivery_until_expiry() {

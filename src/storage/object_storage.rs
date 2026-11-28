@@ -132,6 +132,21 @@ struct UploadedParquetFile {
     manifest_file: catalog::manifest::File,
 }
 
+static VERIFY_UPLOAD_HEAD: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    parse_verify_upload_head(std::env::var("P_VERIFY_UPLOAD_HEAD").ok().as_deref())
+});
+
+fn parse_verify_upload_head(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        let trimmed = v.trim();
+        trimmed.eq_ignore_ascii_case("true") || trimmed == "1"
+    })
+}
+
+fn should_verify_upload_head() -> bool {
+    *VERIFY_UPLOAD_HEAD
+}
+
 /// Handles the upload of a single parquet file
 #[tracing::instrument(
     name = "object_store.upload_single_parquet",
@@ -151,9 +166,9 @@ async fn upload_single_parquet_file(
         .to_str()
         .expect("filename is valid string");
 
-    // Get the local file size for validation
-    let local_file_size = path
-        .metadata()
+    // Get the local file size once asynchronously for metrics, manifest, and optional HEAD check
+    let local_file_size = tokio::fs::metadata(&path)
+        .await
         .map_err(|e| {
             (
                 path.clone(),
@@ -178,45 +193,64 @@ async fn upload_single_parquet_file(
             )
         })?;
 
-    // Validate the uploaded file size matches local file
-    let upload_is_valid = validate_uploaded_parquet_file(
-        &store,
-        &stream_relative_path,
-        local_file_size,
-        &stream_name,
-        &tenant_id,
-    )
-    .await
-    .map_err(|e| (path.clone(), e))?;
+    // Post-PUT HEAD validation is opt-in via P_VERIFY_UPLOAD_HEAD (default false),
+    // as S3/object-store PUT and multipart completion are strongly consistent and durable.
+    if should_verify_upload_head() {
+        let upload_is_valid = validate_uploaded_parquet_file(
+            &store,
+            &stream_relative_path,
+            local_file_size,
+            &stream_name,
+            &tenant_id,
+        )
+        .await
+        .map_err(|e| (path.clone(), e))?;
 
-    if !upload_is_valid {
-        // Upload validation failed, clean up the uploaded file and return error
-        let _ = store
-            .delete_object(&RelativePathBuf::from(&stream_relative_path), &tenant_id)
-            .await;
-        error!("Upload size validation failed for file {filename:?}, deleted from object storage");
-        return Ok(UploadResult {
-            file_path: path,
-            manifest_file: None, // Preserve staging file for retry; no manifest created
-        });
+        if !upload_is_valid {
+            // Upload validation failed, clean up the uploaded file and return error
+            let _ = store
+                .delete_object(&RelativePathBuf::from(&stream_relative_path), &tenant_id)
+                .await;
+            error!(
+                "Upload size validation failed for file {filename:?}, deleted from object storage"
+            );
+            return Ok(UploadResult {
+                file_path: path,
+                manifest_file: None, // Preserve staging file for retry; no manifest created
+            });
+        }
     }
 
     // Update storage metrics
     update_storage_metrics(
-        &path,
+        local_file_size,
         &stream_name,
         filename,
         tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
-    )
-    .map_err(|e| (path.clone(), e))?;
+    );
 
-    // Create manifest entry
+    // Create manifest entry from cached ParquetMetaData when available, otherwise
+    // offload the synchronous Parquet file open + footer parse to the blocking pool.
     let absolute_path = store
         .absolute_url(RelativePath::from_path(&stream_relative_path).expect("valid relative path"))
         .to_string();
 
-    let manifest = catalog::create_from_parquet_file(absolute_path, &path)
-        .map_err(|e| (path.clone(), ObjectStorageError::from(e)))?;
+    let manifest = if let Some(metadata) = catalog::manifest::take_parquet_metadata(&path) {
+        catalog::manifest::create_from_parquet_metadata(absolute_path, local_file_size, &metadata)
+    } else {
+        let path_for_manifest = path.clone();
+        tokio::task::spawn_blocking(move || {
+            catalog::create_from_parquet_file(absolute_path, &path_for_manifest)
+        })
+        .await
+        .map_err(|e| {
+            (
+                path.clone(),
+                ObjectStorageError::UnhandledError(Box::new(e)),
+            )
+        })?
+        .map_err(|e| (path.clone(), ObjectStorageError::from(e)))?
+    };
 
     Ok(UploadResult {
         file_path: path,
@@ -226,17 +260,13 @@ async fn upload_single_parquet_file(
 
 /// Updates storage-related metrics for an uploaded file
 fn update_storage_metrics(
-    path: &std::path::Path,
+    compressed_size: u64,
     stream_name: &str,
     filename: &str,
     tenant_id: &str,
-) -> Result<(), ObjectStorageError> {
+) {
     let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
     file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
-    let compressed_size = path
-        .metadata()
-        .map(|m| m.len())
-        .map_err(|e| ObjectStorageError::Custom(format!("metadata failed for {filename}: {e}")))?;
     STORAGE_SIZE
         .with_label_values(&["data", stream_name, "parquet", tenant_id])
         .add(compressed_size as i64);
@@ -250,8 +280,6 @@ fn update_storage_metrics(
     // billing metrics for parquet storage
     increment_parquets_stored_by_date(file_date_part, tenant_id);
     increment_parquets_stored_size_by_date(compressed_size, file_date_part, tenant_id);
-
-    Ok(())
 }
 
 /// Calculates field statistics if enabled and conditions are met
@@ -1681,6 +1709,16 @@ async fn update_snapshot_with_manifests(
     Ok(())
 }
 
+/// Bounds concurrent post-upload field stats tasks across streams so burst flushes
+/// cannot launch unbounded simultaneous 32K-row Parquet decoders and spike RSS.
+static FIELD_STATS_CONCURRENCY_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        let permits = std::thread::available_parallelism()
+            .map(|n| (n.get() / 2).clamp(2, 8))
+            .unwrap_or(4);
+        Arc::new(tokio::sync::Semaphore::new(permits))
+    });
+
 async fn calculate_stats_for_uploaded_files(
     uploaded_files: &[UploadedParquetFile],
     stream_name: &str,
@@ -1699,9 +1737,14 @@ async fn calculate_stats_for_uploaded_files(
         let path = uploaded_file.file_path.clone();
         let schema = upload_context.schema.clone();
         let tenant_id = tenant_id.clone();
+        let semaphore = FIELD_STATS_CONCURRENCY_SEMAPHORE.clone();
 
         join_set.spawn_on(
             async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .expect("field stats concurrency semaphore is never closed");
                 calculate_stats_if_enabled(&stream_name, &path, &schema, tenant_id).await;
             },
             handle,
@@ -1719,6 +1762,8 @@ async fn calculate_stats_for_uploaded_files(
 /// from the expiring active-upload claims into the non-expiring cleanup-pending
 /// set, keeping it out of subsequent upload selections.
 fn remove_uploaded_staged_file(path: PathBuf) {
+    catalog::manifest::evict_parquet_metadata(&path);
+    crate::storage::field_stats::evict_staged_field_stats(&path);
     match remove_file(&path) {
         Ok(()) => {
             UPLOADED_STAGED_FILES_PENDING_CLEANUP.remove(&path);
@@ -1854,6 +1899,31 @@ pub(crate) fn stream_data_listing_prefix(
     (path, prefix)
 }
 
+/// Single-pass check for whether a stream's staging directory contains any
+/// `.parquet` or `.schema` files without opening Parquet footers or scanning
+/// the directory twice.
+fn has_staged_upload_files(data_path: &Path) -> bool {
+    let Ok(dir) = std::fs::read_dir(data_path) else {
+        return false;
+    };
+    for entry in dir.flatten() {
+        if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+            continue;
+        }
+        let file_name = entry.file_name();
+        if Path::new(&file_name)
+            .extension()
+            .is_some_and(|ext| ext == "parquet")
+            || file_name
+                .to_str()
+                .is_some_and(|name| name.ends_with(".schema"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
     let object_store = PARSEABLE.storage().get_object_store();
     let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
@@ -1865,8 +1935,7 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
     for tenant_id in tenants {
         for stream_name in PARSEABLE.streams.list(&tenant_id) {
             if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id)
-                && stream.parquet_files().is_empty()
-                && stream.schema_files().is_empty()
+                && !has_staged_upload_files(&stream.data_path)
             {
                 continue;
             }
@@ -2827,5 +2896,37 @@ mod metadata_key_decode_tests {
         assert!(decode_metadata_key("%FF").is_err());
         assert!(decode_metadata_key("%é").is_err());
         assert_eq!(decode_metadata_key("caf%C3%A9").unwrap(), "café");
+    }
+
+    #[test]
+    fn verify_upload_head_defaults_false_and_parses_truthy_values() {
+        assert!(!parse_verify_upload_head(None));
+        assert!(!parse_verify_upload_head(Some("")));
+        assert!(!parse_verify_upload_head(Some("false")));
+        assert!(!parse_verify_upload_head(Some("0")));
+        assert!(!parse_verify_upload_head(Some("yes")));
+        assert!(parse_verify_upload_head(Some("true")));
+        assert!(parse_verify_upload_head(Some("TRUE")));
+        assert!(parse_verify_upload_head(Some(" 1 ")));
+    }
+
+    #[test]
+    fn has_staged_upload_files_single_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_staged_upload_files(&dir.path().join("missing")));
+        assert!(!has_staged_upload_files(dir.path()));
+
+        std::fs::write(dir.path().join("batch.arrows"), b"arrow").unwrap();
+        assert!(!has_staged_upload_files(dir.path()));
+
+        let schema_path = dir.path().join(".schema");
+        std::fs::write(&schema_path, b"{}").unwrap();
+        assert!(has_staged_upload_files(dir.path()));
+
+        std::fs::remove_file(&schema_path).unwrap();
+        assert!(!has_staged_upload_files(dir.path()));
+
+        std::fs::write(dir.path().join("part.parquet"), b"not-even-opened").unwrap();
+        assert!(has_staged_upload_files(dir.path()));
     }
 }

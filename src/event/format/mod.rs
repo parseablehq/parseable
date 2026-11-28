@@ -328,14 +328,8 @@ pub fn update_field_type_in_schema(
     }
 
     if let Some(log_records) = log_records {
-        for log_record in log_records {
-            updated_schema = override_data_type(
-                updated_schema.clone(),
-                log_record.clone(),
-                schema_version,
-                infer_timestamp,
-            );
-        }
+        updated_schema =
+            override_data_types(updated_schema, log_records, schema_version, infer_timestamp);
     }
 
     let Some(time_partition) = time_partition else {
@@ -379,46 +373,136 @@ pub fn override_data_type(
             // Normalize field names - replace '@' prefix with '_'
             let mut field_name = field.name().to_string();
             normalize_field_name(&mut field_name);
-            match (schema_version, map.get(field.name())) {
-                // Series identity must retain all 64 bits. Schema V1 normally
-                // coerces JSON numbers to Float64, which cannot represent the
-                // full u64 range exactly.
-                (_, Some(Value::Number(_))) if field_name == SERIES_HASH_COLUMN => {
-                    Field::new(field_name, DataType::UInt64, true)
-                }
-                // in V1 for new fields in json named "time"/"date" or such and having
-                // inferred type string, that can be parsed as timestamp, use the
-                // timestamp type. Gated on `infer_timestamp` (default true) — settable
-                // per dataset (otel-metrics) via x-p-infer-timestamp=false.
-                // NOTE: support even more datetime string formats
-                (SchemaVersion::V1, Some(Value::String(s)))
-                    if infer_timestamp
-                        && TIME_FIELD_NAME_PARTS
-                            .iter()
-                            .any(|part| field_name.to_lowercase().contains(part))
-                        && field.data_type() == &DataType::Utf8
-                        && (DateTime::parse_from_rfc3339(s).is_ok()
-                            || DateTime::parse_from_rfc2822(s).is_ok())
-                        && is_arrow_timestamp(s) =>
-                {
-                    Field::new(
-                        field_name,
-                        DataType::Timestamp(TimeUnit::Millisecond, None),
-                        true,
-                    )
-                }
-                // in V1 for new fields in json with inferred type number, cast as float64.
-                (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_numeric() => {
-                    // Update the field's data type to Float64
-                    Field::new(field_name, DataType::Float64, true)
-                }
-                // Return the original field if no update is needed
-                _ => Field::new(field_name, field.data_type().clone(), true),
-            }
+            let data_type = overridden_data_type(
+                &field_name,
+                || is_time_field_name(&field_name),
+                field.data_type(),
+                map.get(field.name()),
+                schema_version,
+                infer_timestamp,
+            );
+            Field::new(field_name, data_type, true)
         })
         .collect();
 
     Arc::new(Schema::new(updated_schema))
+}
+
+/// Applies `override_data_type` for every record of `log_records` in turn, in a
+/// single pass: the same result as
+/// `log_records.iter().fold(schema, |s, r| override_data_type(s, r.clone(), ..))`
+/// without cloning a record or rebuilding the schema per record.
+///
+/// Each field's type only depends on its own name and type and on the value the
+/// record has under that name, so fields evolve independently. The first object
+/// record looks a field up by its inferred name and normalizes the name; later
+/// records look it up by the normalized name, as the fold does. Non-object
+/// records leave the schema as it is.
+pub fn override_data_types(
+    inferred_schema: Arc<Schema>,
+    log_records: &[Value],
+    schema_version: SchemaVersion,
+    infer_timestamp: bool,
+) -> Arc<Schema> {
+    struct FieldState<'a> {
+        inferred_name: &'a str,
+        name: String,
+        time_named: bool,
+        data_type: DataType,
+    }
+    let mut objects = log_records.iter().filter_map(Value::as_object);
+    let Some(first) = objects.next() else {
+        return inferred_schema;
+    };
+    let mut fields: Vec<FieldState<'_>> = inferred_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let mut name = field.name().to_string();
+            normalize_field_name(&mut name);
+            FieldState {
+                inferred_name: field.name(),
+                time_named: schema_version == SchemaVersion::V1
+                    && infer_timestamp
+                    && field.data_type() == &DataType::Utf8
+                    && is_time_field_name(&name),
+                name,
+                data_type: field.data_type().clone(),
+            }
+        })
+        .collect();
+    for field in &mut fields {
+        field.data_type = overridden_data_type(
+            &field.name,
+            || field.time_named,
+            &field.data_type,
+            first.get(field.inferred_name),
+            schema_version,
+            infer_timestamp,
+        );
+    }
+    for map in objects {
+        for field in &mut fields {
+            field.data_type = overridden_data_type(
+                &field.name,
+                || field.time_named,
+                &field.data_type,
+                map.get(&field.name),
+                schema_version,
+                infer_timestamp,
+            );
+        }
+    }
+    let fields: Vec<Field> = fields
+        .into_iter()
+        .map(|field| Field::new(field.name, field.data_type, true))
+        .collect();
+    Arc::new(Schema::new(fields))
+}
+
+/// Whether a (normalized) field name names a time, see `TIME_FIELD_NAME_PARTS`
+fn is_time_field_name(field_name: &str) -> bool {
+    let lowercase = field_name.to_lowercase();
+    TIME_FIELD_NAME_PARTS
+        .iter()
+        .any(|part| lowercase.contains(part))
+}
+
+/// The type `override_data_type` gives the field `field_name` (normalized) of
+/// type `data_type` when a record has `value` under its name
+fn overridden_data_type(
+    field_name: &str,
+    time_named: impl FnOnce() -> bool,
+    data_type: &DataType,
+    value: Option<&Value>,
+    schema_version: SchemaVersion,
+    infer_timestamp: bool,
+) -> DataType {
+    match (schema_version, value) {
+        // Series identity must retain all 64 bits. Schema V1 normally
+        // coerces JSON numbers to Float64, which cannot represent the
+        // full u64 range exactly.
+        (_, Some(Value::Number(_))) if field_name == SERIES_HASH_COLUMN => DataType::UInt64,
+        // in V1 for new fields in json named "time"/"date" or such and having
+        // inferred type string, that can be parsed as timestamp, use the
+        // timestamp type. Gated on `infer_timestamp` (default true) — settable
+        // per dataset (otel-metrics) via x-p-infer-timestamp=false.
+        // NOTE: support even more datetime string formats
+        (SchemaVersion::V1, Some(Value::String(s)))
+            if infer_timestamp
+                && data_type == &DataType::Utf8
+                && time_named()
+                && (DateTime::parse_from_rfc3339(s).is_ok()
+                    || DateTime::parse_from_rfc2822(s).is_ok())
+                && is_arrow_timestamp(s) =>
+        {
+            DataType::Timestamp(TimeUnit::Millisecond, None)
+        }
+        // in V1 for new fields in json with inferred type number, cast as float64.
+        (SchemaVersion::V1, Some(Value::Number(_))) if data_type.is_numeric() => DataType::Float64,
+        // Keep the type if no update is needed
+        _ => data_type.clone(),
+    }
 }
 
 /// Returns a short suffix string for a given DataType to be used in field renaming
@@ -1339,6 +1423,81 @@ mod tests {
         );
         assert!(renamed[0].as_object().unwrap().contains_key("escaped"));
         assert!(renamed[1].as_object().unwrap().contains_key("escaped_bool"));
+    }
+
+    /// `override_data_types` is exactly the per-record fold it replaces, for
+    /// names with and without the `@` prefix, time-named fields, numbers,
+    /// series hashes, non-object records and empty batches.
+    #[test]
+    fn override_data_types_matches_per_record_fold() {
+        let with_metadata =
+            |field: Field| field.with_metadata(HashMap::from([("k".to_owned(), "v".to_owned())]));
+        let schema = Arc::new(
+            Schema::new(vec![
+                with_metadata(Field::new("@timestamp", DataType::Utf8, false)),
+                Field::new("_timestamp", DataType::Utf8, true),
+                Field::new("event_time", DataType::Utf8, true),
+                Field::new("count", DataType::Int64, false),
+                Field::new("ratio", DataType::Float64, true),
+                Field::new(SERIES_HASH_COLUMN, DataType::Int64, true),
+                Field::new("@ts", DataType::Int64, true),
+                Field::new("msg", DataType::Utf8, true),
+                Field::new("flag", DataType::Boolean, true),
+                with_metadata(Field::new("created", DataType::Utf8, false)),
+            ])
+            .with_metadata(HashMap::from([("schema".to_owned(), "meta".to_owned())])),
+        );
+        let ts = "2025-01-01T00:00:00Z";
+        let batches: Vec<Vec<Value>> = vec![
+            vec![],
+            vec![json!(1), json!("x")],
+            vec![json!({"@timestamp": ts, "count": 1})],
+            vec![json!({"_timestamp": ts}), json!({"@timestamp": ts})],
+            vec![json!({"@timestamp": ts}), json!({"_timestamp": ts})],
+            vec![json!(null), json!({"@ts": 5}), json!({"_ts": 6})],
+            vec![
+                json!({"event_time": "not a time", "created": ts}),
+                json!({"event_time": ts, "created": "Wed, 01 Jan 2025 00:00:00 +0000"}),
+            ],
+            vec![
+                json!({"count": 1, "ratio": 0.5, SERIES_HASH_COLUMN: 18446744073709551615u64}),
+                json!({"count": "1", SERIES_HASH_COLUMN: "x"}),
+                json!({"msg": 3, "flag": true, "event_time": 1}),
+            ],
+            vec![
+                json!({"event_time": ts}),
+                json!(1),
+                json!({"event_time": 2}),
+            ],
+        ];
+        for records in &batches {
+            for version in [SchemaVersion::V0, SchemaVersion::V1] {
+                for infer in [true, false] {
+                    let expected = records.iter().fold(schema.clone(), |schema, record| {
+                        override_data_type(schema, record.clone(), version, infer)
+                    });
+                    let actual = override_data_types(schema.clone(), records, version, infer);
+                    assert_eq!(
+                        actual, expected,
+                        "records {records:?}, version {version:?}, infer {infer}"
+                    );
+                    // Without a time partition or an existing schema,
+                    // `update_field_type_in_schema` returns the fold itself.
+                    let updated = update_field_type_in_schema(
+                        schema.clone(),
+                        None,
+                        None,
+                        Some(records),
+                        version,
+                        infer,
+                    );
+                    assert_eq!(updated, expected);
+                }
+            }
+        }
+        // No object record: the schema is returned untouched, metadata included.
+        let untouched = override_data_types(schema.clone(), &[json!(1)], SchemaVersion::V1, true);
+        assert!(Arc::ptr_eq(&untouched, &schema));
     }
 
     #[test]

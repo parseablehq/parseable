@@ -48,6 +48,7 @@ use datafusion::sql::resolve::resolve_table_references;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use futures::Stream;
 use futures::StreamExt;
+use futures::TryStreamExt;
 use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
@@ -60,13 +61,14 @@ use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use tokio::runtime::Runtime;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::Instrument;
 
 use self::error::ExecuteError;
 pub use self::stream_schema_provider::PartialTimeFilter;
 use self::stream_schema_provider::{
-    GlobalSchemaProvider, HotTierStreamKey,
+    GlobalSchemaProvider, HotTierStreamKey, MANIFEST_FETCH_CONCURRENCY,
     guarded_hot_tier_table_source as default_guarded_hot_tier_table_source,
     hot_tier_stream_key as default_hot_tier_stream_key,
 };
@@ -92,6 +94,10 @@ type BoxedBatchStream = SendableRecordBatchStream;
 type QueryResult = Result<(Either<Vec<RecordBatch>, BoxedBatchStream>, Vec<String>), ExecuteError>;
 const DEFAULT_COUNTS_TOP_K: usize = 10;
 const MAX_COUNT_BINS: u64 = 10_000;
+const STREAMING_BUFFER_BATCHES: usize = 32;
+const STREAMING_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+
+type BufferedBatch = (Result<RecordBatch, DataFusionError>, OwnedSemaphorePermit);
 
 pub static SCHEMA_PROVIDER: OnceCell<Box<dyn ParseableSchemaProvider>> = OnceCell::new();
 
@@ -273,21 +279,29 @@ pub async fn execute(query: Query, is_streaming: bool, tenant_id: &Option<String
 /// detached partition task must not keep scanning after its client cancels.
 async fn forward_partition_batches(
     mut stream: SendableRecordBatchStream,
-    tx: tokio::sync::mpsc::UnboundedSender<Result<RecordBatch, DataFusionError>>,
+    tx: mpsc::Sender<BufferedBatch>,
+    byte_budget: Arc<Semaphore>,
 ) {
-    loop {
-        tokio::select! {
-            biased;
-            _ = tx.closed() => break,
-            next = stream.next() => match next {
-                Some(batch) => {
-                    if tx.send(batch).is_err() {
-                        break;
-                    }
+    tokio::select! {
+        biased;
+        _ = tx.closed() => {}
+        _ = async {
+            while let Some(batch) = stream.next().await {
+                // A batch larger than the budget takes all permits so it can
+                // still make progress while buffered alone.
+                let bytes = batch
+                    .as_ref()
+                    .map_or(1, RecordBatch::get_array_memory_size)
+                    .clamp(1, STREAMING_BUFFER_BYTES);
+                let permit = Arc::clone(&byte_budget)
+                    .acquire_many_owned(bytes as u32)
+                    .await
+                    .expect("streaming byte budget is never closed");
+                if tx.send((batch, permit)).await.is_err() {
+                    break;
                 }
-                None => break,
-            },
-        }
+            }
+        } => {}
     }
 }
 
@@ -518,20 +532,22 @@ impl Query {
 
             let partition_streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?;
 
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-                Result<RecordBatch, datafusion::error::DataFusionError>,
-            >();
+            let (tx, rx) = mpsc::channel(STREAMING_BUFFER_BATCHES);
+            let byte_budget = Arc::new(Semaphore::new(STREAMING_BUFFER_BYTES));
 
             for s in partition_streams.into_iter() {
                 let wrapped =
                     PartitionedMetricMonitor::new(s, monitor_state.clone(), tenant_id.clone());
                 let tx = tx.clone();
                 let span = tracing::Span::current();
-                tokio::spawn(forward_partition_batches(Box::pin(wrapped), tx).instrument(span));
+                tokio::spawn(
+                    forward_partition_batches(Box::pin(wrapped), tx, Arc::clone(&byte_budget))
+                        .instrument(span),
+                );
             }
             drop(tx);
 
-            let merged = UnboundedReceiverStream::new(rx);
+            let merged = ReceiverStream::new(rx).map(|(batch, _permit)| batch);
             let final_stream = RecordBatchStreamAdapter::new(plan.schema(), merged);
             Either::Right(Box::pin(final_stream) as SendableRecordBatchStream)
         };
@@ -801,7 +817,7 @@ impl CountsRequest {
     ) -> Result<Vec<CountsRecord>, QueryError> {
         self.validate_num_bins()?;
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
-        let counts = self.get_bounds(&time_range)?;
+        let bounds = self.get_bounds(&time_range)?;
 
         let time_partition = PARSEABLE
             .get_stream(&self.stream, tenant_id)
@@ -810,44 +826,11 @@ impl CountsRequest {
             .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.to_owned());
         let all_manifest_files = get_manifest_list(&self.stream, &time_range, tenant_id).await?;
 
-        // we have start and end times for each bin
-        // we also have all the manifest files for the given time range
-        // now we iterate over start and end times for each bin
-        // then we iterate over the manifest files which are within that time range
-        // we sum up the num_rows
-        let mut counts_records = Vec::new();
-
-        for bin in counts {
-            // extract start and end time to compare
-            // Sum up the number of rows that fall within the bin
-            let count: u64 = all_manifest_files
-                .iter()
-                .flat_map(|m| &m.files)
-                .filter_map(|f| {
-                    if f.columns.iter().any(|c| {
-                        c.name == time_partition
-                            && c.stats.as_ref().is_some_and(|stats| match stats {
-                                TypedStatistics::Int(Int64Type { min, .. }) => {
-                                    let min = DateTime::from_timestamp_millis(*min).unwrap();
-                                    bin.start <= min && bin.end >= min // Determines if a column matches the bin's time range.
-                                }
-                                _ => false,
-                            })
-                    }) {
-                        Some(f.num_rows)
-                    } else {
-                        None
-                    }
-                })
-                .sum();
-
-            counts_records.push(CountsRecord {
-                start_time: bin.start.to_rfc3339(),
-                end_time: bin.end.to_rfc3339(),
-                count,
-            });
-        }
-        Ok(counts_records)
+        Ok(manifest_bin_density(
+            bounds,
+            &all_manifest_files,
+            &time_partition,
+        ))
     }
 
     /// Calculate the end time for each bin based on the number of bins
@@ -974,6 +957,50 @@ impl CountsRequest {
     }
 }
 
+fn manifest_bin_density(
+    bounds: Vec<TimeBounds>,
+    manifests: &[Manifest],
+    time_partition: &str,
+) -> Vec<CountsRecord> {
+    let mut counts = vec![0; bounds.len()];
+    let mut minima = Vec::new();
+    for file in manifests.iter().flat_map(|manifest| &manifest.files) {
+        minima.clear();
+        minima.extend(file.columns.iter().filter_map(|column| {
+            match (column.name == time_partition, &column.stats) {
+                (true, Some(TypedStatistics::Int(Int64Type { min, .. }))) => {
+                    Some(DateTime::from_timestamp_millis(*min).unwrap())
+                }
+                _ => None,
+            }
+        }));
+        // Visit minima in order so each file contributes at most once per bin,
+        // even if its manifest has multiple stats for the timestamp column.
+        minima.sort_unstable();
+        let mut counted_through = 0;
+        for &min in &minima {
+            // Both ends are inclusive here. At a shared boundary the file
+            // contributes to both bins, including any zero-width bins.
+            let first = bounds.partition_point(|bin| bin.end < min);
+            let end = bounds.partition_point(|bin| bin.start <= min);
+            for count in &mut counts[first.max(counted_through)..end] {
+                *count += file.num_rows;
+            }
+            counted_through = end;
+        }
+    }
+
+    bounds
+        .into_iter()
+        .zip(counts)
+        .map(|(bin, count)| CountsRecord {
+            start_time: bin.start.to_rfc3339(),
+            end_time: bin.end.to_rfc3339(),
+            count,
+        })
+        .collect()
+}
+
 /// Response for the counts API
 #[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsResponse {
@@ -1039,30 +1066,30 @@ pub async fn get_manifest_list(
         PartialTimeFilter::High(Bound::Included(time_range.end.naive_utc())),
     ];
 
-    let mut all_manifest_files = Vec::new();
-    for manifest_item in merged_snapshot.manifests(&time_filter) {
-        let manifest_opt = PARSEABLE
-            .metastore
-            .get_manifest(
-                stream_name,
-                manifest_item.time_lower_bound,
-                manifest_item.time_upper_bound,
-                Some(manifest_item.manifest_path.clone()),
-                tenant_id,
-            )
-            .await?;
-        let manifest = manifest_opt.ok_or_else(|| {
-            QueryError::CustomError(format!(
-                "Manifest not found for {stream_name} [{} - {}], path- {}",
-                manifest_item.time_lower_bound,
-                manifest_item.time_upper_bound,
-                manifest_item.manifest_path
-            ))
-        })?;
-        all_manifest_files.push(manifest);
-    }
-
-    Ok(all_manifest_files)
+    // Buffer in snapshot order to preserve which error is returned when
+    // more than one manifest cannot be read.
+    futures::stream::iter(merged_snapshot.manifests(&time_filter))
+        .map(|item| async move {
+            let manifest = PARSEABLE
+                .metastore
+                .get_manifest(
+                    stream_name,
+                    item.time_lower_bound,
+                    item.time_upper_bound,
+                    Some(item.manifest_path.clone()),
+                    tenant_id,
+                )
+                .await?;
+            manifest.ok_or_else(|| {
+                QueryError::CustomError(format!(
+                    "Manifest not found for {stream_name} [{} - {}], path- {}",
+                    item.time_lower_bound, item.time_upper_bound, item.manifest_path
+                ))
+            })
+        })
+        .buffered(MANIFEST_FETCH_CONCURRENCY)
+        .try_collect()
+        .await
 }
 
 fn first_table_name(plan: &LogicalPlan) -> Option<String> {
@@ -1338,7 +1365,8 @@ mod tests {
 
     use super::{
         AbortQueryOnDrop, DataFusionError, DateTime, Duration, MAX_COUNT_BINS, RecordBatch,
-        RecordBatchStreamAdapter, TimeRange, Utc, forward_partition_batches,
+        RecordBatchStreamAdapter, STREAMING_BUFFER_BYTES, Semaphore, TimeRange, Utc,
+        forward_partition_batches, manifest_bin_density, mpsc,
     };
     use crate::query::{
         CountConditions, CountsRequest, flatten_objects_for_count, resolve_stream_names,
@@ -1356,8 +1384,9 @@ mod tests {
             std::task::Poll::<Option<Result<RecordBatch, DataFusionError>>>::Pending
         });
         let stream = RecordBatchStreamAdapter::new(schema, pending);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let worker = tokio::spawn(forward_partition_batches(Box::pin(stream), tx));
+        let (tx, rx) = mpsc::channel(1);
+        let budget = std::sync::Arc::new(Semaphore::new(STREAMING_BUFFER_BYTES));
+        let worker = tokio::spawn(forward_partition_batches(Box::pin(stream), tx, budget));
         tokio::time::timeout(std::time::Duration::from_secs(1), polled_rx)
             .await
             .expect("partition must be polled")
@@ -1367,6 +1396,55 @@ mod tests {
             .await
             .expect("partition must stop when its receiver drops")
             .expect("partition worker panicked");
+    }
+
+    #[tokio::test]
+    async fn test_partition_backpressure_and_disconnect() {
+        use arrow_array::{ArrayRef, Int64Array};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let batch = RecordBatch::try_from_iter([(
+            "value",
+            Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
+        )])
+        .unwrap();
+        let batch_bytes = batch.get_array_memory_size();
+        // Exercise blocking on the channel and blocking on the byte budget.
+        for (capacity, byte_budget) in [(1, STREAMING_BUFFER_BYTES), (4, batch_bytes)] {
+            let schema = batch.schema();
+            let batch = batch.clone();
+            let polls = Arc::new(AtomicUsize::new(0));
+            let count = polls.clone();
+            let batches = futures::stream::poll_fn(move |_| {
+                count.fetch_add(1, Ordering::Relaxed);
+                std::task::Poll::Ready(Some(Ok(batch.clone())))
+            });
+            let stream = RecordBatchStreamAdapter::new(schema, batches);
+            let (tx, mut rx) = mpsc::channel(capacity);
+            let budget = Arc::new(Semaphore::new(byte_budget));
+            let mut forward = std::pin::pin!(forward_partition_batches(
+                Box::pin(stream),
+                tx,
+                budget.clone(),
+            ));
+
+            assert!(futures::poll!(&mut forward).is_pending());
+            assert_eq!(rx.len(), 1);
+            assert_eq!(polls.load(Ordering::Relaxed), 2);
+
+            drop(rx.try_recv().unwrap());
+            assert!(futures::poll!(&mut forward).is_pending());
+            assert_eq!(rx.len(), 1);
+            assert_eq!(polls.load(Ordering::Relaxed), 3);
+
+            drop(rx);
+            assert!(futures::poll!(&mut forward).is_ready());
+            assert_eq!(polls.load(Ordering::Relaxed), 3);
+            assert_eq!(budget.available_permits(), byte_budget);
+        }
     }
 
     #[tokio::test]
@@ -1422,6 +1500,76 @@ mod tests {
             num_bins,
             conditions: None,
         }
+    }
+
+    #[test]
+    fn test_manifest_bin_density_keeps_inclusive_boundaries_and_counts_each_file_once() {
+        use crate::catalog::{
+            column::{Column, Int64Type, TypedStatistics},
+            manifest::{File, Manifest},
+        };
+
+        let request = counts_request_for_minutes(Some(3), 3);
+        let range = TimeRange::parse_human_time(&request.start_time, &request.end_time).unwrap();
+        let time_column = "event_time";
+        let column = |name: &str, stats| Column {
+            name: name.to_owned(),
+            stats,
+            null_count: None,
+            uncompressed_size: 0,
+            compressed_size: 0,
+        };
+        let int_stats = |minute| {
+            Some(TypedStatistics::Int(Int64Type {
+                min: (range.start + Duration::minutes(minute)).timestamp_millis(),
+                max: range.end.timestamp_millis(),
+            }))
+        };
+        let file = |num_rows, minutes: &[i64]| File {
+            num_rows,
+            columns: minutes
+                .iter()
+                .map(|&minute| column(time_column, int_stats(minute)))
+                .collect(),
+            ..File::default()
+        };
+        let manifests = [Manifest {
+            files: vec![
+                file(1, &[0]),
+                file(2, &[1]),
+                file(4, &[2]),
+                file(8, &[3]),
+                file(16, &[2, 1, 1]),
+                file(32, &[-1, 4]),
+                File {
+                    num_rows: 64,
+                    columns: vec![
+                        column(time_column, None),
+                        column("another_timestamp", int_stats(1)),
+                    ],
+                    ..File::default()
+                },
+            ],
+            ..Manifest::default()
+        }];
+        let bounds = request.get_bounds(&range).unwrap();
+        let records = manifest_bin_density(bounds, &manifests, time_column);
+        assert_eq!(
+            records.iter().map(|bin| bin.count).collect::<Vec<_>>(),
+            [19, 22, 28]
+        );
+        assert_eq!(records[0].start_time, range.start.to_rfc3339());
+        assert_eq!(records[0].end_time, records[1].start_time);
+        assert_eq!(records[2].end_time, range.end.to_rfc3339());
+
+        let request = counts_request_for_minutes(Some(5), 1);
+        let range = TimeRange::parse_human_time(&request.start_time, &request.end_time).unwrap();
+        let bounds = request.get_bounds(&range).unwrap();
+        let records = manifest_bin_density(bounds, &manifests, time_column);
+        assert_eq!(
+            records.iter().map(|bin| bin.count).collect::<Vec<_>>(),
+            [1, 1, 1, 1, 19],
+        );
     }
 
     #[test]

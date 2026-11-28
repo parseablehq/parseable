@@ -187,6 +187,7 @@ pub async fn register_sse_client(
     let session = extract_session_key_from_req(&req).unwrap();
     let sessionid = match session {
         SessionKey::SessionId(ulid) => ulid,
+        SessionKey::Ephemeral(session) => session.id,
         _ => {
             return Err(actix_web::error::ErrorBadRequest(
                 "SSE requires session-based authentication, not BasicAuth",

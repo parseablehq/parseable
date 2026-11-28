@@ -142,7 +142,7 @@ pub async fn login(
             }
         }
         // if it's a valid active session, just redirect back
-        key @ SessionKey::SessionId(_) => {
+        key @ (SessionKey::SessionId(_) | SessionKey::Ephemeral(_)) => {
             let resp = if Users.session_exists(&key) {
                 redirect_to_client(query.redirect.as_str(), None)
             } else {

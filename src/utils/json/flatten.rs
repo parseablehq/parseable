@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
+#[cfg(test)]
 use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, Utc};
@@ -33,7 +34,60 @@ use crate::cli::{
 use crate::parseable::PARSEABLE;
 
 // Global variable to track the first timestamp encountered during validation
-static REFERENCE_TIMESTAMP: Mutex<Option<DateTime<Utc>>> = Mutex::new(None);
+static REFERENCE_TIMESTAMP: ReferenceTimestamp = ReferenceTimestamp::new();
+
+/// The first time-partition timestamp accepted by this process. It is set once
+/// and only read afterwards, so validating a row takes no lock: every ingest
+/// thread used to serialize on a process-wide mutex for each row.
+#[cfg(not(test))]
+struct ReferenceTimestamp(std::sync::OnceLock<DateTime<Utc>>);
+
+#[cfg(not(test))]
+impl ReferenceTimestamp {
+    const fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+
+    fn get(&self) -> Option<DateTime<Utc>> {
+        self.0.get().copied()
+    }
+
+    /// Stores `candidate` unless a reference is already set, and returns the
+    /// stored reference (another thread's, if it won the race).
+    fn get_or_init(&self, candidate: DateTime<Utc>) -> DateTime<Utc> {
+        *self.0.get_or_init(|| candidate)
+    }
+}
+
+/// Test variant of the reference, which tests clear and restore between cases
+#[cfg(test)]
+struct ReferenceTimestamp(std::sync::RwLock<Option<DateTime<Utc>>>);
+
+#[cfg(test)]
+impl ReferenceTimestamp {
+    const fn new() -> Self {
+        Self(std::sync::RwLock::new(None))
+    }
+
+    fn get(&self) -> Option<DateTime<Utc>> {
+        *self.0.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn get_or_init(&self, candidate: DateTime<Utc>) -> DateTime<Utc> {
+        *self
+            .0
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert(candidate)
+    }
+
+    fn replace(&self, value: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+        std::mem::replace(
+            &mut *self.0.write().unwrap_or_else(|p| p.into_inner()),
+            value,
+        )
+    }
+}
 
 // Tests use a scoped age setting instead of initializing the server CLI singleton.
 #[cfg(test)]
@@ -54,7 +108,7 @@ pub(crate) struct TimePartitionTestState {
 #[cfg(test)]
 impl Drop for TimePartitionTestState {
     fn drop(&mut self) {
-        *REFERENCE_TIMESTAMP.lock().unwrap() = self.reference;
+        REFERENCE_TIMESTAMP.replace(self.reference);
         TEST_MAX_CHUNK_AGE_HOURS.set(self.max_age_hours);
     }
 }
@@ -64,7 +118,7 @@ pub(crate) fn time_partition_test_state(max_age_hours: i64) -> TimePartitionTest
     let lock = TIME_PARTITION_TEST_LOCK.lock().unwrap();
     TimePartitionTestState {
         _lock: lock,
-        reference: REFERENCE_TIMESTAMP.lock().unwrap().take(),
+        reference: REFERENCE_TIMESTAMP.replace(None),
         max_age_hours: TEST_MAX_CHUNK_AGE_HOURS.replace(Some(max_age_hours)),
     }
 }
@@ -258,42 +312,45 @@ pub fn validate_time_partition(
         ));
     };
 
-    // Access the global reference timestamp and handle poisoning
-    let mut reference_timestamp = REFERENCE_TIMESTAMP
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-
-    match *reference_timestamp {
+    let ref_timestamp = match REFERENCE_TIMESTAMP.get() {
+        Some(reference) => reference,
         None => {
             // First timestamp encountered - validate against cutoff date
             let cutoff_ts = Utc::now() - Duration::days(limit_days);
             if parsed_timestamp >= cutoff_ts {
-                // Set the reference timestamp
-                *reference_timestamp = Some(parsed_timestamp);
-                Ok(())
+                // Set the reference timestamp. If another thread set one
+                // first, validate against that reference instead, as if this
+                // row had been validated after it.
+                let reference = REFERENCE_TIMESTAMP.get_or_init(parsed_timestamp);
+                if reference == parsed_timestamp {
+                    return Ok(());
+                }
+                reference
+            } else if let Some(reference) = REFERENCE_TIMESTAMP.get() {
+                // Another thread set the reference meanwhile.
+                reference
             } else {
-                Err(JsonFlattenError::TimestampTooOld(
+                return Err(JsonFlattenError::TimestampTooOld(
                     partition_key.to_owned(),
                     limit_days,
                     parsed_timestamp,
-                ))
+                ));
             }
         }
-        Some(ref_timestamp) => {
-            // Subsequent timestamps - validate they're not more than configured hours older than reference
-            let max_age_hours = max_chunk_age_hours();
-            let max_age_before_ref = ref_timestamp - Duration::hours(max_age_hours);
-            if parsed_timestamp >= max_age_before_ref {
-                Ok(())
-            } else {
-                Err(JsonFlattenError::TimestampTooOldRelative(
-                    partition_key.to_owned(),
-                    max_age_hours,
-                    parsed_timestamp,
-                    ref_timestamp,
-                ))
-            }
-        }
+    };
+
+    // Subsequent timestamps - validate they're not more than configured hours older than reference
+    let max_age_hours = max_chunk_age_hours();
+    let max_age_before_ref = ref_timestamp - Duration::hours(max_age_hours);
+    if parsed_timestamp >= max_age_before_ref {
+        Ok(())
+    } else {
+        Err(JsonFlattenError::TimestampTooOldRelative(
+            partition_key.to_owned(),
+            max_age_hours,
+            parsed_timestamp,
+            ref_timestamp,
+        ))
     }
 }
 
@@ -1027,6 +1084,28 @@ fn number_json_len(number: &serde_json::Number) -> usize {
     }
 }
 
+/// Length of `value` serialized as compact JSON by serde_json (`to_vec(value).len()`),
+/// computed by walking it: strings, integers and literals are counted without being
+/// formatted, and nothing is allocated. Only floats are formatted, into a counter, as
+/// serde_json formats them.
+pub(crate) fn json_compact_len(value: &Value) -> u64 {
+    // Separators between `n` items: `n - 1` commas
+    let commas = |n: usize| n.saturating_sub(1) as u64;
+    match value {
+        Value::Array(items) => items.iter().fold(2 + commas(items.len()), |len, item| {
+            len.saturating_add(json_compact_len(item))
+        }),
+        Value::Object(map) => map.iter().fold(2 + commas(map.len()), |len, (key, item)| {
+            // `"key":value`
+            len.saturating_add(
+                string_json_len(key).map_or(u64::MAX, |l| (l as u64).saturating_add(1)),
+            )
+            .saturating_add(json_compact_len(item))
+        }),
+        scalar => scalar_json_len(scalar).map_or(u64::MAX, |len| len as u64),
+    }
+}
+
 /// Length of `s` serialized as a JSON string, quotes included, escaped the way serde_json
 /// does it. `None` only when the length overflows.
 pub(crate) fn string_json_len(s: &str) -> Option<usize> {
@@ -1550,6 +1629,47 @@ mod tests {
     use serde_json::{Map, Value, json};
 
     #[test]
+    fn reference_timestamp_keeps_the_first_value() {
+        let reference = super::ReferenceTimestamp::new();
+        assert_eq!(reference.get(), None);
+        let first = chrono::Utc::now();
+        let later = first + chrono::Duration::hours(1);
+        assert_eq!(reference.get_or_init(first), first);
+        // A losing writer gets the winner's reference back.
+        assert_eq!(reference.get_or_init(later), first);
+        assert_eq!(reference.get(), Some(first));
+        assert_eq!(reference.replace(None), Some(first));
+        assert_eq!(reference.get(), None);
+    }
+
+    #[test]
+    fn time_validation_accepts_old_rows_relative_to_an_existing_reference() {
+        let _state = super::time_partition_test_state(72);
+        let key = "ts".to_owned();
+        let now = chrono::Utc::now();
+        let mut first = Map::new();
+        first.insert("ts".to_owned(), json!(now.to_rfc3339()));
+        super::validate_time_partition(&first, Some(&key), std::num::NonZeroU32::new(1)).unwrap();
+        // Two days old: past the 1 day initial limit, but within 72 hours of
+        // the reference, which is what later rows are checked against.
+        let mut old = Map::new();
+        old.insert(
+            "ts".to_owned(),
+            json!((now - chrono::Duration::days(2)).to_rfc3339()),
+        );
+        super::validate_time_partition(&old, Some(&key), std::num::NonZeroU32::new(1)).unwrap();
+        let mut older = Map::new();
+        older.insert(
+            "ts".to_owned(),
+            json!((now - chrono::Duration::days(4)).to_rfc3339()),
+        );
+        assert!(matches!(
+            super::validate_time_partition(&older, Some(&key), std::num::NonZeroU32::new(1)),
+            Err(JsonFlattenError::TimestampTooOldRelative(_, 72, _, _))
+        ));
+    }
+
+    #[test]
     fn time_validation_applies_initial_limit_then_reference_age() {
         let _state = super::time_partition_test_state(3);
         let key = "ts".to_owned();
@@ -1742,6 +1862,65 @@ mod tests {
                 generic_flattening_owned(value.clone(), &mut FlattenBudget::new(GENEROUS_LIMITS))
                     .unwrap();
             assert_eq!(Value::Array(rows), expected, "input: {value}");
+        }
+    }
+
+    #[test]
+    fn json_compact_len_matches_serde_json() {
+        let mut values = vec![
+            json!(null),
+            json!([]),
+            json!({}),
+            json!([[]]),
+            json!([{}]),
+            json!({"": ""}),
+            json!({"a": []}),
+            json!({"a": {}}),
+            json!([1]),
+            json!([1, 2, 3]),
+            json!({"a": 1}),
+            json!({"a": 1, "b": "two", "c": null, "d": true, "e": false}),
+            json!({"k\"ey": "v\nal", "\u{1}": "\u{1f}", "日本": "é"}),
+            json!({"f": 0.1, "g": -1.5e-7, "h": 1e21, "i": f64::MAX, "j": 5e-324}),
+            json!({"n": u64::MAX, "m": i64::MIN, "z": 0, "neg": -1}),
+            json!([{"a": [1, [2, [3, {"b": [null, {}]}]]]}, "x", 1.0 / 3.0]),
+            json!({"nested": {"deeper": {"deepest": {"k": "v"}}, "arr": [{"x": 1}, {"y": "2"}]}}),
+        ];
+        // A realistic flattened batch, as staged
+        values.push(Value::Array(
+            (0..50)
+                .map(|i| {
+                    let level = if i % 3 == 0 { "error" } else { "info" };
+                    json!({
+                        "service": format!("svc-{i}"),
+                        "level": level,
+                        "latency": i as f64 * 1.25,
+                        "count": i,
+                        "msg": format!("line {i} with \"quotes\", tabs\t and \\ slashes"),
+                        "ok": i % 2 == 0,
+                        "missing": null,
+                    })
+                })
+                .collect(),
+        ));
+        // Deep nesting
+        let mut deep = json!("leaf");
+        for i in 0..100 {
+            deep = if i % 2 == 0 {
+                json!([deep])
+            } else {
+                json!({ "k": deep })
+            };
+        }
+        values.push(deep);
+        for value in values {
+            let expected = serde_json::to_vec(&value).unwrap().len() as u64;
+            assert_eq!(super::json_compact_len(&value), expected, "value: {value}");
+            assert_eq!(
+                crate::handlers::http::modal::utils::ingest_utils::json_byte_size(&value),
+                expected,
+                "value: {value}"
+            );
         }
     }
 

@@ -19,7 +19,7 @@
 use std::{any::Any, cmp::Reverse, collections::HashMap, ops::Bound, sync::Arc};
 
 pub(crate) mod staging_parquet;
-use staging_parquet::capture_staging_parquet;
+use staging_parquet::{lease_staging_parquet, validate_staging_parquet};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
@@ -59,7 +59,7 @@ use rayon::prelude::*;
 /// planning a query. Each fetch is one object store GET followed by a decode
 /// on the blocking pool, so this bounds both the in-flight transfers and the
 /// manifests held decompressed in memory at once.
-const MANIFEST_FETCH_CONCURRENCY: usize = 64;
+pub(super) const MANIFEST_FETCH_CONCURRENCY: usize = 64;
 
 use crate::{
     catalog::{
@@ -597,9 +597,33 @@ impl StandardTableProvider {
     ) -> Result<(), DataFusionError> {
         // Both sources were captured before the remote snapshot was read.
         let (records, partitioned_files) = captured;
-        let mem_table = reversed_mem_table(records, self.schema.clone())?;
-        let arrow_exec =
-            scan_enforcing_exact_filters(&mem_table, state, projection, filters, limit).await?;
+        // Keep the reverse traversal within one partition when the scan is
+        // asked to stop early. Without a limit, contiguous groups can run
+        // independently and any SQL ordering is enforced by DataFusion.
+        let target_partitions = if limit.is_some() {
+            1
+        } else {
+            state
+                .config_options()
+                .execution
+                .target_partitions
+                .min(num_cpus::get())
+        };
+        let (mem_table, mem_projection) = projected_reversed_mem_table(
+            records,
+            self.schema.clone(),
+            projection,
+            filters,
+            target_partitions,
+        )?;
+        let arrow_exec = scan_enforcing_exact_filters(
+            &mem_table,
+            state,
+            mem_projection.as_ref(),
+            filters,
+            limit,
+        )
+        .await?;
         execution_plans.push(arrow_exec);
 
         // Keep the native scan and its file extensions: each extension owns the
@@ -1000,13 +1024,15 @@ impl TableProvider for StandardTableProvider {
             match PARSEABLE.get_stream(&self.stream, &self.tenant_id) {
                 Ok(staging) => {
                     let (records, files) = staging
-                        .capture_staging(&self.schema, capture_staging_parquet)
+                        .capture_staging(&self.schema, lease_staging_parquet)
                         .map_err(|error| {
                             DataFusionError::Execution(format!(
                                 "Cannot capture staging record batches: {error}"
                             ))
                         })?;
-                    Ok((records, files?))
+                    // The hard links retain the captured inodes after the
+                    // publication lock is released.
+                    Ok((records, validate_staging_parquet(files?)?))
                 }
                 Err(_) => Ok((Vec::new(), Vec::new())),
             }
@@ -1188,16 +1214,78 @@ impl TableProvider for StandardTableProvider {
     }
 }
 
-#[inline(always)]
 pub fn reversed_mem_table(
-    mut records: Vec<RecordBatch>,
+    records: Vec<RecordBatch>,
     schema: Arc<Schema>,
 ) -> Result<MemTable, DataFusionError> {
-    records[..].reverse();
-    records
-        .iter_mut()
-        .for_each(|batch| *batch = crate::utils::arrow::reverse(batch));
-    MemTable::try_new(schema, vec![records])
+    partitioned_reversed_mem_table(records, schema, 1)
+}
+
+fn projected_reversed_mem_table(
+    mut records: Vec<RecordBatch>,
+    mut schema: SchemaRef,
+    projection: Option<&Vec<usize>>,
+    filters: &[Expr],
+    target_partitions: usize,
+) -> DataFusionResult<(MemTable, Option<Vec<usize>>)> {
+    let mut mem_projection = projection.cloned();
+    if let Some(projection) = projection {
+        let mut needed = projection.clone();
+        for column in filters.iter().flat_map(Expr::column_refs) {
+            needed.push(schema.index_of(&column.name)?);
+        }
+        needed.sort_unstable();
+        needed.dedup();
+
+        if !needed.iter().copied().eq(0..schema.fields().len()) {
+            schema = Arc::new(schema.project(&needed)?);
+            // Arrow projects by cloning column references. Only columns that
+            // survive this step enter the reverse/take kernel.
+            for batch in &mut records {
+                *batch = batch.project(&needed)?;
+            }
+            mem_projection = Some(
+                projection
+                    .iter()
+                    .map(|index| {
+                        needed
+                            .binary_search(index)
+                            .expect("projected column is retained")
+                    })
+                    .collect(),
+            );
+        }
+    }
+
+    let table = partitioned_reversed_mem_table(records, schema, target_partitions)?;
+    Ok((table, mem_projection))
+}
+
+fn partitioned_reversed_mem_table(
+    records: Vec<RecordBatch>,
+    schema: SchemaRef,
+    target_partitions: usize,
+) -> DataFusionResult<MemTable> {
+    let partition_count = target_partitions.clamp(1, records.len().max(1));
+    let batches_per_partition = records.len() / partition_count;
+    let extra_batches = records.len() % partition_count;
+    let mut reversed = records.into_iter().rev().map(|batch| {
+        // A zero-column projection still represents all of its original rows.
+        if batch.num_columns() == 0 {
+            batch
+        } else {
+            crate::utils::arrow::reverse(&batch)
+        }
+    });
+    let partitions = (0..partition_count)
+        .map(|index| {
+            reversed
+                .by_ref()
+                .take(batches_per_partition + usize::from(index < extra_batches))
+                .collect()
+        })
+        .collect();
+    MemTable::try_new(schema, partitions)
 }
 
 #[derive(Debug, Clone)]
@@ -1622,8 +1710,114 @@ mod tests {
         build_parquet_scan_components, build_parquet_scan_components_with_full_filters,
         exact_source_filters, extract_primary_filter, extract_timestamp_bound,
         guarded_hot_tier_table_source, hot_tier_stream_key, is_overlapping_query,
-        standard_table_provider,
+        projected_reversed_mem_table, scan_enforcing_exact_filters, standard_table_provider,
     };
+
+    #[tokio::test]
+    async fn staging_reverses_projected_and_filter_columns_in_contiguous_partitions() {
+        use arrow_array::{Int64Array, RecordBatch, StringArray, TimestampMillisecondArray};
+        use datafusion::{physical_plan::collect_partitioned, prelude::col};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("payload", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, false),
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let large_value = "a".repeat(64 * 1024);
+        let payload = Arc::new(StringArray::from(vec![large_value.as_str(); 3]));
+        let records = (0..3)
+            .map(|offset| {
+                RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        payload.clone(),
+                        Arc::new(StringArray::from(vec!["first", "second", "third"])),
+                        Arc::new(TimestampMillisecondArray::from(vec![60_000, 0, 60_000])),
+                        Arc::new(Int64Array::from(vec![
+                            offset * 3,
+                            offset * 3 + 1,
+                            offset * 3 + 2,
+                        ])),
+                    ],
+                )
+                .unwrap()
+            })
+            .collect();
+        let projection = vec![3, 1];
+        let filters = [col(DEFAULT_TIMESTAMP_KEY).gt_eq(Expr::Literal(
+            ScalarValue::TimestampMillisecond(Some(60_000), None),
+            None,
+        ))];
+        let (table, mapped_projection) =
+            projected_reversed_mem_table(records, schema.clone(), Some(&projection), &filters, 2)
+                .unwrap();
+
+        assert_eq!(
+            table.schema().as_ref(),
+            &schema.project(&[1, 2, 3]).unwrap()
+        );
+        assert_eq!(Arc::strong_count(&payload), 1);
+        assert_eq!(mapped_projection, Some(vec![2, 0]));
+        assert_eq!(table.batches.len(), 2);
+
+        let context = SessionContext::new();
+        let plan = scan_enforcing_exact_filters(
+            &table,
+            &context.state(),
+            mapped_projection.as_ref(),
+            &filters,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            plan.schema().as_ref(),
+            &schema.project(&projection).unwrap()
+        );
+        let partitions = collect_partitioned(plan, context.task_ctx()).await.unwrap();
+        let ids: Vec<Vec<_>> = partitions
+            .iter()
+            .map(|batches| {
+                batches
+                    .iter()
+                    .flat_map(|batch| {
+                        batch
+                            .column(0)
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .unwrap()
+                            .values()
+                            .iter()
+                            .copied()
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(ids, vec![vec![8, 6, 5, 3], vec![2, 0]]);
+    }
+
+    #[tokio::test]
+    async fn staging_empty_projection_keeps_row_count() {
+        use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+
+        let batch = RecordBatch::try_from_iter([(
+            "id",
+            Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
+        )])
+        .unwrap();
+        let schema = batch.schema();
+        let (table, projection) =
+            projected_reversed_mem_table(vec![batch], schema, Some(&vec![]), &[], 2).unwrap();
+        assert_eq!(projection, Some(vec![]));
+        let partition = table.batches[0].read().await;
+        assert_eq!(partition[0].num_columns(), 0);
+        assert_eq!(partition[0].num_rows(), 3);
+    }
 
     #[test]
     fn prefilter_cache_is_request_scoped_and_bypasses_staging() {

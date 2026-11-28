@@ -40,8 +40,8 @@ use crate::utils::header_parsing::{
 };
 use actix::extract_session_key_from_req;
 use actix_web::dev::ServiceRequest;
-use actix_web::http::header::HeaderMap;
-use actix_web::{FromRequest, HttpRequest};
+use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
+use actix_web::{FromRequest, HttpMessage, HttpRequest};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use once_cell::sync::Lazy;
@@ -76,6 +76,20 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
 }
 
 pub fn mutate_request_with_tenant(req: &mut ServiceRequest) {
+    let ext_session = req.extensions().get::<SessionKey>().cloned();
+    if let Some(session) = ext_session {
+        match &session {
+            SessionKey::Ephemeral(ephemeral) => {
+                if let Ok(header_val) = HeaderValue::from_str(&ephemeral.tenant) {
+                    req.headers_mut()
+                        .insert(HeaderName::from_static(TENANT_ID), header_val);
+                }
+            }
+            _ => sessions().mutate_request_with_tenant(&session, req),
+        }
+        return;
+    }
+
     let creds = BasicAuth::extract(req.request()).into_inner();
 
     if let Ok(basic) = &creds {
@@ -108,7 +122,7 @@ pub fn get_user_and_tenant_from_request(
                 Ok((username.clone(), None))
             }
         }
-        session @ SessionKey::SessionId(_) => {
+        session @ (SessionKey::SessionId(_) | SessionKey::Ephemeral(_)) => {
             let Some((user_id, tenant_id)) = Users.get_userid_from_session(&session) else {
                 return Err(RBACError::UserDoesNotExist);
             };

@@ -63,6 +63,15 @@ pub static INGESTION_THREADPOOL: Lazy<ThreadPool> = Lazy::new(|| {
         .expect("Unable to create Rayon thread pool")
 });
 
+/// Whether `stream_name` is a registered internal stream of the tenant. Same
+/// answer as membership in `list_internal_streams`, with one map lookup and
+/// one metadata read lock instead of one per stream of the tenant.
+fn is_internal_stream(stream_name: &str, tenant_id: &Option<String>) -> bool {
+    PARSEABLE
+        .get_stream(stream_name, tenant_id)
+        .is_ok_and(|stream| stream.get_stream_type() == StreamType::Internal)
+}
+
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
@@ -78,10 +87,7 @@ pub async fn ingest(
     // One stream lookup answers the internal-stream question directly; building
     // the tenant's list of internal stream names would lock every stream's
     // metadata on every request.
-    if PARSEABLE
-        .get_stream(&stream_name, &tenant_id)
-        .is_ok_and(|stream| stream.get_stream_type() == StreamType::Internal)
-    {
+    if is_internal_stream(&stream_name, &tenant_id) {
         return Err(PostError::InternalStream(stream_name));
     }
 
@@ -249,9 +255,10 @@ pub async fn setup_otel_stream(
     // The OTLP endpoints authorize `Action::Ingest` against the header stream,
     // and `check_auth` matches any stream-scoped permission against internal
     // streams, so refuse them here exactly like the `/api/v1/ingest` and
-    // `/api/v1/logstream/{name}` handlers do.
-    let internal_stream_names = PARSEABLE.streams.list_internal_streams(&tenant_id);
-    if internal_stream_names.contains(&stream_name) {
+    // `/api/v1/logstream/{name}` handlers do. One stream lookup answers this
+    // directly instead of locking every stream of the tenant to list the
+    // internal stream names.
+    if is_internal_stream(&stream_name, &tenant_id) {
         return Err(PostError::InternalStream(stream_name));
     }
     PARSEABLE
@@ -403,10 +410,7 @@ pub async fn post_event(
     let tenant_id = get_tenant_id_from_request(&req)?;
     // One stream lookup instead of locking every stream of the tenant to list
     // the internal stream names.
-    if PARSEABLE
-        .get_stream(&stream_name, &tenant_id)
-        .is_ok_and(|stream| stream.get_stream_type() == StreamType::Internal)
-    {
+    if is_internal_stream(&stream_name, &tenant_id) {
         return Err(PostError::InternalStream(stream_name));
     }
     if !PARSEABLE.streams.contains(&stream_name, &tenant_id) {
@@ -1458,6 +1462,57 @@ mod otel_internal_stream_tests {
             matches!(result, Err(PostError::InternalStream(ref name)) if name == "pmeta"),
             "ingesting into an internal stream via the OTLP endpoints must be rejected, got {result:?}"
         );
+    }
+
+    /// The single-stream check agrees with membership in the tenant's list of
+    /// internal streams, for internal, user-defined, missing streams and
+    /// unknown tenants.
+    #[test]
+    fn single_stream_internal_check_matches_internal_stream_list() {
+        crate::parseable::install_default_test_parseable();
+        register_internal_stream("pstats_single_check");
+        let staging = tempfile::tempdir_in(concat!(env!("CARGO_MANIFEST_DIR"), "/target"))
+            .expect("a temporary staging directory")
+            .keep();
+        let options = Arc::new(crate::cli::Options {
+            local_staging_path: staging,
+            mode: Mode::All,
+            ..crate::cli::Options::default()
+        });
+        let user = Stream::new(
+            options,
+            "user_single_check",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+        PARSEABLE
+            .streams
+            .write()
+            .unwrap()
+            .entry(DEFAULT_TENANT.to_owned())
+            .or_default()
+            .insert("user_single_check".to_owned(), user);
+
+        let tenant_none = None;
+        let tenant_unknown = Some("no_such_tenant_single_check".to_owned());
+        for tenant in [&tenant_none, &tenant_unknown] {
+            let listed = PARSEABLE.streams.list_internal_streams(tenant);
+            for name in [
+                "pstats_single_check",
+                "user_single_check",
+                "missing_single_check",
+            ] {
+                assert_eq!(
+                    is_internal_stream(name, tenant),
+                    listed.iter().any(|listed| listed == name),
+                    "{name} with tenant {tenant:?}"
+                );
+            }
+        }
+        assert!(is_internal_stream("pstats_single_check", &None));
+        assert!(!is_internal_stream("user_single_check", &None));
+        assert!(!is_internal_stream("missing_single_check", &None));
     }
 
     /// Documents the enabling half of the finding: `check_auth` treats any

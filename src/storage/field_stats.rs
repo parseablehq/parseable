@@ -59,6 +59,7 @@ use arrow_array::BooleanArray;
 use arrow_array::Date32Array;
 use arrow_array::Float64Array;
 use arrow_array::Int64Array;
+use arrow_array::RecordBatch;
 use arrow_array::StringArray;
 use arrow_array::StringViewArray;
 use arrow_array::TimestampMillisecondArray;
@@ -68,6 +69,7 @@ use arrow_schema::TimeUnit;
 use chrono::DateTime;
 use chrono::NaiveDateTime;
 use chrono::Utc;
+use dashmap::DashMap;
 use indexmap::IndexMap;
 use once_cell::sync::Lazy;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -81,8 +83,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::fs::File;
-use std::path::Path;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
 pub const DATASET_STATS_STREAM_NAME: &str = "pstats";
@@ -99,18 +102,98 @@ static FIELD_STATS_RAYON_POOL: Lazy<ThreadPool> = Lazy::new(|| {
         .expect("field stats rayon pool should initialize")
 });
 
-#[derive(Serialize, Debug)]
-struct DistinctStat {
-    distinct_value: String,
-    count: i64,
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DistinctStat {
+    pub distinct_value: String,
+    pub count: i64,
 }
 
-#[derive(Serialize, Debug)]
-struct FieldStat {
-    field_name: String,
-    count: i64,
-    distinct_count: i64,
-    distinct_stats: Vec<DistinctStat>,
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct FieldStat {
+    pub field_name: String,
+    pub count: i64,
+    pub distinct_count: i64,
+    pub distinct_stats: Vec<DistinctStat>,
+}
+
+const MAX_STAGED_FIELD_STATS_CACHE_ENTRIES: usize = 512;
+const STAGED_FIELD_STATS_CACHE_TTL: Duration = Duration::from_secs(900);
+
+struct CachedFieldStats {
+    max_field_statistics: usize,
+    stats: Vec<FieldStat>,
+    inserted_at: Instant,
+}
+
+static STAGED_FIELD_STATS_CACHE: LazyLock<DashMap<PathBuf, CachedFieldStats>> =
+    LazyLock::new(DashMap::new);
+
+/// Caches precomputed per-field statistics for a newly staged Parquet file so
+/// post-upload field stats publication can consume them in memory without
+/// re-opening and re-decoding the Parquet file from disk.
+pub fn cache_staged_field_stats(path: &Path, max_field_statistics: usize, stats: Vec<FieldStat>) {
+    let now = Instant::now();
+    if !STAGED_FIELD_STATS_CACHE.contains_key(path)
+        && STAGED_FIELD_STATS_CACHE.len() >= MAX_STAGED_FIELD_STATS_CACHE_ENTRIES
+    {
+        STAGED_FIELD_STATS_CACHE.retain(|_, entry| {
+            now.duration_since(entry.inserted_at) < STAGED_FIELD_STATS_CACHE_TTL
+        });
+        let mut attempts = 0usize;
+        while STAGED_FIELD_STATS_CACHE.len() >= MAX_STAGED_FIELD_STATS_CACHE_ENTRIES && attempts < 8
+        {
+            attempts += 1;
+            let mut oldest: Option<(Instant, PathBuf)> = None;
+            for entry in STAGED_FIELD_STATS_CACHE.iter() {
+                let ts = entry.value().inserted_at;
+                if oldest.as_ref().is_none_or(|(min_ts, _)| ts < *min_ts) {
+                    oldest = Some((ts, entry.key().clone()));
+                }
+            }
+            let Some((_, key)) = oldest else {
+                break;
+            };
+            STAGED_FIELD_STATS_CACHE.remove(&key);
+        }
+    }
+    STAGED_FIELD_STATS_CACHE.insert(
+        path.to_path_buf(),
+        CachedFieldStats {
+            max_field_statistics,
+            stats,
+            inserted_at: now,
+        },
+    );
+}
+
+/// Takes and removes cached field statistics for `path` if present, fresh, and computed
+/// with the same `max_field_statistics` bound.
+pub fn take_staged_field_stats(path: &Path, max_field_statistics: usize) -> Option<Vec<FieldStat>> {
+    let (_, cached) = STAGED_FIELD_STATS_CACHE.remove(path)?;
+    if cached.inserted_at.elapsed() < STAGED_FIELD_STATS_CACHE_TTL
+        && cached.max_field_statistics == max_field_statistics
+    {
+        Some(cached.stats)
+    } else {
+        None
+    }
+}
+
+/// Removes any cached field statistics for `path` (e.g. when a staged file is retired).
+pub fn evict_staged_field_stats(path: &Path) {
+    STAGED_FIELD_STATS_CACHE.remove(path);
+}
+
+fn filter_field_stats_for_schema(cached: Vec<FieldStat>, schema: &Schema) -> Vec<FieldStat> {
+    let mut by_name: HashMap<String, FieldStat> = cached
+        .into_iter()
+        .map(|stat| (stat.field_name.clone(), stat))
+        .collect();
+    schema
+        .fields()
+        .iter()
+        .filter_map(|field| by_name.remove(field.name()))
+        .collect()
 }
 
 #[derive(Serialize, Debug)]
@@ -213,13 +296,8 @@ async fn calculate_field_stats_inner(
             e
         ))
     })?;
-    let field_stats = collect_all_field_stats_from_parquet(
-        stream_name,
-        parquet_path,
-        schema,
-        max_field_statistics,
-    )
-    .await?;
+    let field_stats =
+        resolve_field_stats(stream_name, parquet_path, schema, max_field_statistics).await?;
     let mut stats_calculated = false;
     let stats = DatasetStats {
         dataset_name: stream_name.to_string(),
@@ -423,6 +501,20 @@ async fn ensure_dataset_stats_stream(tenant_id: &Option<String>) -> Result<(), P
     Ok(())
 }
 
+async fn resolve_field_stats(
+    stream_name: &str,
+    parquet_path: &Path,
+    schema: &Schema,
+    max_field_statistics: usize,
+) -> Result<Vec<FieldStat>, PostError> {
+    if let Some(cached) = take_staged_field_stats(parquet_path, max_field_statistics) {
+        return Ok(filter_field_stats_for_schema(cached, schema));
+    }
+
+    collect_all_field_stats_from_parquet(stream_name, parquet_path, schema, max_field_statistics)
+        .await
+}
+
 async fn collect_all_field_stats_from_parquet(
     stream_name: &str,
     parquet_path: &Path,
@@ -443,6 +535,96 @@ async fn collect_all_field_stats_from_parquet(
     })
     .await
     .map_err(|e| PostError::Invalid(anyhow::anyhow!("Field stats task failed: {}", e)))?
+}
+
+/// Incrementally accumulates per-field statistics from Arrow `RecordBatch`es
+/// using the exact same chunked counting logic as Parquet-backed field stats.
+pub struct FieldStatsAccumulator {
+    stream_name: String,
+    max_field_statistics: usize,
+    field_counts: Vec<(String, FieldCountState)>,
+}
+
+impl FieldStatsAccumulator {
+    pub fn new(stream_name: &str, schema: &Schema, max_field_statistics: usize) -> Self {
+        let field_counts = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let name = field.name().clone();
+                (
+                    name.clone(),
+                    FieldCountState::new(stream_name.to_string(), name, max_field_statistics),
+                )
+            })
+            .collect();
+        Self {
+            stream_name: stream_name.to_string(),
+            max_field_statistics,
+            field_counts,
+        }
+    }
+
+    pub fn update(&mut self, batch: &RecordBatch) {
+        if batch.num_rows() == 0 {
+            return;
+        }
+        let stream_name = self.stream_name.as_str();
+        let max_field_statistics = self.max_field_statistics;
+        FIELD_STATS_RAYON_POOL.install(|| {
+            self.field_counts.par_iter_mut().for_each(|(name, total)| {
+                if let Some(array) = batch.column_by_name(name) {
+                    // Retain the old candidate-merge boundaries. Larger candidate states
+                    // lose repeated tail values before they can be merged into the total.
+                    // Decode and schedule in large batches, but merge in the same order as
+                    // the former 1024-row Parquet reader, including across row groups.
+                    for offset in (0..array.len()).step_by(1024) {
+                        let chunk = array.slice(offset, (array.len() - offset).min(1024));
+                        let state = collect_array_field_counts(
+                            stream_name,
+                            chunk.as_ref(),
+                            name,
+                            max_field_statistics,
+                        );
+                        total.merge_state(state);
+                    }
+                }
+            });
+        });
+    }
+
+    pub fn finish(self) -> Vec<FieldStat> {
+        let max_field_statistics = self.max_field_statistics;
+        self.field_counts
+            .into_iter()
+            .filter_map(|(field_name, state)| {
+                if state.total_count == 0 {
+                    return None;
+                }
+                Some(FieldStat {
+                    field_name,
+                    count: state.total_count,
+                    distinct_count: state.distinct_count(),
+                    distinct_stats: state.into_distinct_stats(max_field_statistics),
+                })
+            })
+            .collect()
+    }
+}
+
+/// Computes field statistics directly from in-memory Arrow `RecordBatch`es,
+/// reusing the exact counting and merge logic of Parquet-backed field stats.
+pub fn compute_field_stats_from_batches(
+    batches: &[RecordBatch],
+    stream_name: &str,
+    schema: &Schema,
+    max_field_statistics: usize,
+) -> Vec<FieldStat> {
+    let mut accumulator = FieldStatsAccumulator::new(stream_name, schema, max_field_statistics);
+    for batch in batches {
+        accumulator.update(batch);
+    }
+    accumulator.finish()
 }
 
 // 32K amortizes scheduling without retaining the whole file. At 120 fixed-width
@@ -482,20 +664,7 @@ fn collect_field_stats_with_batch_size(
         .with_batch_size(batch_rows)
         .build()
         .map_err(|e| PostError::Invalid(anyhow::anyhow!(e)))?;
-    let field_names: Vec<String> = schema
-        .fields()
-        .iter()
-        .map(|field| field.name().clone())
-        .collect();
-    let mut field_counts: Vec<_> = field_names
-        .iter()
-        .map(|name| {
-            (
-                name.clone(),
-                FieldCountState::new(stream_name.to_string(), name.clone(), max_field_statistics),
-            )
-        })
-        .collect();
+    let mut accumulator = FieldStatsAccumulator::new(stream_name, schema, max_field_statistics);
 
     for batch in &mut reader {
         let batch = match batch {
@@ -510,42 +679,10 @@ fn collect_field_stats_with_batch_size(
             }
         };
 
-        FIELD_STATS_RAYON_POOL.install(|| {
-            field_counts.par_iter_mut().for_each(|(name, total)| {
-                if let Some(array) = batch.column_by_name(name) {
-                    // Retain the old candidate-merge boundaries. Larger candidate states
-                    // lose repeated tail values before they can be merged into the total.
-                    // Decode and schedule in large batches, but merge in the same order as
-                    // the former 1024-row Parquet reader, including across row groups.
-                    for offset in (0..array.len()).step_by(1024) {
-                        let chunk = array.slice(offset, (array.len() - offset).min(1024));
-                        let state = collect_array_field_counts(
-                            stream_name,
-                            chunk.as_ref(),
-                            name,
-                            max_field_statistics,
-                        );
-                        total.merge_state(state);
-                    }
-                }
-            });
-        });
+        accumulator.update(&batch);
     }
 
-    Ok(field_counts
-        .into_iter()
-        .filter_map(|(field_name, state)| {
-            if state.total_count == 0 {
-                return None;
-            }
-            Some(FieldStat {
-                field_name,
-                count: state.total_count,
-                distinct_count: state.distinct_count(),
-                distinct_stats: state.into_distinct_stats(max_field_statistics),
-            })
-        })
-        .collect())
+    Ok(accumulator.finish())
 }
 
 #[cfg(test)]
@@ -1043,6 +1180,11 @@ fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
     }
 }
 
+static PARQUET_DATETIME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"date=(\d{4}-\d{2}-\d{2})\.hour=(\d{1,2})\.minute=(\d{1,2})")
+        .expect("parquet datetime regex is valid")
+});
+
 #[inline(always)]
 pub fn extract_datetime_from_parquet_path_regex(
     parquet_path: &Path,
@@ -1052,10 +1194,7 @@ pub fn extract_datetime_from_parquet_path_regex(
         .and_then(|name| name.to_str())
         .ok_or("Invalid filename")?;
 
-    // Regex to match date=YYYY-MM-DD.hour=HH.minute=MM pattern
-    let re = Regex::new(r"date=(\d{4}-\d{2}-\d{2})\.hour=(\d{1,2})\.minute=(\d{1,2})")?;
-
-    if let Some(captures) = re.captures(filename) {
+    if let Some(captures) = PARQUET_DATETIME_REGEX.captures(filename) {
         let date = &captures[1];
         let hour = &captures[2];
         let minute = &captures[3];
@@ -2387,6 +2526,173 @@ mod tests {
         assert_eq!(
             first.unwrap()["field_stats_distinct_stats_distinct_value"],
             "value0"
+        );
+    }
+
+    #[test]
+    fn compute_field_stats_from_batches_matches_parquet_decode() {
+        use super::{compute_field_stats_from_batches, extract_datetime_from_parquet_path_regex};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new("status", DataType::Int64, true),
+            Field::new("latency", DataType::Float64, true),
+            Field::new("ok", DataType::Boolean, true),
+            Field::new("ts", DataType::Timestamp(TimeUnit::Millisecond, None), true),
+            Field::new("trace_id", DataType::Utf8, true),
+        ]));
+
+        let make_batch = |start: usize, len: usize| -> RecordBatch {
+            let levels = StringArray::from_iter(
+                (start..start + len)
+                    .map(|i| [Some("info"), Some("warn"), Some("error"), None][i % 4]),
+            );
+            let statuses = Int64Array::from_iter((start..start + len).map(|i| {
+                if i % 11 == 0 {
+                    None
+                } else {
+                    Some([200, 201, 404, 500][i % 4])
+                }
+            }));
+            let latencies = Float64Array::from_iter((start..start + len).map(|i| {
+                if i % 7 == 0 {
+                    None
+                } else {
+                    Some((i % 13) as f64 * 0.5)
+                }
+            }));
+            let oks = BooleanArray::from_iter(
+                (start..start + len).map(|i| if i % 9 == 0 { None } else { Some(i % 2 == 0) }),
+            );
+            let ts = TimestampMillisecondArray::from_iter(
+                (start..start + len).map(|i| Some(1_730_000_000_000 + (i % 5) as i64 * 1000)),
+            );
+            let trace_ids = StringArray::from_iter_values(
+                (start..start + len).map(|i| format!("trace-{:05}", i % 1500)),
+            );
+
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(levels),
+                    Arc::new(statuses),
+                    Arc::new(latencies),
+                    Arc::new(oks),
+                    Arc::new(ts),
+                    Arc::new(trace_ids),
+                ],
+            )
+            .unwrap()
+        };
+
+        let batches = vec![make_batch(0, 2500), make_batch(2500, 1750)];
+        let dir = TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .join("date=2026-11-28.hour=09.minute=15.host.data.parquet");
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(2500))
+            .build();
+        let mut writer = ArrowWriter::try_new(
+            std::fs::File::create(&path).unwrap(),
+            schema.clone(),
+            Some(props),
+        )
+        .unwrap();
+        for batch in &batches {
+            writer.write(batch).unwrap();
+        }
+        writer.close().unwrap();
+
+        let from_batches = compute_field_stats_from_batches(&batches, "logs", &schema, 50);
+        let from_parquet =
+            collect_all_field_stats_from_parquet_blocking("logs", &path, &schema, 50).unwrap();
+
+        assert_eq!(from_batches, from_parquet);
+        assert_eq!(
+            serde_json::to_value(&from_batches).unwrap(),
+            serde_json::to_value(&from_parquet).unwrap()
+        );
+
+        // Exercise cached regex on the same filename.
+        let dt = extract_datetime_from_parquet_path_regex(&path).unwrap();
+        assert_eq!(dt.to_rfc3339(), "2026-11-28T09:15:00+00:00");
+    }
+
+    #[tokio::test]
+    async fn staged_field_stats_cache_handoff_and_schema_filtering() {
+        use super::{
+            cache_staged_field_stats, compute_field_stats_from_batches, resolve_field_stats,
+        };
+
+        let full_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Utf8, true),
+            Field::new("b", DataType::Int64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            full_schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec![Some("x"), Some("y"), Some("x")])),
+                Arc::new(Int64Array::from(vec![Some(1), Some(2), Some(1)])),
+            ],
+        )
+        .unwrap();
+        let expected = compute_field_stats_from_batches(&[batch], "logs", &full_schema, 50);
+
+        // Non-existent path proves `resolve_field_stats` serves purely from memory on cache hit.
+        let virtual_path = std::path::PathBuf::from(format!(
+            "/nonexistent/date=2026-11-28.hour=10.minute=05.{}.parquet",
+            uuid::Uuid::new_v4()
+        ));
+        cache_staged_field_stats(&virtual_path, 50, expected.clone());
+
+        let reordered_schema = Schema::new(vec![
+            Field::new("b", DataType::Int64, true),
+            Field::new("missing_in_file", DataType::Utf8, true),
+            Field::new("a", DataType::Utf8, true),
+        ]);
+        let resolved = resolve_field_stats("logs", &virtual_path, &reordered_schema, 50)
+            .await
+            .unwrap();
+        assert_eq!(resolved, vec![expected[1].clone(), expected[0].clone()]);
+
+        // Entry is consumed on first read, so a second call falls back to disk and errors.
+        assert!(
+            resolve_field_stats("logs", &virtual_path, &full_schema, 50)
+                .await
+                .is_err()
+        );
+
+        // Mismatched max_field_statistics rejects cached stats and falls back to disk.
+        cache_staged_field_stats(&virtual_path, 25, expected);
+        assert!(
+            resolve_field_stats("logs", &virtual_path, &full_schema, 50)
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn extract_datetime_from_parquet_path_regex_cached() {
+        use super::extract_datetime_from_parquet_path_regex;
+
+        let dt_padded = extract_datetime_from_parquet_path_regex(std::path::Path::new(
+            "/staging/date=2026-07-04.hour=03.minute=09.node.data.parquet",
+        ))
+        .unwrap();
+        assert_eq!(dt_padded.to_rfc3339(), "2026-07-04T03:09:00+00:00");
+
+        let dt_single_digit = extract_datetime_from_parquet_path_regex(std::path::Path::new(
+            "/staging/date=2026-07-04.hour=3.minute=9.node.data.parquet",
+        ))
+        .unwrap();
+        assert_eq!(dt_single_digit, dt_padded);
+
+        assert!(
+            extract_datetime_from_parquet_path_regex(std::path::Path::new(
+                "/staging/not_a_timestamped_file.parquet"
+            ))
+            .is_err()
         );
     }
 }

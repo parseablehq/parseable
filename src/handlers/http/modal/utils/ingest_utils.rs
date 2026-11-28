@@ -950,7 +950,7 @@ pub fn flatten_and_push_logs(
             };
             // The body's length, as the expansion cap counts it, is that of the
             // JSON text of the value
-            let body_len = json_byte_size(&json) as usize;
+            let body_len = json_value_byte_size(&json) as usize;
             if let OtelIngested::Partial { message, .. } =
                 ingest_otel_json(json, body_len, &target)?
             {
@@ -1133,12 +1133,15 @@ fn stage_json(
         grouped,
         p_timestamp,
     } = into;
-    let time_partition_limit = stream.get_time_partition_limit();
-    let static_schema_flag = stream.get_static_schema_flag();
-    let custom_partition = stream.get_custom_partition();
-    let schema_version = stream.get_schema_version();
-    let schema = stream.get_schema_raw();
-    let infer_timestamp = stream.get_infer_timestamp();
+    // One metadata read lock for everything below; the schema map is shared
+    // with other requests while it is unchanged instead of deep-cloned.
+    let snapshot = stream.ingest_snapshot();
+    let time_partition_limit = snapshot.time_partition_limit;
+    let static_schema_flag = snapshot.static_schema_flag;
+    let custom_partition = snapshot.custom_partition;
+    let schema_version = snapshot.schema_version;
+    let schema = snapshot.schema;
+    let infer_timestamp = snapshot.infer_timestamp;
 
     let data = convert_array_to_object(
         json,
@@ -1163,7 +1166,7 @@ fn stage_json(
         // process_non_partitioned returns vec![Value::Array([...])], a single
         // element wrapping the whole batch. Unwrap it to avoid double-nesting.
         let json_batch = data.into_iter().next().unwrap();
-        let origin_size = json_byte_size(&json_batch);
+        let origin_size = json_value_byte_size(&json_batch);
 
         let (rb, is_first_event) = (json::Event {
             json: json_batch,
@@ -1197,7 +1200,7 @@ fn stage_json(
         let events: Result<Vec<_>, _> = data
             .into_par_iter()
             .map(|json| {
-                let origin_size = json_byte_size(&json);
+                let origin_size = json_value_byte_size(&json);
                 (json::Event { json, p_timestamp }).into_event(
                     stream_name.to_owned(),
                     origin_size,
@@ -1242,7 +1245,7 @@ fn stage_json(
         let records = data
             .into_iter()
             .map(|json| {
-                let size = json_byte_size(&json);
+                let size = json_value_byte_size(&json);
                 (json, size)
             })
             .collect();
@@ -1296,6 +1299,12 @@ fn use_partitioned_ingest_batching(
     stream_name: &str,
 ) -> bool {
     enabled && mode != crate::option::Mode::Query && !tail.has_subscribers(stream_name)
+}
+
+/// Byte length of `value` as compact JSON, exactly `json_byte_size(value)`, by
+/// walking the value instead of serializing it (see `json_compact_len`).
+pub fn json_value_byte_size(value: &Value) -> u64 {
+    crate::utils::json::flatten::json_compact_len(value)
 }
 
 /// Zero-allocation JSON byte size counter.

@@ -16,10 +16,16 @@
  *
  */
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, LazyLock},
+    time::{Duration, Instant},
+};
 
+use dashmap::DashMap;
 use parquet::file::{
-    metadata::{RowGroupMetaData, SortingColumn},
+    metadata::{ParquetMetaData, RowGroupMetaData, SortingColumn},
     reader::FileReader,
     statistics::Statistics,
 };
@@ -74,7 +80,7 @@ pub enum ManifestCodecError {
     #[error("failed to compress manifest: {0}")]
     Compress(std::io::Error),
 
-    #[error("manifest decode task failed: {0}")]
+    #[error("manifest codec task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
 
     #[error("failed to decompress manifest: {0}")]
@@ -95,6 +101,14 @@ pub fn encode_manifest(manifest: &Manifest) -> Result<bytes::Bytes, ManifestCode
     let compressed =
         zstd::encode_all(json.as_slice(), ZSTD_LEVEL).map_err(ManifestCodecError::Compress)?;
     Ok(bytes::Bytes::from(compressed))
+}
+
+/// Encode a manifest on the blocking pool so JSON serialization and zstd
+/// compression for large daily manifests do not stall async Tokio workers.
+pub async fn encode_manifest_blocking(
+    manifest: Manifest,
+) -> Result<bytes::Bytes, ManifestCodecError> {
+    tokio::task::spawn_blocking(move || encode_manifest(&manifest)).await?
 }
 
 /// Decode a manifest, accepting both the compressed and the plain JSON form.
@@ -177,6 +191,45 @@ impl Manifest {
             self.files.push(change)
         }
     }
+
+    /// Applies multiple file additions/updates in `O(F + B)` instead of `O(F * B)`
+    /// by indexing existing file paths once for the batch.
+    pub fn apply_changes<I>(&mut self, changes: I)
+    where
+        I: IntoIterator<Item = File>,
+    {
+        let mut iter = changes.into_iter();
+        let Some(first) = iter.next() else {
+            return;
+        };
+        let Some(second) = iter.next() else {
+            self.apply_change(first);
+            return;
+        };
+
+        let (lower_hint, _) = iter.size_hint();
+        let mut index: HashMap<String, usize> = HashMap::with_capacity(
+            self.files
+                .len()
+                .saturating_add(2)
+                .saturating_add(lower_hint),
+        );
+        for (pos, file) in self.files.iter().enumerate() {
+            // Preserve `Iterator::position` first-match semantics if duplicates exist.
+            index.entry(file.file_path.clone()).or_insert(pos);
+        }
+
+        self.files.reserve(2usize.saturating_add(lower_hint));
+        for change in [first, second].into_iter().chain(iter) {
+            if let Some(&pos) = index.get(&change.file_path) {
+                self.files[pos] = change;
+            } else {
+                let pos = self.files.len();
+                index.insert(change.file_path.clone(), pos);
+                self.files.push(change);
+            }
+        }
+    }
 }
 
 impl MetastoreObject for Manifest {
@@ -189,29 +242,88 @@ impl MetastoreObject for Manifest {
     }
 }
 
-pub fn create_from_parquet_file(
+const MAX_PARQUET_METADATA_CACHE_ENTRIES: usize = 2048;
+const PARQUET_METADATA_CACHE_TTL: Duration = Duration::from_secs(900);
+
+struct CachedParquetMetaData {
+    metadata: Arc<ParquetMetaData>,
+    inserted_at: Instant,
+}
+
+static PARQUET_METADATA_CACHE: LazyLock<DashMap<PathBuf, CachedParquetMetaData>> =
+    LazyLock::new(DashMap::new);
+
+/// Caches the `ParquetMetaData` returned by `ArrowWriter::close()` for a newly
+/// staged Parquet file so upload manifest creation can reuse it in memory
+/// without re-opening the file and re-parsing its footer.
+pub fn cache_parquet_metadata(path: &Path, metadata: Arc<ParquetMetaData>) {
+    let now = Instant::now();
+    if !PARQUET_METADATA_CACHE.contains_key(path)
+        && PARQUET_METADATA_CACHE.len() >= MAX_PARQUET_METADATA_CACHE_ENTRIES
+    {
+        PARQUET_METADATA_CACHE
+            .retain(|_, entry| now.duration_since(entry.inserted_at) < PARQUET_METADATA_CACHE_TTL);
+        let mut attempts = 0usize;
+        while PARQUET_METADATA_CACHE.len() >= MAX_PARQUET_METADATA_CACHE_ENTRIES && attempts < 8 {
+            attempts += 1;
+            let mut oldest: Option<(Instant, PathBuf)> = None;
+            for entry in PARQUET_METADATA_CACHE.iter() {
+                let ts = entry.value().inserted_at;
+                if oldest.as_ref().is_none_or(|(min_ts, _)| ts < *min_ts) {
+                    oldest = Some((ts, entry.key().clone()));
+                }
+            }
+            let Some((_, key)) = oldest else {
+                break;
+            };
+            PARQUET_METADATA_CACHE.remove(&key);
+        }
+    }
+    PARQUET_METADATA_CACHE.insert(
+        path.to_path_buf(),
+        CachedParquetMetaData {
+            metadata,
+            inserted_at: now,
+        },
+    );
+}
+
+/// Takes and removes cached `ParquetMetaData` for a staged Parquet path, if present and fresh.
+pub fn take_parquet_metadata(path: &Path) -> Option<Arc<ParquetMetaData>> {
+    let (_, entry) = PARQUET_METADATA_CACHE.remove(path)?;
+    if entry.inserted_at.elapsed() < PARQUET_METADATA_CACHE_TTL {
+        Some(entry.metadata)
+    } else {
+        None
+    }
+}
+
+/// Removes any cached `ParquetMetaData` for `path` (e.g. when a staged file is retired).
+pub fn evict_parquet_metadata(path: &Path) {
+    PARQUET_METADATA_CACHE.remove(path);
+}
+
+/// Builds a manifest `File` entry directly from in-memory `ParquetMetaData` and
+/// the known on-disk `file_size`, avoiding any disk I/O or footer re-parse.
+pub fn create_from_parquet_metadata(
     object_store_path: String,
-    fs_file_path: &std::path::Path,
-) -> anyhow::Result<File> {
+    file_size: u64,
+    metadata: &ParquetMetaData,
+) -> File {
+    let file_meta = metadata.file_metadata();
+    let row_groups = metadata.row_groups();
+
     let mut manifest_file = File {
         file_path: object_store_path,
-        ..File::default()
+        file_size,
+        num_rows: file_meta.num_rows() as u64,
+        ingestion_size: row_groups
+            .iter()
+            .fold(0, |acc, x| acc + x.total_byte_size() as u64),
+        columns: column_statistics(row_groups).into_values().collect(),
+        sort_order_id: Vec::new(),
     };
 
-    let file = std::fs::File::open(fs_file_path)?;
-    manifest_file.file_size = file.metadata()?.len();
-
-    let file = parquet::file::serialized_reader::SerializedFileReader::new(file)?;
-    let file_meta = file.metadata().file_metadata();
-    let row_groups = file.metadata().row_groups();
-
-    manifest_file.num_rows = file_meta.num_rows() as u64;
-    manifest_file.ingestion_size = row_groups
-        .iter()
-        .fold(0, |acc, x| acc + x.total_byte_size() as u64);
-
-    let columns = column_statistics(row_groups);
-    manifest_file.columns = columns.into_values().collect();
     let mut sort_orders = sort_order(row_groups);
     if let Some(last_sort_order) = sort_orders.pop()
         && sort_orders
@@ -221,7 +333,30 @@ pub fn create_from_parquet_file(
         manifest_file.sort_order_id = last_sort_order;
     }
 
-    Ok(manifest_file)
+    manifest_file
+}
+
+pub fn create_from_parquet_file(
+    object_store_path: String,
+    fs_file_path: &std::path::Path,
+) -> anyhow::Result<File> {
+    if let Some(metadata) = take_parquet_metadata(fs_file_path) {
+        let file_size = std::fs::metadata(fs_file_path)?.len();
+        return Ok(create_from_parquet_metadata(
+            object_store_path,
+            file_size,
+            &metadata,
+        ));
+    }
+
+    let file = std::fs::File::open(fs_file_path)?;
+    let file_size = file.metadata()?.len();
+    let file = parquet::file::serialized_reader::SerializedFileReader::new(file)?;
+    Ok(create_from_parquet_metadata(
+        object_store_path,
+        file_size,
+        file.metadata(),
+    ))
 }
 
 fn sort_order(
@@ -608,5 +743,180 @@ mod sorting_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod handoff_and_batch_tests {
+    use std::sync::Arc;
+
+    use arrow_array::{BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field as ArrowField, Schema};
+    use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    fn test_file(path: &str, num_rows: u64) -> File {
+        File {
+            file_path: path.to_owned(),
+            num_rows,
+            file_size: num_rows * 16,
+            ingestion_size: num_rows * 32,
+            columns: Vec::new(),
+            sort_order_id: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cached_parquet_metadata_matches_disk_parse() {
+        let schema = Arc::new(Schema::new(vec![
+            ArrowField::new("ts", DataType::Int64, false),
+            ArrowField::new("msg", DataType::Utf8, true),
+            ArrowField::new("score", DataType::Float64, true),
+            ArrowField::new("ok", DataType::Boolean, true),
+        ]));
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![100, 200, 300, 400])),
+                Arc::new(StringArray::from(vec![
+                    Some("a"),
+                    None,
+                    Some("c"),
+                    Some("b"),
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    Some(1.5),
+                    Some(2.5),
+                    None,
+                    Some(0.5),
+                ])),
+                Arc::new(BooleanArray::from(vec![
+                    Some(true),
+                    Some(false),
+                    None,
+                    Some(true),
+                ])),
+            ],
+        )
+        .unwrap();
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![500, 600, 700])),
+                Arc::new(StringArray::from(vec![Some("z"), Some("m"), None])),
+                Arc::new(Float64Array::from(vec![Some(9.25), None, Some(-3.0)])),
+                Arc::new(BooleanArray::from(vec![
+                    Some(false),
+                    Some(false),
+                    Some(true),
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let file = NamedTempFile::new().unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(4))
+            .set_sorting_columns(Some(vec![SortingColumn {
+                column_idx: 0,
+                descending: false,
+                nulls_first: false,
+            }]))
+            .build();
+        let mut writer = ArrowWriter::try_new(file.reopen().unwrap(), schema, Some(props)).unwrap();
+        writer.write(&batch1).unwrap();
+        writer.write(&batch2).unwrap();
+        let writer_metadata = Arc::new(writer.close().unwrap());
+
+        let disk_manifest =
+            create_from_parquet_file("stream/part.parquet".to_owned(), file.path()).unwrap();
+
+        cache_parquet_metadata(file.path(), writer_metadata);
+        let cached_manifest =
+            create_from_parquet_file("stream/part.parquet".to_owned(), file.path()).unwrap();
+
+        // Cache entry is consumed on first read.
+        assert!(take_parquet_metadata(file.path()).is_none());
+
+        assert_eq!(disk_manifest.file_path, cached_manifest.file_path);
+        assert_eq!(disk_manifest.num_rows, cached_manifest.num_rows);
+        assert_eq!(disk_manifest.file_size, cached_manifest.file_size);
+        assert_eq!(disk_manifest.ingestion_size, cached_manifest.ingestion_size);
+        assert_eq!(disk_manifest.sort_order_id, cached_manifest.sort_order_id);
+
+        let mut disk_cols = disk_manifest.columns;
+        let mut cached_cols = cached_manifest.columns;
+        disk_cols.sort_by(|a, b| a.name.cmp(&b.name));
+        cached_cols.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(
+            serde_json::to_value(&disk_cols).unwrap(),
+            serde_json::to_value(&cached_cols).unwrap()
+        );
+    }
+
+    #[test]
+    fn manifest_apply_changes_matches_sequential_apply_change() {
+        let initial = Manifest {
+            version: CURRENT_MANIFEST_VERSION.to_owned(),
+            files: (0..25)
+                .map(|i| test_file(&format!("stream/file-{i}.parquet"), i as u64 + 1))
+                .collect(),
+        };
+
+        // Empty and single-item batches.
+        let mut empty = initial.clone();
+        empty.apply_changes(Vec::new());
+        assert_eq!(empty.files.len(), initial.files.len());
+
+        let mut single_batch = initial.clone();
+        let mut single_seq = initial.clone();
+        single_batch.apply_changes(vec![test_file("stream/file-5.parquet", 999)]);
+        single_seq.apply_change(test_file("stream/file-5.parquet", 999));
+        assert_eq!(
+            serde_json::to_value(&single_batch).unwrap(),
+            serde_json::to_value(&single_seq).unwrap()
+        );
+
+        // Multi-item batch with replacements, new appends, and duplicate keys within the batch.
+        let batch = vec![
+            test_file("stream/file-2.parquet", 200),
+            test_file("stream/file-25.parquet", 250),
+            test_file("stream/file-10.parquet", 1000),
+            test_file("stream/file-25.parquet", 251),
+            test_file("stream/file-26.parquet", 260),
+            test_file("stream/file-2.parquet", 201),
+        ];
+
+        let mut batched = initial.clone();
+        batched.apply_changes(batch.clone());
+
+        let mut sequential = initial;
+        for change in batch {
+            sequential.apply_change(change);
+        }
+
+        assert_eq!(
+            serde_json::to_value(&batched).unwrap(),
+            serde_json::to_value(&sequential).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn encode_manifest_blocking_round_trips() {
+        let manifest = Manifest {
+            version: CURRENT_MANIFEST_VERSION.to_owned(),
+            files: vec![
+                test_file("stream/file-0.parquet", 10),
+                test_file("stream/file-1.parquet", 20),
+            ],
+        };
+        let encoded = encode_manifest_blocking(manifest.clone()).await.unwrap();
+        let decoded = decode_manifest_blocking(encoded).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(&decoded).unwrap(),
+            serde_json::to_value(&manifest).unwrap()
+        );
     }
 }

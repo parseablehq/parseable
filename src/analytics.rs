@@ -26,7 +26,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
-use sysinfo::System;
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tracing::{error, info};
 use ulid::Ulid;
 
@@ -56,6 +56,20 @@ pub static SYS_INFO: Lazy<Mutex<System>> = Lazy::new(|| Mutex::new(System::new_a
 pub fn refresh_sys_info() {
     let mut sys_info = SYS_INFO.lock().unwrap();
     sys_info.refresh_all();
+}
+
+/// Refreshes only what a process metrics sample reads: the CPU and memory
+/// usage of process `pid`, and system memory, which `cgroup_limits` and
+/// `total_memory` need. `refresh_all` also rescans every other process on the
+/// host, every CPU and the network and disk lists, which the periodic sample
+/// never reads. Blocking: it reads `/proc`.
+pub fn refresh_process_info(sys: &mut System, pid: Pid) {
+    sys.refresh_memory();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_cpu().with_memory(),
+    );
 }
 
 #[derive(Serialize, Deserialize)]

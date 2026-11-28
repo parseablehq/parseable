@@ -50,7 +50,7 @@ use crate::{
     parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         EXPIRY_DURATION,
-        map::{SessionKey, mut_sessions, sessions, users},
+        map::{EphemeralSession, SessionKey, mut_sessions, sessions, users},
         roles_to_permission, user,
         user::UserType,
     },
@@ -198,37 +198,35 @@ where
             };
 
         // If an API key is present in X-API-KEY or as a Bearer token, resolve it to the backing
-        // `UserType::ApiKey` user and register an ephemeral session whose
+        // `UserType::ApiKey` user and attach a request-local session whose
         // permissions are derived from the user's assigned roles (same flow
         // as native/OAuth users). The request then falls through to the
-        // normal auth check, which consults the session permissions.
-        let api_key_session_id = if let Some(api_key) = extract_api_key(&req) {
+        // normal auth check, which consults the session permissions. The
+        // session lives in the request's extensions only, so it is never
+        // entered into SESSIONS and ends with the request.
+        let api_key_session = if let Some(api_key) = extract_api_key(&req) {
             let tenant_id: Option<String> = tenant_id.clone();
             match find_api_key_user(&api_key, &tenant_id) {
                 Some(user) => {
                     let Some(api_key) = user.as_api_key() else {
                         return Box::pin(async { Err(ErrorUnauthorized("Invalid API key")) });
                     };
-                    // Fallible header work happens before the session is
-                    // tracked so a failure cannot leave a session behind.
                     if let Err(error) =
                         insert_api_key_tenant_header(&mut req, &user, is_multi_tenant())
                     {
                         return Box::pin(async move { Err(Error::from(error)) });
                     }
                     let tenant = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
-                    let permissions = roles_to_permission(user.roles(), tenant);
-                    let session_id = Ulid::new();
-                    let session_key = SessionKey::SessionId(session_id);
-                    mut_sessions().track_new(
-                        user.userid().to_owned(),
-                        session_key.clone(),
-                        api_key.session_expires_at(Utc::now()),
-                        permissions,
-                        &user.tenant,
-                    );
-                    req.extensions_mut().insert(session_key);
-                    Some(session_id)
+                    let session = Arc::new(EphemeralSession {
+                        id: Ulid::new(),
+                        userid: user.userid().to_owned(),
+                        tenant: tenant.to_owned(),
+                        expires_at: api_key.session_expires_at(Utc::now()),
+                        permissions: roles_to_permission(user.roles(), tenant),
+                    });
+                    req.extensions_mut()
+                        .insert(SessionKey::Ephemeral(Arc::clone(&session)));
+                    Some(session)
                 }
                 None => {
                     let source_ip = req
@@ -265,10 +263,6 @@ where
         } else {
             None
         };
-        // Owned from here so the session is removed even if the returned
-        // future is dropped before it is first polled.
-        let api_key_guard = EphemeralSessionGuard(api_key_session_id);
-
         let key: Result<SessionKey, Error> = extract_session_key(&mut req);
 
         // if action is ingestion, the client-supplied tenant header must match
@@ -278,14 +272,15 @@ where
             && let (_, Some(tenant)) = &user_and_tenant_id
         {
             // Basic credentials are verified against the users of that tenant.
-            // Every other credential is a tracked session (cookie, forwarded
-            // or API-key) already bound to the tenant it was issued in, so the
-            // claimed tenant must be the session's own.
+            // Every other credential is a session (a tracked cookie session,
+            // or the request-local one of a forwarded or API-key request)
+            // already bound to the tenant it was issued in, so the claimed
+            // tenant must be the session's own.
             let tenant_matches = match &key {
                 SessionKey::BasicAuth { username, password } => {
                     Users.validate_basic_user_tenant_id(username, password, tenant)
                 }
-                session @ SessionKey::SessionId(_) => Users
+                session @ (SessionKey::SessionId(_) | SessionKey::Ephemeral(_)) => Users
                     .get_userid_from_session(session)
                     .is_some_and(|(_, session_tenant)| session_tenant.eq(tenant)),
             };
@@ -297,15 +292,10 @@ where
         }
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
-        let headers = req.headers().clone();
         let service = Rc::clone(&self.service);
         let auth_method = self.auth_method;
         let action = self.action;
         Box::pin(async move {
-            // Cleans up the ephemeral session created for an API-key request
-            // when this future finishes (success OR failure) or is dropped.
-            let _api_key_guard = api_key_guard;
-
             let Ok(key) = key else {
                 return Err(ErrorUnauthorized(
                     "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
@@ -316,25 +306,51 @@ where
                 return Err(err);
             }
 
-            auth_result?;
-            let api_key_session = api_key_session_id.map(SessionKey::SessionId);
+            let first_response = auth_result?;
             // Basic auth retains its existing precedence when both mechanisms
-            // are supplied. Only the selected non-API session may be refreshed.
-            if api_key_session.as_ref() != Some(&key) && sessions().is_session_expired(&key) {
-                refresh_token(Ok(user_and_tenant_id), &key, headers).await?;
-            }
-            if let Some(api_key_session) = &api_key_session {
-                // This per-request session is capped by the credential's expiry.
-                // Check it after any Basic refresh without scanning users again.
-                let sessions = sessions();
-                if sessions.get(api_key_session).is_none()
-                    || sessions.is_session_expired(api_key_session)
-                {
-                    return Err(ErrorUnauthorized("Invalid API key"));
+            // are supplied. Only the selected tracked session may be refreshed;
+            // a request-local one (API key or forwarded) is never renewed.
+            let mut refreshed = false;
+            match &key {
+                SessionKey::Ephemeral(session) => {
+                    let is_api_key_session = api_key_session
+                        .as_ref()
+                        .is_some_and(|api_key_session| api_key_session.id == session.id);
+                    // The API-key session's expiry is reported below.
+                    if !is_api_key_session && session.is_expired() {
+                        return Err(ErrorUnauthorized(SESSION_EXPIRED));
+                    }
+                }
+                key => {
+                    if sessions().is_session_expired(key) {
+                        // The refresh is the only reader of the headers, so
+                        // they are copied only when a refresh is actually
+                        // attempted. Nothing changes them between `call` and
+                        // this point.
+                        let headers = req.headers().clone();
+                        refresh_token(Ok(user_and_tenant_id), key, headers).await?;
+                        refreshed = true;
+                    }
                 }
             }
-            // Recheck after any async refresh or administrative grant change.
-            match auth_method(&mut req, action)? {
+            if let Some(api_key_session) = &api_key_session
+                && api_key_session.is_expired()
+            {
+                // This per-request session is capped by the credential's expiry.
+                // Check it after any Basic refresh without scanning users again.
+                return Err(ErrorUnauthorized("Invalid API key"));
+            }
+            // Recheck after an async refresh, which may have replaced the
+            // session's permissions. Without one, an `Authorized` decision
+            // made in `call` stands: the session is the same one it was made
+            // on (an expired one was refreshed above). Every other decision
+            // is re-evaluated, so a rejection reflects the current grants.
+            let response = if !refreshed && first_response == rbac::Response::Authorized {
+                first_response
+            } else {
+                auth_method(&mut req, action)?
+            };
+            match response {
                 rbac::Response::UnAuthorized => {
                     return Err(ErrorForbidden(
                         "You don't have permission to access this resource. Please contact your administrator for assistance.",
@@ -404,18 +420,6 @@ fn extract_api_key(req: &ServiceRequest) -> Option<String> {
         })
         .filter(|api_key| !api_key.is_empty())
         .map(String::from)
-}
-
-/// Removes an ephemeral session when dropped, so the session is cleaned up
-/// whether the request future completes, fails or is cancelled.
-struct EphemeralSessionGuard(Option<Ulid>);
-
-impl Drop for EphemeralSessionGuard {
-    fn drop(&mut self) {
-        if let Some(sid) = self.0 {
-            mut_sessions().remove_session(&SessionKey::SessionId(sid));
-        }
-    }
 }
 
 /// The client-supplied tenant used to scope an API-key lookup: `x-p-tenant`,
@@ -517,20 +521,63 @@ fn find_api_key_user(api_key_value: &str, tenant_id: &Option<String>) -> Option<
         DEFAULT_TENANT
     };
 
-    let users_guard = users();
-    let tenant_users = users_guard.get(tenant)?;
     let now = Utc::now();
     // Stored keys are hashes: hash the presented one once for the whole scan
-    let hash = user::hash_api_key(api_key_value);
-    tenant_users.values().find_map(|user| {
-        if let UserType::ApiKey(api_key) = &user.ty
-            && api_key.matches_active_hash(&hash, now)
-        {
-            Some(user.clone())
-        } else {
-            None
+    let hint_key = (tenant.to_owned(), user::hash_api_key(api_key_value));
+    let hash = hint_key.1.as_str();
+    let matches = |user: &user::User| matches!(&user.ty, UserType::ApiKey(api_key) if api_key.matches_active_hash(hash, now));
+    // Copied out so no hint shard lock is held while USERS is read.
+    let hinted = API_KEY_USER_HINTS
+        .get(&hint_key)
+        .map(|userid| userid.value().clone());
+
+    let had_hint = hinted.is_some();
+    let found = {
+        let users_guard = users();
+        users_guard.get(tenant).and_then(|tenant_users| {
+            let hinted_user = hinted
+                .as_deref()
+                .and_then(|userid| tenant_users.get(userid))
+                .filter(|user| matches(user));
+            hinted_user
+                .or_else(|| tenant_users.values().find(|user| matches(user)))
+                .cloned()
+        })
+    };
+
+    match &found {
+        Some(user) => remember_api_key_user(hint_key, user.userid()),
+        None if had_hint => {
+            API_KEY_USER_HINTS.remove(&hint_key);
         }
-    })
+        None => {}
+    }
+    found
+}
+
+/// Which user a presented API key last resolved to, keyed by the tenant the
+/// lookup was scoped to and the key's SHA-256 (`hash_api_key`), so a repeat
+/// request reads one user instead of scanning the tenant.
+///
+/// An entry is only a hint: the user it names is re-read from USERS and must
+/// still pass `matches_active_hash` with the presented key's hash, otherwise
+/// the tenant is scanned as before. Rotation, revocation, deletion, expiry and
+/// role changes therefore apply on the very next request with no
+/// invalidation. Only keys that resolved are recorded, so presenting invalid
+/// keys cannot grow the map; it is cleared if it ever reaches its cap.
+static API_KEY_USER_HINTS: Lazy<DashMap<(String, String), String>> = Lazy::new(DashMap::new);
+const API_KEY_USER_HINTS_CAPACITY: usize = 10_000;
+
+fn remember_api_key_user(hint_key: (String, String), userid: &str) {
+    if let Some(hinted) = API_KEY_USER_HINTS.get(&hint_key)
+        && hinted.value() == userid
+    {
+        return;
+    }
+    if API_KEY_USER_HINTS.len() >= API_KEY_USER_HINTS_CAPACITY {
+        API_KEY_USER_HINTS.clear();
+    }
+    API_KEY_USER_HINTS.insert(hint_key, userid.to_owned());
 }
 
 /// Resolve the requesting user and tenant. Client header problems are
@@ -608,6 +655,14 @@ pub async fn refresh_token(
     key: &SessionKey,
     headers: HeaderMap,
 ) -> Result<(), Error> {
+    // A request-local session is never renewed into SESSIONS.
+    if let SessionKey::Ephemeral(session) = key {
+        return if session.is_expired() {
+            Err(ErrorUnauthorized(SESSION_EXPIRED))
+        } else {
+            Ok(())
+        };
+    }
     if !sessions().is_session_expired(key) {
         return Ok(());
     }
@@ -740,21 +795,11 @@ pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<rbac:
     if let rbac::Response::Suspended(msg) = check_suspension(req.request(), action) {
         return Ok(rbac::Response::Suspended(msg));
     }
-    let creds = if let Some(session) = req.extensions().get::<SessionKey>() {
-        Ok(session.clone())
-    } else {
-        extract_session_key(req)
-    };
-    // let creds = extract_session_key(req);
-    creds.map(|key| Users.authorize(key, action, None, None))
+    extract_session_key(req).map(|key| Users.authorize(key, action, None, None))
 }
 
 fn auth_session_only(req: &mut ServiceRequest, _action: Action) -> Result<rbac::Response, Error> {
-    let cached = { req.extensions().get::<SessionKey>().cloned() };
-    let key = match cached {
-        Some(key) => key,
-        None => extract_session_key(req)?,
-    };
+    let key = extract_session_key(req)?;
     if !Users.session_exists(&key) {
         // Basic credentials are verified and lazily registered by authorize.
         // Its resource decision is intentionally left to the selected tool.
@@ -900,33 +945,23 @@ where
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         // Without a configured secret the request passes through unchanged.
-        let session_guard = match CLUSTER_SECRET.get() {
-            Some((secret, _)) => match authenticate_intra_cluster_request(&mut req, secret) {
-                Ok(guard) => guard,
-                // Rejected before the inner service sees the request.
-                Err(error) => return Box::pin(async move { Err(error) }),
-            },
-            None => EphemeralSessionGuard(None),
-        };
+        if let Some((secret, _)) = CLUSTER_SECRET.get()
+            && let Err(error) = authenticate_intra_cluster_request(&mut req, secret)
+        {
+            // Rejected before the inner service sees the request.
+            return Box::pin(async move { Err(error) });
+        }
 
-        let fut = self.service.call(req);
-
-        Box::pin(async move {
-            // The forwarded user's session ends with this request.
-            let _session_guard = session_guard;
-            fut.await
-        })
+        // The forwarded user's session lives in the request and ends with it.
+        Box::pin(self.service.call(req))
     }
 }
 
 /// Verify the forwarded cluster credentials and give the forwarded user a
-/// short-lived session. Credentials present but not visible ASCII, or a
+/// short-lived request-local session (never entered into SESSIONS). Credentials present but not visible ASCII, or a
 /// secret that is not a PHC password hash, are 400; missing or wrong
 /// credentials are 401. Submitted values never appear in errors.
-fn authenticate_intra_cluster_request(
-    req: &mut ServiceRequest,
-    secret: &str,
-) -> Result<EphemeralSessionGuard, Error> {
+fn authenticate_intra_cluster_request(req: &mut ServiceRequest, secret: &str) -> Result<(), Error> {
     let headers = req.headers();
     let incoming_secret = optional_header_str(headers, CLUSTER_SECRET_HEADER)?;
     let tenant = optional_header_str(headers, INTRA_CLUSTER_TENANT_HEADER)?;
@@ -938,8 +973,92 @@ fn authenticate_intra_cluster_request(
         ));
     };
 
-    // validate the incoming header value
-    let parsed_hash = PasswordHash::new(incoming_secret)
+    verify_cluster_secret_hash(secret, incoming_secret)?;
+
+    let tenant_id = if tenant.eq(DEFAULT_TENANT) {
+        None
+    } else {
+        Some(tenant.to_owned())
+    };
+    let Some(user) = Users.get_user(userid, &tenant_id) else {
+        return Ok(());
+    };
+    let now = Utc::now();
+    // Forwarded work must not outlive the API key that authorized it.
+    if user
+        .as_api_key()
+        .is_some_and(|api_key| api_key.is_expired_at(now))
+    {
+        return Err(ErrorUnauthorized("Invalid API key"));
+    }
+
+    // Build the cookie before attaching the session so a failure here leaves
+    // the request untouched.
+    let id = Ulid::new();
+    let cookie = HeaderValue::from_str(&format!("session={id}"))
+        .map_err(|_| HeaderBuildError::Internal("intra-cluster session cookie"))?;
+    req.headers_mut().insert(header::COOKIE, cookie);
+
+    // remove basic auth header
+    req.headers_mut().remove(header::AUTHORIZATION);
+
+    let tenant = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
+    let expires_at = now + TimeDelta::seconds(20);
+    let expires_at = user
+        .as_api_key()
+        .map_or(expires_at, |api_key| api_key.cap_session_expiry(expires_at));
+    let session = EphemeralSession {
+        id,
+        userid: user.userid().to_owned(),
+        tenant: tenant.to_owned(),
+        expires_at,
+        permissions: roles_to_permission(user.roles(), tenant),
+    };
+    req.extensions_mut()
+        .insert(SessionKey::Ephemeral(Arc::new(session)));
+    Ok(())
+}
+
+/// PHC hashes of the cluster secret that already passed Argon2 verification,
+/// as `(secret, hash)`. A node sends the same hash with every forwarded
+/// request, so after the first one a peer's requests are checked with a
+/// constant-time comparison instead of a fresh Argon2id verification on the
+/// worker thread. Only hashes that verified against the paired secret are
+/// recorded, so learning one requires the secret, and any other value is
+/// parsed and verified exactly as before. Each peer contributes the hash it
+/// was started with; the cap only bounds memory, evicting the oldest first.
+static VERIFIED_CLUSTER_HASHES: Lazy<parking_lot::RwLock<Vec<(String, String)>>> =
+    Lazy::new(|| parking_lot::RwLock::new(Vec::new()));
+const VERIFIED_CLUSTER_HASHES_CAPACITY: usize = 64;
+
+/// Byte equality whose time depends only on the lengths, so a caller cannot
+/// learn a remembered hash byte by byte from response timing.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).fold(0u8, |differing, (a, b)| {
+            std::hint::black_box(differing | (a ^ b))
+        }) == 0
+}
+
+fn cluster_hash_already_verified(secret: &str, incoming_hash: &str) -> bool {
+    // Every entry is compared, so the time does not reveal which one matched.
+    VERIFIED_CLUSTER_HASHES
+        .read()
+        .iter()
+        .fold(false, |found, (known_secret, known_hash)| {
+            let secret_matches = constant_time_eq(known_secret.as_bytes(), secret.as_bytes());
+            let hash_matches = constant_time_eq(known_hash.as_bytes(), incoming_hash.as_bytes());
+            found | (secret_matches & hash_matches)
+        })
+}
+
+/// Checks that `incoming_hash` is a PHC hash of `secret`: 400 if it is not a
+/// PHC string, 401 if it does not verify.
+fn verify_cluster_secret_hash(secret: &str, incoming_hash: &str) -> Result<(), Error> {
+    if cluster_hash_already_verified(secret, incoming_hash) {
+        return Ok(());
+    }
+    let parsed_hash = PasswordHash::new(incoming_hash)
         .map_err(|_| ErrorBadRequest("Incoming intra-cluster secret is malformed"))?;
     if Argon2::default()
         .verify_password(secret.as_bytes(), &parsed_hash)
@@ -950,36 +1069,18 @@ fn authenticate_intra_cluster_request(
         ));
     }
 
-    let tenant_id = if tenant.eq(DEFAULT_TENANT) {
-        None
-    } else {
-        Some(tenant.to_owned())
-    };
-    let Some(user) = Users.get_user(userid, &tenant_id) else {
-        return Ok(EphemeralSessionGuard(None));
-    };
-    // Forwarded work must not outlive the API key that authorized it.
-    if user
-        .as_api_key()
-        .is_some_and(|api_key| api_key.is_expired_at(Utc::now()))
+    let mut verified = VERIFIED_CLUSTER_HASHES.write();
+    // Another request may have recorded it while this one verified.
+    if !verified
+        .iter()
+        .any(|(known_secret, known_hash)| known_secret == secret && known_hash == incoming_hash)
     {
-        return Err(ErrorUnauthorized("Invalid API key"));
+        if verified.len() >= VERIFIED_CLUSTER_HASHES_CAPACITY {
+            verified.remove(0);
+        }
+        verified.push((secret.to_owned(), incoming_hash.to_owned()));
     }
-
-    // Build the cookie before registering the session so a failure here
-    // cannot leave a session behind.
-    let id = Ulid::new();
-    let cookie = HeaderValue::from_str(&format!("session={id}"))
-        .map_err(|_| HeaderBuildError::Internal("intra-cluster session cookie"))?;
-    req.headers_mut().insert(header::COOKIE, cookie);
-
-    // remove basic auth header
-    req.headers_mut().remove(header::AUTHORIZATION);
-
-    let session = SessionKey::SessionId(id);
-    req.extensions_mut().insert(session.clone());
-    Users.new_session(&user, session, TimeDelta::seconds(20));
-    Ok(EphemeralSessionGuard(Some(id)))
+    Ok(())
 }
 
 /// ModeFilterMiddleware factory
@@ -1535,23 +1636,39 @@ mod api_key_auth_tests {
         headers
     }
 
-    /// Simulates the key's deadline passing after its session was registered.
+    /// Lets the key's deadline pass after its request-local session was
+    /// attached, by waiting out the (short) expiry the session carries.
     fn expire_session_then_authorize(
         req: &mut ServiceRequest,
         action: Action,
     ) -> Result<rbac::Response, Error> {
         let key = req.extensions().get::<SessionKey>().cloned().unwrap();
-        if let Some((userid, tenant)) = Users.get_userid_from_session(&key) {
-            let permissions = sessions().get(&key).cloned().unwrap_or_default();
-            mut_sessions().track_new(
-                userid,
-                key,
-                Utc::now() - TimeDelta::seconds(1),
-                permissions,
-                &Some(tenant),
-            );
-        }
+        let SessionKey::Ephemeral(session) = &key else {
+            unreachable!("an API-key request carries a request-local session");
+        };
+        let wait = (session.expires_at - Utc::now())
+            .to_std()
+            .unwrap_or_default();
+        assert!(wait < std::time::Duration::from_secs(5), "{wait:?}");
+        std::thread::sleep(wait + std::time::Duration::from_millis(5));
+        assert!(session.is_expired());
         auth_no_context(req, action)
+    }
+
+    /// The request-local session an inner service sees, and whether the
+    /// request's user had a tracked session while it was handled.
+    fn seen_session(req: &ServiceRequest) -> (Option<SessionKey>, bool) {
+        let key = req.extensions().get::<SessionKey>().cloned();
+        let tracked = key
+            .as_ref()
+            .and_then(|key| Users.get_userid_from_session(key))
+            .is_some_and(|(userid, _)| {
+                sessions()
+                    .get_active_sessions()
+                    .iter()
+                    .any(|(_, tracked, _)| tracked == &userid)
+            });
+        (key, tracked)
     }
 
     #[actix_web::test]
@@ -1595,14 +1712,16 @@ mod api_key_auth_tests {
     #[actix_web::test]
     async fn api_key_expiring_after_session_registration_is_rejected() {
         let _state = auth_state().await;
-        let (user, secret) = api_key_user(Some(Utc::now() + TimeDelta::hours(1)));
-        for header in api_key_headers(&secret) {
+        for index in 0..2 {
+            // Long enough for `call` to resolve the still-active key.
+            let (user, secret) = api_key_user(Some(Utc::now() + TimeDelta::milliseconds(500)));
+            let header = api_key_headers(&secret)[index].clone();
             assert_eq!(
                 request(expire_session_then_authorize, false, &[header]).await,
                 StatusCode::UNAUTHORIZED
             );
+            assert!(!has_sessions(&user));
         }
-        assert!(!has_sessions(&user));
     }
 
     #[actix_web::test]
@@ -1673,6 +1792,56 @@ mod api_key_auth_tests {
             assert_eq!(sessions().is_session_expired(&session), expired);
             mut_sessions().remove_session(&session);
         }
+    }
+
+    // A forwarded request gets a request-local session for the forwarded
+    // user, capped by an API key's expiry, and nothing is tracked.
+    #[test]
+    fn forwarded_requests_get_a_request_local_session() {
+        let _state = blocking_auth_state();
+        let tracked = sessions().get_active_sessions().len();
+        let now = Utc::now();
+        let soon = now + TimeDelta::seconds(5);
+        for (expires_at, cap) in [
+            (None, None),
+            (Some(now + TimeDelta::hours(1)), None),
+            (Some(soon), Some(soon)),
+        ] {
+            let (user, _) = api_key_user(expires_at);
+            let mut req = actix_test::TestRequest::default();
+            for header in cluster_headers(&user) {
+                req = req.insert_header(header);
+            }
+            let mut req = req.to_srv_request();
+            authenticate_intra_cluster_request(&mut req, CLUSTER_TEST_SECRET).unwrap();
+
+            let Some(SessionKey::Ephemeral(session)) =
+                req.extensions().get::<SessionKey>().cloned()
+            else {
+                panic!("a forwarded request carries a request-local session");
+            };
+            assert_eq!(session.userid, user.userid());
+            assert_eq!(session.tenant, DEFAULT_TENANT);
+            // Role order is a set's, so compare the grants as sets.
+            assert_eq!(
+                session.permissions.iter().collect::<HashSet<_>>(),
+                roles_to_permission(user.roles(), DEFAULT_TENANT)
+                    .iter()
+                    .collect::<HashSet<_>>()
+            );
+            match cap {
+                Some(cap) => assert_eq!(session.expires_at, cap),
+                None => assert!(
+                    session.expires_at > now
+                        && session.expires_at <= Utc::now() + TimeDelta::seconds(20)
+                ),
+            }
+            // The cookie names the same session, as before.
+            let cookie = req.headers().get(header::COOKIE).unwrap().to_str().unwrap();
+            assert_eq!(cookie, format!("session={}", session.id));
+            assert!(!has_sessions(&user));
+        }
+        assert_eq!(sessions().get_active_sessions().len(), tracked);
     }
 
     #[actix_web::test]
@@ -2133,8 +2302,285 @@ mod api_key_auth_tests {
 
         let outcome = call_app(counting_auth, true, "/", &valid).await;
         assert_eq!(outcome.status, StatusCode::OK);
-        assert_eq!((outcome.handled, outcome.auth_calls), (1, 2));
+        // Authorized in `call` with no refresh, so the decision is not re-run.
+        assert_eq!((outcome.handled, outcome.auth_calls), (1, 1));
         assert!(!has_sessions(&user));
+    }
+
+    /// Default Argon2 parameters take seconds per hash in debug builds;
+    /// verification uses the parameters recorded in the hash.
+    fn cheap_hash(secret: &str) -> String {
+        use argon2::{Algorithm, Params, Version};
+        let salt = SaltString::encode_b64(&Ulid::new().to_bytes()).unwrap();
+        let params = Params::new(Params::MIN_M_COST, 1, 1, None).unwrap();
+        Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+            .hash_password(secret.as_bytes(), &salt)
+            .unwrap()
+            .to_string()
+    }
+
+    fn remembered_cluster_hash(secret: &str, hash: &str) -> bool {
+        VERIFIED_CLUSTER_HASHES
+            .read()
+            .iter()
+            .any(|(known_secret, known_hash)| known_secret == secret && known_hash == hash)
+    }
+
+    #[test]
+    fn verified_cluster_hashes_are_remembered_per_secret() {
+        let secret = format!("cluster-cache-{}", Ulid::new());
+        let other_secret = format!("cluster-cache-other-{}", Ulid::new());
+        let hash = cheap_hash(&secret);
+        let status = |result: Result<(), Error>| {
+            result
+                .err()
+                .map(|error| error.as_response_error().status_code())
+        };
+
+        // A hash of another secret, or a malformed one, never verifies and
+        // is never remembered.
+        let wrong = cheap_hash(&other_secret);
+        assert_eq!(
+            status(verify_cluster_secret_hash(&secret, &wrong)),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        assert!(!remembered_cluster_hash(&secret, &wrong));
+        assert_eq!(
+            status(verify_cluster_secret_hash(&secret, "not-a-phc-hash")),
+            Some(StatusCode::BAD_REQUEST)
+        );
+        assert!(!remembered_cluster_hash(&secret, "not-a-phc-hash"));
+
+        // The first request runs Argon2 and remembers the hash; later ones
+        // are answered from the record.
+        assert!(!remembered_cluster_hash(&secret, &hash));
+        assert_eq!(status(verify_cluster_secret_hash(&secret, &hash)), None);
+        assert!(remembered_cluster_hash(&secret, &hash));
+        assert!(cluster_hash_already_verified(&secret, &hash));
+        assert_eq!(status(verify_cluster_secret_hash(&secret, &hash)), None);
+        assert_eq!(
+            VERIFIED_CLUSTER_HASHES
+                .read()
+                .iter()
+                .filter(|(known_secret, _)| known_secret == &secret)
+                .count(),
+            1
+        );
+
+        // The record is bound to the secret it verified against: the same
+        // hash presented to a node with another secret is verified afresh.
+        assert!(!cluster_hash_already_verified(&other_secret, &hash));
+        assert_eq!(
+            status(verify_cluster_secret_hash(&other_secret, &hash)),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        assert!(!remembered_cluster_hash(&other_secret, &hash));
+        // A one-character change to a remembered hash is not a hit.
+        let mut altered = hash.clone();
+        let last = altered.pop().unwrap();
+        altered.push(if last == 'A' { 'B' } else { 'A' });
+        assert!(!cluster_hash_already_verified(&secret, &altered));
+    }
+
+    #[test]
+    fn constant_time_eq_matches_plain_equality() {
+        for (a, b) in [
+            ("", ""),
+            ("a", "a"),
+            ("a", "b"),
+            ("abc", "abd"),
+            ("abc", "ab"),
+            ("ab", "abc"),
+        ] {
+            assert_eq!(constant_time_eq(a.as_bytes(), b.as_bytes()), a == b);
+        }
+    }
+
+    fn hinted_user(secret: &str) -> Option<String> {
+        API_KEY_USER_HINTS
+            .get(&(DEFAULT_TENANT.to_owned(), user::hash_api_key(secret)))
+            .map(|userid| userid.value().clone())
+    }
+
+    #[test]
+    fn api_key_hints_never_outlive_the_key() {
+        let _state = blocking_auth_state();
+        let (user, secret) = api_key_user(None);
+        let userid = user.userid().to_owned();
+        let lookup =
+            |secret: &str| find_api_key_user(secret, &None).map(|user| user.userid().to_owned());
+
+        assert_eq!(lookup(&secret).as_deref(), Some(userid.as_str()));
+        assert_eq!(hinted_user(&secret).as_deref(), Some(userid.as_str()));
+        // Answered through the hint.
+        assert_eq!(lookup(&secret).as_deref(), Some(userid.as_str()));
+
+        // Invalid keys resolve nothing and are not recorded.
+        let invalid = format!("invalid-{}", Ulid::new());
+        assert_eq!(lookup(&invalid), None);
+        assert_eq!(hinted_user(&invalid), None);
+
+        // Expiry applies to a hinted key on the next lookup.
+        let set_expiry = |expires_at: Option<DateTime<Utc>>| {
+            let mut users = mut_users();
+            let Some(UserType::ApiKey(key)) = users
+                .get_mut(DEFAULT_TENANT)
+                .and_then(|users| users.get_mut(&userid))
+                .map(|user| &mut user.ty)
+            else {
+                unreachable!()
+            };
+            key.expires_at = expires_at;
+        };
+        set_expiry(Some(Utc::now() - TimeDelta::seconds(1)));
+        assert_eq!(lookup(&secret), None);
+        assert_eq!(hinted_user(&secret), None);
+        set_expiry(None);
+        assert_eq!(lookup(&secret).as_deref(), Some(userid.as_str()));
+
+        // Rotation: the old key stops working, the new one resolves.
+        let rotated = format!("rotated-{}", Ulid::new());
+        {
+            let mut users = mut_users();
+            let Some(UserType::ApiKey(key)) = users
+                .get_mut(DEFAULT_TENANT)
+                .and_then(|users| users.get_mut(&userid))
+                .map(|user| &mut user.ty)
+            else {
+                unreachable!()
+            };
+            key.key_hash = user::hash_api_key(&rotated);
+        }
+        assert_eq!(lookup(&secret), None);
+        assert_eq!(hinted_user(&secret), None);
+        assert_eq!(lookup(&rotated).as_deref(), Some(userid.as_str()));
+
+        // Deletion: a hinted key of a deleted user resolves nothing.
+        Users.delete_user(&userid, &None);
+        assert_eq!(lookup(&rotated), None);
+        assert_eq!(hinted_user(&rotated), None);
+    }
+
+    #[test]
+    fn stale_api_key_hint_falls_back_to_the_matching_user() {
+        let _state = blocking_auth_state();
+        let (owner, secret) = api_key_user(None);
+        let (other, _) = api_key_user(None);
+        // A hint naming a user that does not hold the key is ignored.
+        API_KEY_USER_HINTS.insert(
+            (DEFAULT_TENANT.to_owned(), user::hash_api_key(&secret)),
+            other.userid().to_owned(),
+        );
+        let found = find_api_key_user(&secret, &None).unwrap();
+        assert_eq!(found.userid(), owner.userid());
+        assert_eq!(hinted_user(&secret).as_deref(), Some(owner.userid()));
+        // A hint naming a user that no longer exists is ignored too.
+        API_KEY_USER_HINTS.insert(
+            (DEFAULT_TENANT.to_owned(), user::hash_api_key(&secret)),
+            format!("missing-{}", Ulid::new()),
+        );
+        let found = find_api_key_user(&secret, &None).unwrap();
+        assert_eq!(found.userid(), owner.userid());
+    }
+
+    #[actix_web::test]
+    async fn api_key_requests_still_end_their_sessions_with_cached_lookup() {
+        let _state = auth_state().await;
+        let (user, secret) = api_key_user(Some(Utc::now() + TimeDelta::hours(1)));
+        for _ in 0..3 {
+            let outcome =
+                call_app(counting_auth, false, "/", &[("x-api-key", text(&secret))]).await;
+            assert_eq!(outcome.status, StatusCode::OK);
+            assert_eq!((outcome.handled, outcome.auth_calls), (1, 1));
+            assert!(!has_sessions(&user));
+        }
+        // Revocation between requests is seen on the next one.
+        Users.delete_user(user.userid(), &None);
+        let outcome = call_app(counting_auth, false, "/", &[("x-api-key", text(&secret))]).await;
+        assert_eq!(outcome.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(outcome.handled, 0);
+    }
+
+    #[actix_web::test]
+    async fn authorization_is_rechecked_only_when_a_session_was_refreshed() {
+        let _state = auth_state().await;
+        let username = format!("refresh-test-{}", Ulid::new()).to_lowercase();
+        let (mut native, _) = user::User::new_basic(username, None, false);
+        native.roles.insert(ROLE.to_owned());
+        mut_users().insert(native.clone());
+        let cookie = |key: &SessionKey| {
+            let SessionKey::SessionId(id) = key else {
+                unreachable!()
+            };
+            vec![("cookie", text(&format!("session={id}")))]
+        };
+
+        // A live session: decided once, in `call`.
+        let live = SessionKey::SessionId(Ulid::new());
+        Users.new_session(&native, live.clone(), TimeDelta::minutes(5));
+        let outcome = call_app(counting_auth, false, "/", &cookie(&live)).await;
+        assert_eq!(outcome.status, StatusCode::OK);
+        assert_eq!((outcome.handled, outcome.auth_calls), (1, 1));
+
+        // An expired native session is renewed, then authorized again.
+        let expired = SessionKey::SessionId(Ulid::new());
+        Users.new_session(&native, expired.clone(), TimeDelta::seconds(-1));
+        assert!(sessions().is_session_expired(&expired));
+        let outcome = call_app(counting_auth, false, "/", &cookie(&expired)).await;
+        assert_eq!(outcome.status, StatusCode::OK);
+        assert_eq!((outcome.handled, outcome.auth_calls), (1, 2));
+        assert!(!sessions().is_session_expired(&expired));
+
+        // A rejection is always re-evaluated, and still rejects.
+        Users.remove_roles(native.userid(), HashSet::from([ROLE.to_owned()]), &None);
+        let outcome = call_app(counting_auth, false, "/", &cookie(&live)).await;
+        assert_eq!(outcome.status, StatusCode::FORBIDDEN);
+        assert_eq!((outcome.handled, outcome.auth_calls), (0, 2));
+        Users.delete_user(native.userid(), &None);
+    }
+
+    // Sending X-API-KEY alongside an Authorization: Basic header must resolve
+    // to the same authenticated request-local SessionKey in both middleware and
+    // downstream handlers, preventing username spoofing or privilege mismatch.
+    #[actix_web::test]
+    async fn x_api_key_with_basic_header_resolves_consistently_to_ephemeral_session() {
+        use base64::Engine;
+        let _state = auth_state().await;
+        let (user, secret) = api_key_user(Some(Utc::now() + TimeDelta::hours(1)));
+        let bogus_basic = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("admin:wrong-password")
+        );
+        let seen_user: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+        let seen_user_handler = Arc::clone(&seen_user);
+        let app = actix_test::init_service(
+            App::new().route(
+                "/",
+                web::get()
+                    .to(move |req: actix_web::HttpRequest| {
+                        let seen_user_handler = Arc::clone(&seen_user_handler);
+                        async move {
+                            let (userid, _) = get_user_and_tenant_from_request(&req).unwrap();
+                            *seen_user_handler.lock().unwrap() = Some(userid);
+                            HttpResponse::Ok().finish()
+                        }
+                    })
+                    .authorize(Action::Query),
+            ),
+        )
+        .await;
+        let req = actix_test::TestRequest::get()
+            .uri("/")
+            .insert_header(("x-api-key", secret))
+            .insert_header((header::AUTHORIZATION, bogus_basic))
+            .to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            seen_user.lock().unwrap().as_deref(),
+            Some(user.userid()),
+            "handler must resolve the API key's ephemeral identity, not the unverified BasicAuth header"
+        );
     }
 
     #[actix_web::test]
@@ -2176,14 +2622,14 @@ mod api_key_auth_tests {
     }
 
     #[actix_web::test]
-    async fn api_key_session_is_removed_when_unpolled_future_is_dropped() {
+    async fn api_key_session_lives_only_in_the_request() {
         let _state = auth_state().await;
         let (user, secret) = api_key_user(Some(Utc::now() + TimeDelta::hours(1)));
-        let handled = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let inner = {
-            let handled = Arc::clone(&handled);
+            let seen = Arc::clone(&seen);
             fn_service(move |req: ServiceRequest| {
-                handled.fetch_add(1, Ordering::SeqCst);
+                seen.lock().unwrap().push(seen_session(&req));
                 async move { Ok::<_, Error>(req.into_response(HttpResponse::Ok().finish())) }
             })
         };
@@ -2192,24 +2638,106 @@ mod api_key_auth_tests {
             auth_method: counting_auth,
             service: Rc::new(inner),
         };
-        let req = actix_test::TestRequest::default()
-            .insert_header(("x-api-key", secret))
-            .to_srv_request();
+        let request = || {
+            actix_test::TestRequest::default()
+                .insert_header(("x-api-key", secret.clone()))
+                .to_srv_request()
+        };
+        let tracked = sessions().get_active_sessions().len();
 
-        // `call` registers the API-key session before returning its future.
-        let future = middleware.call(req);
-        let session = sessions()
-            .get_active_sessions()
-            .into_iter()
-            .find_map(|(key, userid, _)| (userid == user.userid()).then_some(key))
-            .expect("API-key session is registered by `call`");
-        assert!(sessions().get(&session).is_some());
-        assert!(!sessions().is_session_expired(&session));
-
-        // A client disconnect can drop the future before it is ever polled.
-        drop(future);
+        // `call` attaches the session to the request and tracks nothing,
+        // so dropping the future unpolled (a client disconnect) leaves
+        // nothing behind either.
+        let future = middleware.call(request());
+        assert_eq!(sessions().get_active_sessions().len(), tracked);
         assert!(!has_sessions(&user));
-        assert_eq!(handled.load(Ordering::SeqCst), 0);
+        drop(future);
+        assert!(seen.lock().unwrap().is_empty());
+
+        let response = middleware.call(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let seen = std::mem::take(&mut *seen.lock().unwrap());
+        let [(Some(SessionKey::Ephemeral(session)), tracked_while_handled)] = seen.as_slice()
+        else {
+            panic!("the handler sees one request-local session: {seen:?}");
+        };
+        assert!(!tracked_while_handled);
+        assert_eq!(session.userid, user.userid());
+        assert_eq!(session.tenant, DEFAULT_TENANT);
+        let UserType::ApiKey(api_key) = &user.ty else {
+            unreachable!()
+        };
+        assert!(session.expires_at <= api_key.session_expires_at(Utc::now()));
+        assert_eq!(sessions().get_active_sessions().len(), tracked);
+        assert!(!has_sessions(&user));
+    }
+
+    // API-key and forwarded requests are authenticated, authorized and
+    // handled while another thread holds SESSIONS for writing: neither path
+    // takes the SESSIONS lock at all.
+    #[test]
+    fn api_key_and_forwarded_requests_never_take_the_sessions_lock() {
+        let _state = blocking_auth_state();
+        let (user, secret) = api_key_user(None);
+        // Verify the cluster hash once up front so the timed part below does
+        // not include a debug-build Argon2 run.
+        let hash = CLUSTER_SECRET.get().unwrap().1.clone();
+        verify_cluster_secret_hash(CLUSTER_TEST_SECRET, &hash).unwrap();
+
+        let mut cases = api_key_headers(&secret)
+            .map(|header| (false, vec![(header.0, text(&header.1))]))
+            .to_vec();
+        cases.push((true, raw_cluster_headers(&user)));
+
+        let writer = mut_sessions();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let outcomes = actix_web::rt::System::new().block_on(async move {
+                let mut outcomes = Vec::new();
+                for (intra_cluster, headers) in cases {
+                    let outcome = call_app(auth_no_context, intra_cluster, "/", &headers).await;
+                    outcomes.push((outcome.status, outcome.handled));
+                }
+                outcomes
+            });
+            let _ = tx.send(outcomes);
+        });
+        let outcomes = rx.recv_timeout(std::time::Duration::from_secs(30));
+        drop(writer);
+        let outcomes = outcomes.expect("requests finished while SESSIONS was write-locked");
+        assert_eq!(outcomes, vec![(StatusCode::OK, 1); 3]);
+        assert!(!has_sessions(&user));
+    }
+
+    // Revocation, deletion and role changes reach the very next API-key
+    // request, which builds its session from the user as stored then.
+    #[actix_web::test]
+    async fn api_key_grant_changes_apply_to_the_next_request() {
+        let _state = auth_state().await;
+        let (user, secret) = api_key_user(None);
+        let headers = [("x-api-key", text(&secret))];
+        let status = |outcome: Outcome| (outcome.status, outcome.handled);
+
+        assert_eq!(
+            status(call_app(auth_no_context, false, "/", &headers).await),
+            (StatusCode::OK, 1)
+        );
+        Users.remove_roles(user.userid(), HashSet::from([ROLE.to_owned()]), &None);
+        assert_eq!(
+            status(call_app(auth_no_context, false, "/", &headers).await),
+            (StatusCode::FORBIDDEN, 0)
+        );
+        Users.add_roles(user.userid(), HashSet::from([ROLE.to_owned()]), &None);
+        assert_eq!(
+            status(call_app(auth_no_context, false, "/", &headers).await),
+            (StatusCode::OK, 1)
+        );
+        Users.delete_user(user.userid(), &None);
+        assert_eq!(
+            status(call_app(auth_no_context, false, "/", &headers).await),
+            (StatusCode::UNAUTHORIZED, 0)
+        );
+        assert!(!has_sessions(&user));
     }
 
     /// Bytes `HeaderValue` accepts, so every case can reach the server:
@@ -2359,9 +2887,8 @@ mod ingest_tenant_binding_tests {
         serial
     }
 
-    /// A native user in `tenant` whose only role grants `Ingest` on `STREAM`,
-    /// plus a tracked cookie session for them.
-    fn scoped_session_user(tenant: &str) -> SessionKey {
+    /// A role in `tenant` that only grants `Ingest` on `STREAM`.
+    fn scoped_ingest_role(tenant: &str) -> String {
         let role_name = format!("scoped-ingester-{}", Ulid::new()).to_lowercase();
         mut_roles().entry(tenant.to_owned()).or_default().insert(
             role_name.clone(),
@@ -2369,6 +2896,28 @@ mod ingest_tenant_binding_tests {
                 resource: Some(ParseableResourceType::Stream(STREAM.to_owned())),
             }]),
         );
+        role_name
+    }
+
+    /// An API key in `tenant` holding only `scoped_ingest_role`; its secret.
+    fn scoped_api_key(tenant: &str) -> String {
+        let secret = format!("scoped-api-key-{}", Ulid::new());
+        let user = User::new_api_key(
+            Ulid::new(),
+            secret.clone(),
+            "tenant-binding".into(),
+            HashSet::from([scoped_ingest_role(tenant)]),
+            "admin".into(),
+            Some(tenant.to_owned()),
+        );
+        mut_users().insert(user);
+        secret
+    }
+
+    /// A native user in `tenant` whose only role grants `Ingest` on `STREAM`,
+    /// plus a tracked cookie session for them.
+    fn scoped_session_user(tenant: &str) -> SessionKey {
+        let role_name = scoped_ingest_role(tenant);
         let user = User {
             ty: UserType::Native(Basic {
                 username: format!("scoped-{}", Ulid::new()).to_lowercase(),
@@ -2393,6 +2942,16 @@ mod ingest_tenant_binding_tests {
         session: &SessionKey,
         claimed_tenant: &str,
     ) -> (StatusCode, Option<String>) {
+        let SessionKey::SessionId(id) = session else {
+            unreachable!("the fixture tracks a cookie session");
+        };
+        call_ingest_route_with(("cookie", format!("session={id}")), claimed_tenant).await
+    }
+
+    async fn call_ingest_route_with(
+        credential: (&'static str, String),
+        claimed_tenant: &str,
+    ) -> (StatusCode, Option<String>) {
         let seen_tenant = std::sync::Arc::new(std::sync::Mutex::new(None));
         let handler_tenant = std::sync::Arc::clone(&seen_tenant);
         let route = web::post()
@@ -2411,11 +2970,8 @@ mod ingest_tenant_binding_tests {
             });
         let app = actix_test::init_service(App::new().route("/", route)).await;
 
-        let SessionKey::SessionId(id) = session else {
-            unreachable!("the fixture tracks a cookie session");
-        };
         let request = actix_test::TestRequest::post()
-            .insert_header(("cookie", format!("session={id}")))
+            .insert_header(credential)
             .insert_header((TENANT_ID, claimed_tenant))
             .insert_header((STREAM_NAME_HEADER_KEY, STREAM))
             .to_request();
@@ -2463,5 +3019,34 @@ mod ingest_tenant_binding_tests {
         let (status, seen) = call_ingest_route(&session, &tenant_a).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(seen.as_deref(), Some(tenant_a.as_str()));
+    }
+
+    // An API key's request-local session is bound to the key's tenant the
+    // same way: claiming another tenant never reaches the handler.
+    #[actix_web::test]
+    async fn api_key_ingest_is_bound_to_the_keys_tenant() {
+        crate::parseable::install_default_test_parseable();
+        let _state = auth_state().await;
+        let _multi = MultiTenant::enable();
+
+        let tenant_a = unique_tenant("tenant-a");
+        let tenant_b = unique_tenant("tenant-b");
+        let secret = scoped_api_key(&tenant_a);
+        let tracked = SESSIONS.get().unwrap().read().get_active_sessions().len();
+
+        let (status, seen) = call_ingest_route_with(("x-api-key", secret.clone()), &tenant_b).await;
+        assert!(
+            status.is_client_error(),
+            "an API key of tenant {tenant_a} must not ingest as {tenant_b}: {status}"
+        );
+        assert!(seen.is_none());
+
+        let (status, seen) = call_ingest_route_with(("x-api-key", secret), &tenant_a).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen.as_deref(), Some(tenant_a.as_str()));
+        assert_eq!(
+            SESSIONS.get().unwrap().read().get_active_sessions().len(),
+            tracked
+        );
     }
 }

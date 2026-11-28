@@ -738,13 +738,23 @@ impl S3 {
             min_multipart_size,
             PARSEABLE.options.enable_multipart,
         ) {
+            // Read directly from the already-opened std::fs::File in one blocking call
+            // rather than chunked tokio::fs::File::read_to_end (which copies every chunk
+            // through an internal buffer across multiple blocking-pool round trips).
             // The reported length is only a capacity hint: the body is still whatever
             // read_to_end returns, as before.
-            let mut data = Vec::with_capacity(total_size);
-            file.read_to_end(&mut data).await?;
+            let mut std_file = file.into_std().await;
+            let data = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+                use std::io::Read;
+                let mut data = Vec::with_capacity(total_size.saturating_add(1));
+                std_file.read_to_end(&mut data)?;
+                Ok(data)
+            })
+            .await
+            .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))??;
 
-            // Track single PUT operation for small files
-            let result = self.client.put(location, data.into()).await;
+            // Track single PUT operation for small files (PutPayload::from(Vec<u8>) is zero-copy).
+            let result = self.client.put(location, PutPayload::from(data)).await;
             increment_object_store_calls_by_date(
                 "PUT",
                 &Utc::now().date_naive().to_string(),

@@ -20,6 +20,8 @@ use std::{str::FromStr, time::Duration};
 
 use actix_web::http::header::{HeaderName, HeaderValue};
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
 use serde_json::Value;
 use tonic::async_trait;
 use tracing::{info, trace, warn};
@@ -48,6 +50,81 @@ use crate::{
     tenants::TENANT_METADATA,
     utils::user_auth_for_query,
 };
+
+/// What this process last wrote for each alert, keyed by tenant and alert id.
+///
+/// An evaluation that leaves an alert as it was (a quiet alert staying
+/// `NotTriggered`) used to rewrite its config and state objects every time.
+/// A write is skipped only when this process itself wrote exactly the same
+/// bytes (or state) for the alert, successfully, within `PERSIST_REFRESH`.
+/// The record is dropped before every write and set only after it succeeds,
+/// so a failed or partial write is never mistaken for a persisted one; it is
+/// empty after a restart, so the first evaluation always writes; and every
+/// write is repeated at least every `PERSIST_REFRESH`, which bounds how long
+/// an object changed behind this process's back can go uncorrected. Other
+/// writers of an alert's objects call `forget_persisted_alert`.
+static PERSISTED_ALERTS: Lazy<DashMap<(String, Ulid), PersistedAlert>> = Lazy::new(DashMap::new);
+const PERSIST_REFRESH: chrono::TimeDelta = chrono::TimeDelta::minutes(15);
+
+#[derive(Debug, Default, Clone)]
+struct PersistedAlert {
+    config: Option<(Vec<u8>, DateTime<Utc>)>,
+    state: Option<(AlertState, DateTime<Utc>)>,
+}
+
+impl PersistedAlert {
+    fn is_fresh(at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        let elapsed = now - at;
+        elapsed >= chrono::TimeDelta::zero() && elapsed < PERSIST_REFRESH
+    }
+
+    fn has_config(&self, bytes: &[u8], now: DateTime<Utc>) -> bool {
+        self.config
+            .as_ref()
+            .is_some_and(|(written, at)| written == bytes && Self::is_fresh(*at, now))
+    }
+
+    fn has_state(&self, state: AlertState, now: DateTime<Utc>) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|(written, at)| *written == state && Self::is_fresh(*at, now))
+    }
+}
+
+fn persisted_key(id: Ulid, tenant_id: &Option<String>) -> (String, Ulid) {
+    (
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
+        id,
+    )
+}
+
+/// For code that writes an alert's config or state objects other than
+/// through `ThresholdAlert`: the next state update writes both again.
+pub(crate) fn forget_persisted_alert(id: Ulid, tenant_id: &Option<String>) {
+    PERSISTED_ALERTS.remove(&persisted_key(id, tenant_id));
+}
+
+/// Whether the config serialized as `bytes` was written by this process
+/// within the refresh window. Never holds a map guard past the call.
+fn config_already_persisted(key: &(String, Ulid), bytes: &[u8], now: DateTime<Utc>) -> bool {
+    PERSISTED_ALERTS
+        .get(key)
+        .is_some_and(|persisted| persisted.has_config(bytes, now))
+}
+
+fn state_already_persisted(key: &(String, Ulid), state: AlertState, now: DateTime<Utc>) -> bool {
+    PERSISTED_ALERTS
+        .get(key)
+        .is_some_and(|persisted| persisted.has_state(state, now))
+}
+
+fn set_persisted_config(key: (String, Ulid), written: Option<(Vec<u8>, DateTime<Utc>)>) {
+    PERSISTED_ALERTS.entry(key).or_default().config = written;
+}
+
+fn set_persisted_state(key: (String, Ulid), written: Option<(AlertState, DateTime<Utc>)>) {
+    PERSISTED_ALERTS.entry(key).or_default().state = written;
+}
 
 /// Struct which defines the threshold type alerts
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -269,12 +346,8 @@ impl AlertTrait for ThresholdAlert {
         // update state in memory
         self.notification_state = new_notification_state;
 
-        // update on disk
-        PARSEABLE
-            .metastore
-            .put_alert(&self.to_alert_config(), &self.tenant_id)
-            .await?;
-        Ok(())
+        // update on disk; an explicit change is always written
+        self.persist_config(true).await
     }
 
     async fn update_state(
@@ -298,16 +371,9 @@ impl AlertTrait for ThresholdAlert {
                 self.last_triggered_at = Some(Utc::now());
             }
 
-            // update on disk
-            PARSEABLE
-                .metastore
-                .put_alert(&self.to_alert_config(), &self.tenant_id)
-                .await?;
-            let state_entry = AlertStateEntry::new(self.id, self.state, self.tenant_id.clone());
-            PARSEABLE
-                .metastore
-                .put_alert_state(&state_entry as &dyn MetastoreObject, &self.tenant_id)
-                .await?;
+            // update on disk; leaving `Disabled` is always a change
+            self.persist_config(true).await?;
+            self.persist_state(true).await?;
             return Ok(());
         }
 
@@ -338,17 +404,10 @@ impl AlertTrait for ThresholdAlert {
             self.last_triggered_at = Some(Utc::now());
         }
 
-        // update on disk
-        PARSEABLE
-            .metastore
-            .put_alert(&self.to_alert_config(), &self.tenant_id)
-            .await?;
-        let state_entry = AlertStateEntry::new(self.id, self.state, self.tenant_id.clone());
-
-        PARSEABLE
-            .metastore
-            .put_alert_state(&state_entry as &dyn MetastoreObject, &self.tenant_id)
-            .await?;
+        // update on disk, unless this process already wrote exactly this
+        // config and state (an evaluation that changed nothing)
+        self.persist_config(false).await?;
+        self.persist_state(false).await?;
 
         if let Some(trigger_notif) = trigger_notif
             && self.notification_state.eq(&NotificationState::Notify)
@@ -539,6 +598,44 @@ impl From<ThresholdAlert> for AlertConfig {
 }
 
 impl ThresholdAlert {
+    /// Writes the alert's config, skipped (unless `force`) when this process
+    /// already wrote the same bytes recently; see `PERSISTED_ALERTS`.
+    async fn persist_config(&self, force: bool) -> Result<(), AlertError> {
+        let config = self.to_alert_config();
+        let key = persisted_key(self.id, &self.tenant_id);
+        let bytes = serde_json::to_vec(&config)?;
+        let now = Utc::now();
+        if !force && config_already_persisted(&key, &bytes, now) {
+            return Ok(());
+        }
+        // A write that fails may still have landed, so it is not recorded.
+        set_persisted_config(key.clone(), None);
+        PARSEABLE
+            .metastore
+            .put_alert(&config, &self.tenant_id)
+            .await?;
+        set_persisted_config(key, Some((bytes, now)));
+        Ok(())
+    }
+
+    /// Records the alert's current state, skipped (unless `force`) when this
+    /// process already recorded the same state recently.
+    async fn persist_state(&self, force: bool) -> Result<(), AlertError> {
+        let key = persisted_key(self.id, &self.tenant_id);
+        let now = Utc::now();
+        if !force && state_already_persisted(&key, self.state, now) {
+            return Ok(());
+        }
+        set_persisted_state(key.clone(), None);
+        let state_entry = AlertStateEntry::new(self.id, self.state, self.tenant_id.clone());
+        PARSEABLE
+            .metastore
+            .put_alert_state(&state_entry as &dyn MetastoreObject, &self.tenant_id)
+            .await?;
+        set_persisted_state(key, Some((self.state, now)));
+        Ok(())
+    }
+
     pub(crate) fn validate_oss_query_type(&self) -> Result<(), AlertError> {
         if self.query_type == AlertQueryType::Promql
             && !matches!(
@@ -584,5 +681,182 @@ impl ThresholdAlert {
         message.push_str(&format!("\nQuery:\n{}", self.get_query()));
 
         Ok(message)
+    }
+}
+
+#[cfg(test)]
+mod persist_tests {
+    use super::*;
+
+    fn alert() -> ThresholdAlert {
+        let config: AlertConfig = serde_json::from_value(serde_json::json!({
+            "version":"v2","id":Ulid::new(),"severity":"high","title":"Quiet alert",
+            "queryType":"sql","query":"SELECT COUNT(*) FROM logs","datasets":["logs"],
+            "alertType":"threshold","thresholdConfig":{"operator":">","value":8.0},
+            "evalConfig":{"rollingWindow":{"evalStart":"5m","evalEnd":"now","evalFrequency":1}},
+            "targets":[],"notificationState":"notify","notificationConfig":{"interval":1},
+            "created":Utc::now(),"tenantId":null
+        }))
+        .unwrap();
+        ThresholdAlert::from(config)
+    }
+
+    #[test]
+    fn records_expire_and_match_only_identical_content() {
+        let now = Utc::now();
+        let persisted = PersistedAlert {
+            config: Some((b"config".to_vec(), now)),
+            state: Some((AlertState::NotTriggered, now)),
+        };
+        assert!(persisted.has_config(b"config", now));
+        assert!(!persisted.has_config(b"changed", now));
+        assert!(persisted.has_state(AlertState::NotTriggered, now));
+        assert!(!persisted.has_state(AlertState::Triggered, now));
+        // Rewritten at least once per refresh window.
+        let later = now + PERSIST_REFRESH;
+        assert!(!persisted.has_config(b"config", later));
+        assert!(!persisted.has_state(AlertState::NotTriggered, later));
+        assert!(!PersistedAlert::default().has_config(b"config", now));
+        assert!(!PersistedAlert::default().has_state(AlertState::NotTriggered, now));
+    }
+
+    async fn stored_config(alert: &ThresholdAlert) -> Option<AlertConfig> {
+        PARSEABLE
+            .metastore
+            .get_alerts()
+            .await
+            .unwrap()
+            .into_values()
+            .flatten()
+            .filter_map(|bytes| serde_json::from_slice::<AlertConfig>(&bytes).ok())
+            .find(|config| config.id == alert.id)
+    }
+
+    async fn stored_state(alert: &ThresholdAlert) -> Option<AlertState> {
+        PARSEABLE
+            .metastore
+            .get_alert_state_entry(&alert.id, &alert.tenant_id)
+            .await
+            .unwrap()
+            .and_then(|entry| entry.current_state().map(|transition| transition.state))
+    }
+
+    /// Removes both stored objects, so a later write shows up as their
+    /// return. Either may already be gone.
+    async fn erase(alert: &ThresholdAlert) {
+        let config = alert.to_alert_config();
+        let _ = PARSEABLE
+            .metastore
+            .delete_alert(&config, &alert.tenant_id)
+            .await;
+        let state = AlertStateEntry::new(alert.id, alert.state, alert.tenant_id.clone());
+        let _ = PARSEABLE
+            .metastore
+            .delete_alert_state(&state, &alert.tenant_id)
+            .await;
+        assert!(stored_config(alert).await.is_none());
+        assert!(stored_state(alert).await.is_none());
+    }
+
+    #[actix_web::test]
+    async fn unchanged_state_updates_skip_rewrites_until_something_changes() {
+        crate::parseable::install_default_test_parseable();
+        let mut alert = alert();
+
+        // The first update after start always writes.
+        alert
+            .update_state(AlertState::NotTriggered, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_config(&alert).await.map(|config| config.state),
+            Some(AlertState::NotTriggered)
+        );
+        assert_eq!(stored_state(&alert).await, Some(AlertState::NotTriggered));
+
+        // An evaluation that changes nothing writes nothing.
+        erase(&alert).await;
+        alert
+            .update_state(AlertState::NotTriggered, None)
+            .await
+            .unwrap();
+        assert!(stored_config(&alert).await.is_none());
+        assert!(stored_state(&alert).await.is_none());
+
+        // Another writer forgetting the record makes the next update write.
+        forget_persisted_alert(alert.id, &alert.tenant_id);
+        alert
+            .update_state(AlertState::NotTriggered, None)
+            .await
+            .unwrap();
+        assert!(stored_config(&alert).await.is_some());
+        assert_eq!(stored_state(&alert).await, Some(AlertState::NotTriggered));
+
+        // A state change is written.
+        alert
+            .update_state(AlertState::Triggered, None)
+            .await
+            .unwrap();
+        let triggered_at = alert.last_triggered_at;
+        assert!(triggered_at.is_some());
+        let stored = stored_config(&alert).await.unwrap();
+        assert_eq!(stored.state, AlertState::Triggered);
+        assert_eq!(stored.last_triggered_at, triggered_at);
+        assert_eq!(stored_state(&alert).await, Some(AlertState::Triggered));
+
+        // Staying triggered moves `last_triggered_at`, so the config is
+        // written again while the unchanged state is not.
+        erase(&alert).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        alert
+            .update_state(AlertState::Triggered, None)
+            .await
+            .unwrap();
+        let stored = stored_config(&alert).await.unwrap();
+        assert_ne!(stored.last_triggered_at, triggered_at);
+        assert_eq!(stored.last_triggered_at, alert.last_triggered_at);
+        assert!(stored_state(&alert).await.is_none());
+
+        // An expired snooze is lifted and written, though the state stays.
+        alert
+            .update_state(AlertState::NotTriggered, None)
+            .await
+            .unwrap();
+        let expired = (Utc::now() - chrono::TimeDelta::seconds(1)).to_rfc3339();
+        alert
+            .update_notification_state(NotificationState::Mute(expired))
+            .await
+            .unwrap();
+        erase(&alert).await;
+        alert
+            .update_state(AlertState::NotTriggered, None)
+            .await
+            .unwrap();
+        assert_eq!(alert.notification_state, NotificationState::Notify);
+        let stored = stored_config(&alert).await.unwrap();
+        assert_eq!(stored.notification_state, NotificationState::Notify);
+        assert!(stored_state(&alert).await.is_none());
+
+        // An explicit notification change is always written, even when it
+        // matches what was last written.
+        erase(&alert).await;
+        alert
+            .update_notification_state(NotificationState::Notify)
+            .await
+            .unwrap();
+        assert!(stored_config(&alert).await.is_some());
+
+        // Leaving `Disabled` is always written.
+        erase(&alert).await;
+        alert.state = AlertState::Disabled;
+        alert
+            .update_state(AlertState::NotTriggered, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_config(&alert).await.map(|config| config.state),
+            Some(AlertState::NotTriggered)
+        );
+        assert_eq!(stored_state(&alert).await, Some(AlertState::NotTriggered));
     }
 }
