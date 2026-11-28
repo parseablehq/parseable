@@ -40,14 +40,14 @@ Some of the key highlights include:
 Download and run the Parseable binary on your laptop:
 
 ```bash
-curl -fsSL https://logg.ing/install | bash
+curl -fsSL https://logg.ing/install-oss | bash
 ```
 
 <details> 
 <summary>For Windows</summary>
 
 ```pwsh
-powershell -c "irm https://logg.ing/install-windows | iex"
+powershell -c "irm https://logg.ing/install-windows-oss | iex"
 ```
 </details>
 
